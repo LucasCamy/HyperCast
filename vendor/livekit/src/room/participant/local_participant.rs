@@ -673,8 +673,14 @@ impl LocalParticipant {
         if let Some(TrackPublication::Local(publication)) = publication {
             let track = publication.track().unwrap();
             let remove_result = {
-                let sender = track.transceiver().unwrap().sender();
-                self.inner.rtc_engine.remove_track(sender)
+                let transceiver = track.transceiver().unwrap();
+                let sender = transceiver.sender();
+                let result = self.inner.rtc_engine.remove_track(sender);
+                // End the RTP stream (including RTCP BYE), rather than leaving
+                // a reusable inactive sender whose SFU receiver can remain alive.
+                // HyperCast creates a new sender for each screen publication.
+                let stopped = transceiver.stop().map_err(EngineError::from);
+                result.and(stopped)
             };
 
             // The peer connection may already be closed after a server-initiated

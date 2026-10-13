@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include "capture_color.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -41,6 +42,7 @@ struct Encoder {
     NV_ENC_INITIALIZE_PARAMS init{};
     uint32_t width = 0, height = 0, fps = 0;
     bool input_ready = false;
+    CaptureColor capture_color;
 
     ~Encoder() noexcept {
         if (session) {
@@ -197,10 +199,13 @@ struct Encoder {
         if (desc.Width != width || desc.Height != height)
             throw std::runtime_error("Capture dimensions changed: expected " + std::to_string(width) + "x" + std::to_string(height) +
                 ", received " + std::to_string(desc.Width) + "x" + std::to_string(desc.Height) + "; rebuild GPU pipeline");
-        if (desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM || desc.SampleDesc.Count != 1 || desc.ArraySize != 1 || desc.MipLevels != 1)
+        if ((desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM && desc.Format != DXGI_FORMAT_R16G16B16A16_FLOAT) || desc.SampleDesc.Count != 1 || desc.ArraySize != 1 || desc.MipLevels != 1)
             throw std::runtime_error("Unsupported capture texture layout: format=" + std::to_string(desc.Format) +
                 " samples=" + std::to_string(desc.SampleDesc.Count) + " array=" + std::to_string(desc.ArraySize) + " mips=" + std::to_string(desc.MipLevels));
-        context->CopyResource(input.Get(), source);
+        if (desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT)
+            capture_color.convert(device.Get(), context.Get(), source, input.Get());
+        else
+            context->CopyResource(input.Get(), source);
         context->End(copy_done.Get()); context->Flush();
         const ULONGLONG start = GetTickCount64();
         while (true) {

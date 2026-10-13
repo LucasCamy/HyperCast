@@ -226,7 +226,11 @@ impl eframe::App for App {
             && std::env::var("HYPERCAST_SMOKE_SHARE").as_deref() == Ok("1")
         {
             let elapsed = self.started.elapsed().as_secs();
-            if self.smoke_share_stage == 0 || (self.smoke_share_stage == 2 && elapsed >= 8) {
+            let cycles = std::env::var("HYPERCAST_SMOKE_SHARE_CYCLES")
+                .ok().and_then(|raw| raw.parse::<u32>().ok()).unwrap_or(2).clamp(2, 6);
+            let stage = u32::from(self.smoke_share_stage);
+            if stage < cycles * 2 - 1 && stage % 2 == 0
+                && (stage == 0 || elapsed >= 2 + u64::from(stage) * 3) {
                 if let (Some(engine), Some(display)) = (&self.engine, self.displays.first()) {
                     let _ = engine.commands.send(Command::Share {
                         adapter: display.adapter_index,
@@ -236,11 +240,11 @@ impl eframe::App for App {
                     self.smoke_share_stage += 1;
                     println!("GUI publisher: start");
                 }
-            } else if self.smoke_share_stage == 1 && elapsed >= 5 {
+            } else if stage < cycles * 2 - 1 && stage % 2 == 1 && elapsed >= 2 + u64::from(stage) * 3 {
                 if let Some(engine) = &self.engine {
                     let _ = engine.commands.send(Command::StopShare);
                 }
-                self.smoke_share_stage = 2;
+                self.smoke_share_stage += 1;
                 println!("GUI publisher: stopped");
             }
         }

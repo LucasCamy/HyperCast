@@ -40,6 +40,12 @@ contadores, rota ICE, RTT de rede e erros. RTT não mede latência fim a fim.
 Falhas de mudança de resolução/device disparam até três tentativas de reconstrução
 do pipeline. Formatos não suportados não são repetidos automaticamente.
 
+Na versão 0.2.1, a captura HDR `R16G16B16A16_FLOAT` (format=10) é convertida
+na GPU para SDR com compressão de highlights e curva sRGB. O vídeo enviado
+continua sendo SDR. A parada encerra o transceiver RTP para liberar a publicação
+anterior no SFU. Um erro de publicação duplicada agora tem mensagem distinta
+do limite de três telas.
+
 Para diagnóstico, abra PowerShell na pasta do ZIP e execute
 `./Test-Streaming.ps1 -Role Viewer` ou `./Test-Streaming.ps1 -Role Publisher`.
 Primeiro extraia TODO o ZIP. Para manter a janela aberta em caso de erro,

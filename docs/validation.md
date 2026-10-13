@@ -1,5 +1,33 @@
 # Validação — 12 e 13/10/2026
 
+## Correções de captura HDR e encerramento — 0.2.1, 13/10/2026
+
+O diagnóstico `message (6).txt` da versão 0.2.0 mostra textura mudando para
+`DXGI_FORMAT_R16G16B16A16_FLOAT` (10), além de recusas por publicação duplicada
+da mesma sessão. Não são evidência de excesso de participantes nem de falha TLS.
+O cliente agora converte scRGB linear para SDR/sRGB na GPU com compressão de
+highlights, mantendo BGRA8 sem conversão. Não preserva sinalização/HDR original.
+
+`tests/capture-color.ps1` passou na GPU local: preto, meio-tom sRGB, compressão
+monotônica de highlights, opacidade e reutilização do pass. O mesmo teste passou
+pela ponte NVENC real com texturas sintéticas HDR→SDR→HDR e repetição sem novo
+frame. Somente o teste faz readback de pixels sintéticos para conferir a cor.
+Ainda falta confirmar aparência e estabilidade no monitor HDR do usuário.
+
+Unpublish agora encerra o transceiver RTP antes de negociar; erros de parada
+são registrados e duplicação tem mensagem distinta da quota de três telas.
+`python -m tests.integration_publication_lifecycle` passou contra o SFU existente:
+quatro publicações reais HEVC na mesma conexão, sem gravar vídeo. Consultas
+RoomService confirmaram que nas três janelas de parada havia um participante
+conectado e zero tracks. Nenhuma atualização do servidor foi necessária.
+
+A integração também passou com o executável do ZIP final 0.2.1: quatro
+publicações, três remoções confirmadas no SFU e 499 frames enviados no último
+ciclo. Seis testes Rust passaram. ZIP e instalador foram gerados com SHA-256
+em `dist/SHA256SUMS.txt`; instalação/desinstalação 0.2.1 não foi repetida.
+
+Os testes não comprovam latência fim a fim abaixo de 100 ms nem QHD/120 em HDR.
+
 ## Convites, participação livre e TURN/TLS — 13/10/2026
 
 Coturn oficial 4.18.0 por digest, Caddy por digest e backend de convites foram
@@ -119,7 +147,7 @@ python -m tests.integration_gui_publish
 
 Integrações de mídia exigem SFU local e hardware compatível. O teste visual usa Pillow em .tools/python-libs. Screenshots de salas reais ficam em .tools e não são versionados; assets/layout.png contém apenas a tela inicial do próprio aplicativo, sem token/mídia de outros aplicativos.
 
-Ainda faltam medições QHD/120 com movimento, jitter/perda e rede real; AMF, HDR, composição de cursor separado, miniaturas vivas e recuperação automática completa de sessão não fazem parte desta versão. As miniaturas atuais são quadros pausados, explicitamente identificados na interface.
+Ainda faltam medições QHD/120 com movimento, jitter/perda e rede real; AMF, transmissão preservando HDR, composição de cursor separado, miniaturas vivas e recuperação automática completa de sessão não fazem parte desta versão. A captura scRGB/FP16 é convertida para SDR na GPU. As miniaturas atuais são quadros pausados, explicitamente identificados na interface.
 
 ## Implantação no homelab — 13/10/2026
 

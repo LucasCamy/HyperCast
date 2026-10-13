@@ -1,5 +1,6 @@
 fn main() {
     println!("cargo:rerun-if-changed=native/nvenc.cpp");
+    println!("cargo:rerun-if-changed=native/capture_color.h");
     println!("cargo:rerun-if-changed=native/presenter.cpp");
     println!("cargo:rerun-if-changed=native/vendor/nvEncodeAPI.h");
     println!("cargo:rerun-if-changed=assets/hypercast.ico");
@@ -30,5 +31,6 @@ fn main() {
             .compile("hypercast_nvenc");
         println!("cargo:rustc-link-lib=d3d11");
         println!("cargo:rustc-link-lib=dxgi");
+        println!("cargo:rustc-link-lib=d3dcompiler");
     }
 }

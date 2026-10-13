@@ -190,7 +190,11 @@ impl Cast {
     }
     fn stop(self, runtime: &tokio::runtime::Runtime) {
         if let Some(publisher) = self.publisher {
-            let _ = runtime.block_on(publisher.stop());
+            if let Err(error) = runtime.block_on(publisher.stop()) {
+                crate::diagnostics::write("unpublish_error", &format!("{error:#}"), "");
+            } else {
+                crate::diagnostics::write("publication", "Unpublish completed", "");
+            }
         }
     }
 }
@@ -356,7 +360,10 @@ impl Engine {
                                     }
                                     Err(error) => {
                                         crate::diagnostics::write("publication_error", &format!("{error:#}"), &token);
-                                        state.lock().unwrap().status = if error.to_string().contains("LimitExceeded") {
+                                        let message = error.to_string();
+                                        state.lock().unwrap().status = if message.contains("already has this screen track") {
+                                            "A publicação anterior ainda está sendo encerrada. Aguarde e tente novamente; se persistir, reconecte à sala.".into()
+                                        } else if message.contains("LimitExceeded") {
                                             "A sala atingiu o limite de telas. Você pode assistir e compartilhar quando alguém parar.".into()
                                         } else {
                                             error.to_string().replace(&token, "[token]")
