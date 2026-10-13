@@ -1,5 +1,32 @@
 # Validação — 12 e 13/10/2026
 
+## Recuperação de conexão e botão de entrada — 0.5.2, 13/10/2026
+
+Botão de entrada usa a largura disponível dos campos. Revisão visual em
+1320×820 e 960×620, offline e em sala isolada. Captura sem conteúdo privado
+atualizada em `assets/layout.png`.
+
+A configuração da sala limita uma recuperação a três tentativas, com dois
+segundos mínimos entre falhas. O SDK mantém o padrão anterior para outros
+consumidores. Participantes interrompidos conservam uma superfície GPU por
+identidade, por até 60 segundos; quadro novo remove o estado congelado.
+
+O teste de sinalização força falha na retomada leve e reinício completo:
+publicação mantida, superfície retida no espectador e vídeo/áudio retomados.
+Falha persistente verifica três tentativas, espaçamento e mensagem final.
+Esse caminho revelou `RemoveTrack` nativo em uma conexão já fechada:
+adicionada proteção na sessão e limpeza idempotente no cliente, evitando
+aborto C++ e substituição do status final por `already closed`.
+
+Quatro publicações/paradas na mesma sala passaram, liberando os slots do SFU.
+Os testes usam sala própria e proxy loopback; nenhum SFU é reiniciado.
+
+Pacote release 0.5.2: esgotamento de tentativas passou com contador 1/3, 2/3,
+3/3, intervalo mínimo e status final preservado, sem erro de despublicação.
+Instalação por usuário, envio/recepção AV1 GPU, pausa e desinstalação passaram.
+Testes Python: 16 passaram; testes Rust existentes: 10 passaram, um teste de
+atualização por operador ignorado.
+
 ## Atualizador — 0.5.1, 13/10/2026
 
 Implementado check manual assíncrono, comparação semântica de versão, detecção

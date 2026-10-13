@@ -1,5 +1,10 @@
 # HyperCast para Windows
 
+0.5.2 alinha **Entrar na sala** aos campos e conserva o último quadro durante
+a reconexão. São até três tentativas, com pelo menos dois segundos entre
+falhas. Após isso, entre na sala novamente. Uma tela remota interrompida fica
+congelada por até 60 segundos aguardando o retorno do participante.
+
 0.5.1 adiciona **Atualizar** no topo da lateral. Instalações podem baixar e
 instalar com reinício do aplicativo; o ZIP portátil abre o download no navegador
 padrão. Para começar a usar o recurso, atualize 0.4.x manualmente uma vez.

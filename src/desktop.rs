@@ -390,6 +390,7 @@ impl eframe::App for App {
         let mut people = Vec::new();
         let mut screens = Vec::new();
         let mut videos = Vec::new();
+        let mut frozen = Vec::new();
         let mut received = 0;
         let mut sent = 0;
         if let Some(engine) = &self.engine {
@@ -406,6 +407,7 @@ impl eframe::App for App {
             active_target=state.active_target;source_error=state.source_error.clone();
             people = state.participants.clone();
             screens = state.screens.clone();
+            frozen = state.frozen.keys().cloned().collect();
             videos = state
                 .frames
                 .iter()
@@ -534,7 +536,7 @@ impl eframe::App for App {
                                 .add_enabled(
                                     if self.token_mode { !self.token.trim().is_empty() } else { !self.invite.trim().is_empty() && !self.name.trim().is_empty() },
                                     egui::Button::new("Entrar na sala")
-                                        .min_size(Vec2::new(256.0, 44.0)).corner_radius(9),
+                                        .min_size(Vec2::new(ui.available_width(), 44.0)).corner_radius(9),
                                 )
                                 .clicked()
                         {
@@ -799,7 +801,9 @@ impl eframe::App for App {
                         ui.painter().text(
                             card.left_bottom() + Vec2::new(16.0, -18.0),
                             egui::Align2::LEFT_CENTER,
-                            if thumbnail && !frame.local() {
+                            if frozen.contains(identity) {
+                                "Reconectando • último quadro".into()
+                            } else if thumbnail && !frame.local() {
                                 "Último quadro • pausada".into()
                             } else {
                                 format!("{} × {} • GPU", frame_width, frame_height)

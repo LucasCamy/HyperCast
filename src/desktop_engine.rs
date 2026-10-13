@@ -57,6 +57,8 @@ pub struct Shared {
     pub participants: Vec<(String, String)>,
     pub screens: Vec<String>,
     pub frames: HashMap<String, Arc<VideoFrame>>,
+    /// One retained surface per interrupted screen, bounded to the three slots.
+    pub frozen: HashMap<String, Instant>,
     pub received: u64,
     pub sent: u64,
     pub audio_status: String,
@@ -360,6 +362,7 @@ impl Engine {
                 let mut cast: Option<Cast> = None;
                 let mut recovery: Option<((CaptureTarget, Codec), Instant)> = None;
                 let mut recovery_attempts = 0u8;
+                let mut reconnect_attempt = 0u32;
                 #[cfg(debug_assertions)]
                 let mut injected_capture_loss = false;
                 let mut sinks = HashMap::<TrackSid, Sink>::new();
@@ -518,9 +521,20 @@ impl Engine {
                                 let task = runtime.spawn(async move {
                                     while let Some(frame) = stream.next().await {
                                         let mut state = state.lock().unwrap();
+                                        // A new live screen takes precedence over a departed
+                                        // participant's frozen surface, keeping the GPU bound.
+                                        if state.frames.len() >= 3 && !state.frames.contains_key(&identity) {
+                                            if let Some(oldest) = state.frozen.iter().min_by_key(|(_, at)| *at).map(|(id, _)| id.clone()) {
+                                                state.frozen.remove(&oldest);
+                                                state.frames.remove(&oldest);
+                                            }
+                                        }
                                         if state.frames.len() < 3
                                             || state.frames.contains_key(&identity)
                                         {
+                                            if state.frozen.remove(&identity).is_some() {
+                                                crate::diagnostics::write("recovery_view", "Resumed retained screen", "");
+                                            }
                                             state.frames.insert(
                                                 identity.clone(),
                                                 Arc::new(VideoFrame::Remote(frame)),
@@ -551,7 +565,9 @@ impl Engine {
                                     task.abort();
                                 }
                                 if publication.kind() == TrackKind::Video {
-                                    state.lock().unwrap().frames.remove(&participant.identity().to_string());
+                                    let mut shared = state.lock().unwrap();
+                                    let identity = participant.identity().to_string();
+                                    if !shared.frozen.contains_key(&identity) { shared.frames.remove(&identity); }
                                 }
                                 update_subscriptions(&room, &layout);
                             }
@@ -565,23 +581,30 @@ impl Engine {
                                         true
                                     }
                                 });
-                                state
-                                    .lock()
-                                    .unwrap()
-                                    .frames
-                                    .remove(&participant.identity().to_string());
+                                let mut shared = state.lock().unwrap();
+                                if shared.frames.contains_key(&identity) {
+                                    shared.frozen.entry(identity).or_insert_with(Instant::now);
+                                    crate::diagnostics::write("recovery_view", "Retained screen during participant interruption", "");
+                                }
+                                drop(shared);
                                 update_subscriptions(&room, &layout);
                             }
                             RoomEvent::TrackPublished { .. }
                             | RoomEvent::ParticipantConnected(_) => {
                                 update_subscriptions(&room, &layout)
                             }
+                            RoomEvent::ReconnectAttempt { attempt, maximum } => {
+                                reconnect_attempt = attempt;
+                                state.lock().unwrap().status = format!("Reconectando… tentativa {attempt}/{maximum}");
+                                crate::diagnostics::write("connection", &format!("Reconnect attempt {attempt}/{maximum}"), "");
+                            }
                             RoomEvent::Reconnecting => {
-                                state.lock().unwrap().status="Reconectando… compartilhamento será retomado".into();
+                                state.lock().unwrap().status=format!("Reconectando… tentativa {}/3", reconnect_attempt.max(1));
                                 if let Some(c)=&mut cast {if let Some(p)=&mut c.publisher {p.restart_keyframe();}}
                                 crate::diagnostics::write("connection","Reconnecting; publication retained","");
                             }
                             RoomEvent::Reconnected => {
+                                reconnect_attempt = 0;
                                 if let Some(c)=&mut cast {
                                     c.paused=false;c.fps=120;
                                     if let Some(e)=&mut c.encoder{e.reconfigure(40_000_000,120)?;}
@@ -593,6 +616,9 @@ impl Engine {
                             }
                             RoomEvent::Disconnected { .. } => {
                                 crate::diagnostics::write("connection", "SDK disconnected", "");
+                                if reconnect_attempt > 0 {
+                                    state.lock().unwrap().status = format!("Conexão encerrada após tentativa {reconnect_attempt}/3. Entre novamente.");
+                                }
                                 break 'session;
                             }
                             _ => {}
@@ -661,11 +687,11 @@ impl Engine {
                             state.sent = value.count;
                             if value.publisher.is_some() {
                                 state.status = if room.connection_state()!=ConnectionState::Connected {
-                                    "Reconectando… compartilhamento será retomado"
+                                    format!("Reconectando… tentativa {}/3", reconnect_attempt.max(1))
                                 } else if value.paused {
-                                    "Compartilhamento ativo • envio pausado"
+                                    "Compartilhamento ativo • envio pausado".into()
                                 } else {
-                                    if value.selection.0.process().is_some(){"Compartilhando janela do aplicativo"}else{"Compartilhando sua tela"}
+                                    if value.selection.0.process().is_some(){"Compartilhando janela do aplicativo".into()}else{"Compartilhando sua tela".into()}
                                 }
                                 .into();
                             }
@@ -687,7 +713,16 @@ impl Engine {
                         }
                     }
                     if info_tick.elapsed() > Duration::from_millis(500) {
-                        state.lock().unwrap().screens = room
+                        // A remote full restart changes participant/track SIDs. Keep its
+                        // last surface by identity for a bounded grace period. A manual
+                        // track stop still clears immediately; departures expire below.
+                        let mut shared = state.lock().unwrap();
+                        let expired: Vec<_> = shared.frozen.iter()
+                            .filter(|(_, at)| at.elapsed() >= Duration::from_secs(60))
+                            .map(|(id, _)| id.clone()).collect();
+                        for id in expired { shared.frozen.remove(&id); shared.frames.remove(&id); }
+                        let previous_people = shared.participants.clone();
+                        shared.screens = room
                             .remote_participants()
                             .into_values()
                             .filter(|p| {
@@ -698,11 +733,19 @@ impl Engine {
                             })
                             .map(|p| p.identity().to_string())
                             .collect();
-                        state.lock().unwrap().participants = room
+                        shared.participants = room
                             .remote_participants()
                             .into_values()
                             .map(|p| (p.identity().to_string(), p.name()))
                             .collect();
+                        for (id, name) in previous_people {
+                            if shared.frozen.contains_key(&id) && !shared.participants.iter().any(|(owner, _)| owner == &id) {
+                                shared.participants.push((id, name));
+                            }
+                        }
+                        let frozen: Vec<_> = shared.frozen.keys().cloned().collect();
+                        for id in frozen { if !shared.screens.contains(&id) { shared.screens.push(id); } }
+                        drop(shared);
                         info_tick = Instant::now();
                         ctx.request_repaint();
                     }
@@ -736,7 +779,10 @@ impl Engine {
                     task.abort();
                     let _ = runtime.block_on(task.task);
                 }
-                runtime.block_on(room.close())?;
+                match runtime.block_on(room.close()) {
+                    Ok(()) | Err(livekit::RoomError::AlreadyClosed) => {}
+                    Err(error) => return Err(error.into()),
+                }
                 Ok(())
             })();
             let mut state = state.lock().unwrap();
@@ -744,10 +790,11 @@ impl Engine {
             state.connected = false;
             state.publishing = false;
             state.frames.clear();
+            state.frozen.clear();
             state.status = result
                 .err()
                 .map(|e| e.to_string().replace(&token, "[token]"))
-                .unwrap_or_else(|| "Desconectado".into());
+                .unwrap_or_else(|| if state.status.starts_with("Conexão encerrada após tentativa") { state.status.clone() } else { "Desconectado".into() });
             crate::diagnostics::write("session_end", &state.status, &token);
             drop(state);
             ctx.request_repaint();

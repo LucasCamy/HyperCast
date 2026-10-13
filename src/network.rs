@@ -75,6 +75,8 @@ pub(crate) async fn connect_with_policy(
     options.adaptive_stream = true;
     options.dynacast = false;
     options.join_retries = 0;
+    options.reconnect_attempts = 3;
+    options.reconnect_min_delay = Duration::from_secs(2);
     // The SDK's default single-PC mode produced conflicting ICE ufrags against
     // the pinned SFU during native publication. Dual transports avoid that path.
     options.single_peer_connection = false;
@@ -306,6 +308,9 @@ impl EncodedPublisher {
     pub async fn stop(self) -> Result<()> {
         if let Some(task) = self.event_task {
             task.abort();
+        }
+        if self.room.connection_state() == ConnectionState::Disconnected {
+            return Ok(()); // SDK teardown releases the closed publication graph.
         }
         // A full SDK reconnect can replace the publication SID while retaining the RTC track.
         let sid=self.room.local_participant().track_publications().into_values()

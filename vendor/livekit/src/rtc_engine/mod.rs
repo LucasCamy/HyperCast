@@ -121,12 +121,15 @@ pub struct EngineOptions {
     pub rtc_config: RtcConfiguration,
     pub signal_options: SignalOptions,
     pub join_retries: u32,
+    pub reconnect_attempts: u32,
+    pub reconnect_min_delay: Duration,
     /// Enable single peer connection mode
     pub single_peer_connection: bool,
 }
 
 #[derive(Debug)]
 pub enum EngineEvent {
+    ReconnectAttempt { attempt: u32, maximum: u32 },
     ParticipantUpdate {
         updates: Vec<proto::ParticipantInfo>,
     },
@@ -969,7 +972,8 @@ impl EngineInner {
         let mut resuming_emitted = false;
         let mut restarting_emitted = false;
 
-        for i in 1..=RECONNECT_ATTEMPTS {
+        let maximum = self.options.reconnect_attempts;
+        for i in 1..=maximum {
             let (is_closed, full_reconnect) = {
                 let running_handle = self.running_handle.read();
                 (running_handle.closed, running_handle.full_reconnect)
@@ -978,6 +982,8 @@ impl EngineInner {
             if is_closed {
                 return Err(EngineError::Connection("attempt canncelled, engine is closed".into()));
             }
+
+            let _ = self.engine_tx.send(EngineEvent::ReconnectAttempt { attempt: i, maximum });
 
             if full_reconnect {
                 if !restarting_emitted {
@@ -1072,7 +1078,8 @@ impl EngineInner {
             // this wait so the next attempt fires immediately; a close signals
             // close_notifier to break out of the loop early (the next iteration's
             // `is_closed` check then returns) instead of waiting out the backoff.
-            let backoff = reconnect_strategy::delay(i);
+            if i == maximum { break; }
+            let backoff = reconnect_strategy::delay(i).max(self.options.reconnect_min_delay);
             tokio::select! {
                 _ = tokio::time::sleep(backoff) => {}
                 _ = self.retry_now_notify.notified() => {
@@ -1085,7 +1092,7 @@ impl EngineInner {
         }
 
         Err(EngineError::Connection(
-            format!("failed to reconnect after {}", RECONNECT_ATTEMPTS).into(),
+            format!("failed to reconnect after {}", maximum).into(),
         ))
     }
 

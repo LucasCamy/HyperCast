@@ -1977,6 +1977,12 @@ impl SessionInner {
     }
 
     fn remove_track(&self, sender: RtpSender) -> EngineResult<()> {
+        // A failed full reconnect has already closed this transport. Cleanup
+        // still releases publications, but RemoveTrack on a closed native PC
+        // raises a C++ exception on Windows. There is no RTP left to remove.
+        if self.closed.load(Ordering::Acquire) {
+            return Ok(());
+        }
         if let Some(track) = sender.track() {
             let mut pending_tracks = self.pending_tracks.lock();
             pending_tracks.remove(&track.id());

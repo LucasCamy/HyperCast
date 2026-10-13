@@ -17,15 +17,21 @@ from tests.integration_desktop import owned_window
 ROOT=Path(__file__).resolve().parent.parent
 
 def main():
+    exhausted=os.environ.get('HYPERCAST_TEST_RECONNECT_EXHAUST')=='1'
     key,secret=rt.load_env(ROOT/'.tools/homelab.env');now=int(time.time());room='reconnect-'+uuid.uuid4().hex[:12]
     token=rt.sign({'iss':key,'sub':'hc-member-'+uuid.uuid4().hex,'nbf':now-5,'exp':now+300,
         'video':{'room':room,'roomJoin':True,'canPublish':True,'canSubscribe':True,'canPublishData':False,
                  'canPublishSources':['screen_share','screen_share_audio']}},secret)
-    loop=asyncio.new_event_loop();writers=set();blocked=False;ready=threading.Event();address=[]
+    loop=asyncio.new_event_loop();writers=set();blocked=False;refused=False;ready=threading.Event();address=[]
     async def serve(reader,writer):
+        nonlocal refused
         other=None
         try:
-            if blocked:return
+            # Refuse the first resume, exercising a full SDK restart next.
+            if blocked and (exhausted or not refused):
+                refused=True
+                return
+            while blocked: await asyncio.sleep(0.05)
             upstream,other=await asyncio.open_connection('192.168.15.19',8100)
             writers.update((writer,other))
             async def pipe(src,dst):
@@ -78,13 +84,26 @@ def main():
             def resume():
                 nonlocal blocked
                 blocked=False
-            loop.call_soon_threadsafe(resume)
-            assert child.wait(timeout=35)==0
+            if not exhausted: loop.call_soon_threadsafe(resume)
+            result=child.wait(timeout=35)
+            assert result==0,f'Publisher exited with {result} (0x{result & 0xffffffff:08x})'
         assert viewer.wait(timeout=15)==0
         viewer_output.close()
         diagnostics=Path(os.environ['LOCALAPPDATA'])/'HyperCast/diagnostics'
-        text=next(diagnostics.glob(f'gui-*-{child.pid}.log')).read_text(errors='replace')
+        text=next(diagnostics.glob(f'gui-*-{child.pid}.log')).read_text(encoding='utf-8',errors='replace')
         assert 'Reconnecting; publication retained' in text,'Did not exercise SDK reconnection'
+        attempts=list(map(int,re.findall(r'connection: Reconnect attempt (\d+)/3',text)))
+        assert attempts and max(attempts)<=3, 'Retry budget exceeded or no progress events'
+        if exhausted:
+            assert attempts==[1,2,3],f'Expected exactly three attempts, got {attempts}'
+            attempt_times=list(map(int,re.findall(r'(\d+) connection: Reconnect attempt \d/3',text)))
+            assert all(b-a>=1900 for a,b in zip(attempt_times,attempt_times[1:])), 'Retries were not spaced'
+            assert 'Reconnected; requesting keyframe' not in text, 'Unexpected recovery'
+            assert 'SDK disconnected' in text, 'Did not close after retry exhaustion'
+            assert 'session_end: Conexão encerrada após tentativa 3/3' in text, 'Failure status lost during teardown'
+            assert not re.search(r'unpublish_error:|audio_unpublish_error:',text), 'Duplicate teardown failed'
+            print('PASS: persistent outage closes after exactly three attempts')
+            return
         assert 'Reconnected; requesting keyframe' in text,'SDK did not reconnect'
         after=text.split('Reconnected; requesting keyframe',1)[1]
         before=text.split('Reconnecting; publication retained',1)[0]
@@ -93,7 +112,9 @@ def main():
         assert after_count>before_count+100,'Video did not resume after reconnect'
         assert not re.search(r'capture_error:|publication_error:|audio_error:|unpublish_error:|audio_unpublish_error:',text),'Pipeline failed during reconnect'
         assert 'Reconnecting; publication retained' not in after,'Repeated reconnect loop'
-        viewer_text=next(diagnostics.glob(f'gui-*-{viewer.pid}.log')).read_text(errors='replace')
+        viewer_text=next(diagnostics.glob(f'gui-*-{viewer.pid}.log')).read_text(encoding='utf-8',errors='replace')
+        assert 'Retained screen during participant interruption' in viewer_text,'Viewer discarded screen during restart'
+        assert 'Resumed retained screen' in viewer_text,'Retained screen did not resume'
         resumed_at=int(re.search(r'(\d+) connection: Reconnected',text)[1])
         snapshots=[(int(m[1]),int(m[2])) for m in re.finditer(r'(\d+) media: sent=\d+ received=(\d+)',viewer_text)]
         audio=[(int(m[1]),int(m[2])) for m in re.finditer(r'(\d+) audio_stats: sent=\d+ received=(\d+)',viewer_text)]

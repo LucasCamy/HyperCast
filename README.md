@@ -1,5 +1,9 @@
 # HyperCast
 
+Versão 0.5.2: botão **Entrar na sala** alinhado aos campos, até três
+tentativas de reconexão e último quadro preservado durante a recuperação.
+[Comportamento e testes](docs/reconnection.md).
+
 Versão 0.5.1: botão **Atualizar** verifica releases oficiais. A versão instalada
 baixa, verifica e instala a atualização; a portátil abre o download no
 navegador padrão. [Como usar e publicar versões](docs/updates.md).

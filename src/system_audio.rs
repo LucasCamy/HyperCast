@@ -131,8 +131,10 @@ impl SystemAudioPublisher {
         if let Some(worker) = self.thread.take() { let _ = worker.join(); }
         let sid=self.room.local_participant().track_publications().into_values()
             .find(|p|p.track().is_some_and(|t|t.rtc_track().id()==self.track_id)).map(|p|p.sid()).unwrap_or_else(||self.sid.clone());
-        if let Err(error) = runtime.block_on(self.room.local_participant().unpublish_track(&sid)) {
-            crate::diagnostics::write("audio_unpublish_error", &error.to_string(), "");
+        if self.room.connection_state() != ConnectionState::Disconnected {
+            if let Err(error) = runtime.block_on(self.room.local_participant().unpublish_track(&sid)) {
+                crate::diagnostics::write("audio_unpublish_error", &error.to_string(), "");
+            }
         }
         crate::diagnostics::write("audio", &format!("System audio stopped; {} PCM frames sent", self.frames.load(Ordering::Relaxed)), "");
     }

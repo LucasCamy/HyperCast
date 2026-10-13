@@ -260,6 +260,7 @@ pub enum RoomEvent {
     Disconnected {
         reason: DisconnectReason,
     },
+    ReconnectAttempt { attempt: u32, maximum: u32 },
     Reconnecting,
     Reconnected,
     DataChannelBufferedAmountLowThresholdChanged {
@@ -449,6 +450,10 @@ pub struct RoomOptions {
     pub encryption: Option<E2eeOptions>,
     pub rtc_config: RtcConfiguration,
     pub join_retries: u32,
+    /// Maximum attempts in one connection recovery episode.
+    pub reconnect_attempts: u32,
+    /// Minimum spacing between failed recovery attempts.
+    pub reconnect_min_delay: Duration,
     pub sdk_options: RoomSdkOptions,
     /// Enable single peer connection mode. When true, uses one RTCPeerConnection
     /// for both publishing and subscribing instead of two separate connections.
@@ -471,6 +476,8 @@ impl Default for RoomOptions {
             // Defaults; ice_servers is empty here and filled from the JoinResponse.
             rtc_config: RtcConfiguration::default(),
             join_retries: 3,
+            reconnect_attempts: crate::rtc_engine::RECONNECT_ATTEMPTS,
+            reconnect_min_delay: Duration::ZERO,
             sdk_options: RoomSdkOptions::default(),
             single_peer_connection: true,
             connect_timeout: SIGNAL_CONNECT_TIMEOUT,
@@ -590,6 +597,8 @@ impl Room {
                 rtc_config: options.rtc_config.clone(),
                 signal_options,
                 join_retries: options.join_retries,
+                reconnect_attempts: options.reconnect_attempts,
+                reconnect_min_delay: options.reconnect_min_delay,
                 single_peer_connection: options.single_peer_connection,
             },
             Some(e2ee_manager.clone()),
@@ -1071,6 +1080,9 @@ impl RoomSession {
                 self.handle_signal_resumed(reconnect_response, tx)
             }
             EngineEvent::Restarting(tx) => self.handle_restarting(tx),
+            EngineEvent::ReconnectAttempt { attempt, maximum } => {
+                self.dispatcher.dispatch(&RoomEvent::ReconnectAttempt { attempt, maximum });
+            }
             EngineEvent::Restarted(tx) => self.handle_restarted(tx),
             EngineEvent::SignalRestarted { join_response, tx } => {
                 self.handle_signal_restarted(join_response, tx)
@@ -1705,14 +1717,14 @@ impl RoomSession {
     }
 
     fn handle_restarting(self: &Arc<Self>, tx: oneshot::Sender<()>) {
+        // Notify before removing subscriptions so consumers can retain surfaces.
+        if self.update_connection_state(ConnectionState::Reconnecting) {
+            self.dispatcher.dispatch(&RoomEvent::Reconnecting);
+        }
         // Remove existing participants/subscriptions on full reconnect
         let participants = self.remote_participants.read().clone();
         for (_, participant) in participants.iter() {
             self.clone().handle_participant_disconnect(participant.clone());
-        }
-
-        if self.update_connection_state(ConnectionState::Reconnecting) {
-            self.dispatcher.dispatch(&RoomEvent::Reconnecting);
         }
 
         let _ = tx.send(());
@@ -2286,6 +2298,8 @@ impl RoomSession {
     /// A participant has disconnected
     /// Cleanup the participant and emit an event
     fn handle_participant_disconnect(self: Arc<Self>, remote_participant: RemoteParticipant) {
+        // Notify before unpublishing: consumers can distinguish departure from track stop.
+        self.dispatcher.dispatch(&RoomEvent::ParticipantDisconnected(remote_participant.clone()));
         for (sid, _) in remote_participant.track_publications() {
             remote_participant.unpublish_track(&sid);
         }
@@ -2303,8 +2317,6 @@ impl RoomSession {
         // Likewise fail any RPC calls still in flight to them; otherwise the caller waits out
         // its full response timeout and reports ResponseTimeout instead of a disconnect.
         self.rpc_client.handle_participant_disconnected(&remote_participant.identity());
-
-        self.dispatcher.dispatch(&RoomEvent::ParticipantDisconnected(remote_participant));
     }
 
     fn get_participant_by_sid(&self, sid: &ParticipantSid) -> Option<RemoteParticipant> {
