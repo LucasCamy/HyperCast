@@ -97,7 +97,6 @@ struct Cast {
     count: u64,
     paused: bool,
     fps: u32,
-    codec: Codec,
 }
 struct Sink {
     owner: String,
@@ -109,47 +108,52 @@ impl Sink {
     }
 }
 impl Cast {
-    fn new(adapter: u32, output: u32, codec: Codec) -> Result<Self> {
+    fn new(
+        adapter: u32,
+        output: u32,
+        codec: Codec,
+        runtime: &tokio::runtime::Runtime,
+        room: &Arc<Room>,
+    ) -> Result<Self> {
+        let capture = ScreenCapture::new(CaptureConfig {
+            adapter_index: adapter,
+            output_index: output,
+        })?;
+        let display = crate::screen_capture::displays()?
+            .into_iter()
+            .find(|display| display.adapter_index == adapter && display.output_index == output)
+            .ok_or_else(|| anyhow::anyhow!("Selected display is no longer attached"))?;
+        let encoder = HardwareEncoder::new(
+            capture.device(),
+            display.width,
+            display.height,
+            120,
+            40_000_000,
+            codec,
+        )?;
+        // No Desktop Duplication frame is held while waiting for publication acknowledgment.
+        let publisher = runtime.block_on(EncodedPublisher::in_room(
+            room.clone(),
+            display.width,
+            display.height,
+            120,
+            40_000_000,
+            codec == Codec::Av1,
+        ))?;
         Ok(Self {
-            capture: ScreenCapture::new(CaptureConfig {
-                adapter_index: adapter,
-                output_index: output,
-            })?,
-            encoder: None,
-            publisher: None,
+            capture,
+            encoder: Some(encoder),
+            publisher: Some(publisher),
             start: Instant::now(),
             count: 0,
             paused: false,
             fps: 120,
-            codec,
         })
     }
-    fn tick(&mut self, runtime: &tokio::runtime::Runtime, room: &Arc<Room>) -> Result<()> {
-        let device = self.capture.device().clone();
+    fn tick(&mut self, _runtime: &tokio::runtime::Runtime, _room: &Arc<Room>) -> Result<()> {
         let frame = self.capture.acquire()?;
-        if let Some(frame) = &frame {
-            if self.encoder.is_none() {
-                let mut desc = Default::default();
-                unsafe {
-                    frame.texture().GetDesc(&mut desc);
-                }
-                self.encoder = Some(HardwareEncoder::new(
-                    &device,
-                    desc.Width,
-                    desc.Height,
-                    120,
-                    40_000_000,
-                    self.codec,
-                )?);
-                self.publisher = Some(runtime.block_on(EncodedPublisher::in_room(
-                    room.clone(),
-                    desc.Width,
-                    desc.Height,
-                    120,
-                    40_000_000,
-                    self.codec == Codec::Av1,
-                ))?);
-            }
+        if self.count == 0 && frame.is_none() {
+            return Ok(());
         }
         if let (Some(encoder), Some(publisher)) = (&mut self.encoder, &mut self.publisher) {
             let mut key = self.count == 0 || publisher.take_keyframe_request();
@@ -300,15 +304,17 @@ impl Engine {
                                 adapter,
                                 output,
                                 codec,
-                            } if cast.is_none() => match Cast::new(adapter, output, codec) {
-                                Ok(value) => {
-                                    cast = Some(value);
-                                    let mut state = state.lock().unwrap();
-                                    state.publishing = true;
-                                    state.status = "Preparando compartilhamento…".into();
+                            } if cast.is_none() => {
+                                match Cast::new(adapter, output, codec, &runtime, &room) {
+                                    Ok(value) => {
+                                        cast = Some(value);
+                                        let mut state = state.lock().unwrap();
+                                        state.publishing = true;
+                                        state.status = "Preparando compartilhamento…".into();
+                                    }
+                                    Err(error) => state.lock().unwrap().status = error.to_string(),
                                 }
-                                Err(error) => state.lock().unwrap().status = error.to_string(),
-                            },
+                            }
                             Command::StopShare => {
                                 if let Some(value) = cast.take() {
                                     value.stop(&runtime);

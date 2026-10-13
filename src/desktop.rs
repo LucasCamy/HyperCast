@@ -240,6 +240,10 @@ impl eframe::App for App {
                 self.rendered, self.error
             );
             println!("GUI publisher: {sent} sent");
+            println!(
+                "GUI status: connected={connected}, can_publish={can_publish}; {}",
+                status.replace(&self.token, "[token]")
+            );
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 

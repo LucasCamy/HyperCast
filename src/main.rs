@@ -131,7 +131,25 @@ fn main() -> Result<()> {
     #[cfg(feature = "nvenc")]
     let device = capture.device().clone();
     #[cfg(feature = "nvenc")]
-    let mut encoder = None;
+    let display = hypercast::screen_capture::displays()?
+        .into_iter()
+        .find(|display| {
+            display.adapter_index == args.adapter && display.output_index == args.output
+        })
+        .ok_or_else(|| anyhow::anyhow!("Selected display is no longer attached"))?;
+    #[cfg(feature = "nvenc")]
+    let mut encoder = if args.encode {
+        Some(hypercast::encoder::HardwareEncoder::new(
+            &device,
+            display.width,
+            display.height,
+            args.fps,
+            args.bitrate,
+            args.codec,
+        )?)
+    } else {
+        None
+    };
     #[cfg(feature = "nvenc")]
     let mut dump = args
         .dump
@@ -146,7 +164,19 @@ fn main() -> Result<()> {
     #[cfg(feature = "nvenc")]
     let (mut encoded_frames, mut encoded_bytes, mut encode_timings) = (0u64, 0u64, Vec::new());
     #[cfg(all(feature = "nvenc", feature = "livekit-network"))]
-    let mut publisher: Option<hypercast::network::EncodedPublisher> = None;
+    let mut publisher = if let Some(address) = &args.publish_url {
+        Some(runtime.block_on(hypercast::network::EncodedPublisher::open(
+            address,
+            &hypercast::network::token_from_env()?,
+            display.width,
+            display.height,
+            args.fps,
+            args.bitrate,
+            matches!(args.codec, hypercast::encoder::Codec::Av1),
+        ))?)
+    } else {
+        None
+    };
     #[cfg(all(feature = "nvenc", feature = "livekit-network"))]
     let mut network_paused = false;
     let start = Instant::now();
@@ -168,32 +198,12 @@ fn main() -> Result<()> {
             if frame.info.LastPresentTime != 0 {
                 updates += 1;
             }
-            #[cfg(feature = "nvenc")]
-            if args.encode && encoder.is_none() {
-                encoder = Some(hypercast::encoder::HardwareEncoder::new(
-                    &device,
-                    desc.Width,
-                    desc.Height,
-                    args.fps,
-                    args.bitrate,
-                    args.codec,
-                )?);
-                #[cfg(feature = "livekit-network")]
-                if let Some(address) = &args.publish_url {
-                    publisher =
-                        Some(runtime.block_on(hypercast::network::EncodedPublisher::open(
-                            address,
-                            &hypercast::network::token_from_env()?,
-                            desc.Width,
-                            desc.Height,
-                            args.fps,
-                            args.bitrate,
-                            matches!(args.codec, hypercast::encoder::Codec::Av1),
-                        ))?);
-                }
-            }
         } else {
             idle += 1;
+        }
+        #[cfg(feature = "nvenc")]
+        if args.encode && encoded_frames == 0 && frame.is_none() {
+            continue;
         }
         #[cfg(feature = "nvenc")]
         if let Some(encoder) = &mut encoder {
@@ -277,6 +287,9 @@ fn main() -> Result<()> {
     println!("DXGI emits updates only; static desktops do not generate 120 new images/s.");
     #[cfg(feature = "nvenc")]
     if encoded_frames > 0 {
+        println!(
+            "NVENC measurement excludes encoder/room setup; includes pauses and congestion adaptation."
+        );
         encode_timings.sort_by(f64::total_cmp);
         println!(
             "NVENC: {} frames, {:.2} FPS, {:.2} Mbps, copy+encode p95 {:.3} ms",
