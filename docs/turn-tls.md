@@ -13,6 +13,9 @@ válido até 11/01/2027. Arquivos ficam em /etc/letsencrypt/live/hypercast-turn/
 Credential INI guardada root:root, modo 0600, para renovação; valor não é
 versionado. O timer certbot.timer está ativo. A conta ACME foi criada sem e-mail;
 um contato pode ser associado posteriormente para avisos operacionais.
+O teste `certbot renew --cert-name hypercast-turn --dry-run` passou com DNS-01,
+sem substituir o certificado de produção. No teste foi desabilitada apenas a
+espera aleatória anterior à renovação; o timer normal mantém sua programação.
 
 O coturn ainda não está implantado, o SFU não anuncia TURN externo e TCP 5349
 não tem listener. A renovação do certificado deverá incluir atualização do
