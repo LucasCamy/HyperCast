@@ -5,7 +5,7 @@ if (-not $hcTest.StartsWith([IO.Path]::GetFullPath($hcRoot) + [IO.Path]::Directo
 $hcRegistry = 'HKCU:/Software/Microsoft/Windows/CurrentVersion/Uninstall/{34FA3F08-63D0-4A64-9E61-F79E7078B39D}_is1'
 if (Test-Path $hcRegistry) { throw 'Existing HyperCast installation found; do not overwrite it for a test' }
 if (Get-Process hypercast -ErrorAction SilentlyContinue) { throw 'Close HyperCast before testing its installer' }
-$hcInstaller = "$hcRoot/dist/HyperCast-0.3.1-windows-x64-setup.exe"
+$hcInstaller = "$hcRoot/dist/HyperCast-0.3.2-windows-x64-setup.exe"
 $hcProcess = Start-Process -FilePath $hcInstaller -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/DIR=`"$hcTest`"","/LOG=`"$hcRoot/.tools/install.log`"") -WindowStyle Hidden -Wait -PassThru
 if ($hcProcess.ExitCode -ne 0) { throw "Installer failed ($($hcProcess.ExitCode))" }
 $hcPreviousExe = $env:HYPERCAST_TEST_EXE

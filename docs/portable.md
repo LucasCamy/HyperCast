@@ -1,5 +1,9 @@
 # HyperCast para Windows
 
+Na versão 0.3.2, o volume recebido usa barra visível com preenchimento,
+marcador circular e porcentagem ao lado do rótulo. Arraste o marcador ou use
+as setas com o controle focado; o silenciamento continua preservando o volume.
+
 Na versão 0.3.1, monitor e formato ficam na faixa acima das telas. Abra a seleção
 de monitor para ver as opções com resolução; escolha HEVC/H.265 ou AV1 nos
 botões ao lado. Essas opções ficam bloqueadas durante a transmissão: pare para

@@ -1,5 +1,15 @@
 # Validação — 12 e 13/10/2026
 
+## Controle de volume — 0.3.2, 13/10/2026
+
+A rail do slider herdava o mesmo `inactive.bg_fill` da lateral e desaparecia
+no fundo. O estilo agora é aplicado somente ao controle de volume: rail
+contrastante, preenchimento verde e marcador circular. Porcentagem em label
+separado substitui o campo numérico; label de acessibilidade é associado ao
+slider nativo. `send_layout` e a semântica de silenciamento permanecem iguais.
+Build desktop passou e a janela conectada real foi inspecionada visualmente
+com 80%. Não foram repetidas integrações de rede para esta alteração visual.
+
 ## Layout desktop — 0.3.1, 13/10/2026
 
 UI/UX Pro Max aplicada ao cliente egui; padrões de seleção de tela e controles

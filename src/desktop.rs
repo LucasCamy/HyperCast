@@ -493,7 +493,25 @@ impl eframe::App for App {
                         ui.add_space(12.0);
                         section_title(ui, "ÁUDIO RECEBIDO", "");
                         if ui.checkbox(&mut self.sound_muted, "Silenciar áudio recebido").changed() { self.send_layout(); }
-                        if ui.add(egui::Slider::new(&mut self.volume, 0..=100).text("Volume")).changed() { self.send_layout(); }
+                        let volume_label = ui.horizontal(|ui| {
+                            let label = ui.label(RichText::new("Volume").size(13.0).color(TEXT));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(RichText::new(format!("{}%", self.volume)).size(13.0).color(ACCENT));
+                            });
+                            label.id
+                        }).inner;
+                        let changed = ui.scope(|ui| {
+                            ui.spacing_mut().slider_width = ui.available_width();
+                            ui.spacing_mut().slider_rail_height = 6.0;
+                            // The global inactive fill matches the sidebar, hiding the rail.
+                            ui.visuals_mut().widgets.inactive.bg_fill = Color32::from_rgb(65, 78, 73);
+                            ui.visuals_mut().widgets.inactive.fg_stroke = egui::Stroke::new(1.5, ACCENT);
+                            ui.visuals_mut().selection.bg_fill = ACCENT;
+                            ui.add(egui::Slider::new(&mut self.volume, 0..=100).show_value(false)
+                                .trailing_fill(true).handle_shape(egui::style::HandleShape::Circle))
+                                .labelled_by(volume_label).changed()
+                        }).inner;
+                        if changed { self.send_layout(); }
                         ui.label(RichText::new(if self.mode == ViewMode::Grid { "Som das telas visíveis" } else { "Som da tela em destaque" }).size(11.0).color(MUTED));
                         ui.add_space(16.0);
                         ui.label(RichText::new(&status).size(12.0).color(MUTED));
