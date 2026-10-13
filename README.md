@@ -6,6 +6,8 @@ Aplicativo nativo Windows para compartilhar telas por SFU LiveKit centralizado. 
 
 AV1 e HEVC, apresentação GPU, três publicadores e Grid/Destaque foram exercitados em 1920×1080. **1440p@120 estáveis e latência fim a fim <100 ms são metas ainda não comprovadas.** Veja [validação](docs/validation.md).
 
+Uma amostra AV1 na RTX 4080 confirmou codificação 2560×1440 a 120,05 FPS médios durante 30 s e recepção QHD em D3D11VA. O desktop teve apenas 87 atualizações distintas; estabilidade com movimento contínuo, FPS efetivo do receptor e latência fim a fim ainda exigem medição.
+
 ## Usar o aplicativo
 
 Abra `hypercast.exe` do ZIP ou instale a versão por usuário. Os pacotes incluem bibliotecas de mídia: o usuário não precisa instalar Rust, Python, FFmpeg ou Visual C++ Redistributable. Precisam de Windows 10 2004+ x64 e driver gráfico compatível. Publicação usa NVIDIA NVENC, driver 610+; AMF não está implementado.

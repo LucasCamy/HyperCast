@@ -68,8 +68,31 @@ O teste público revelou ausência do feature TLS no cliente: habilitado native-
 
 Doze testes Python passaram, incluindo renderização Kubernetes e seleção explícita de ambiente do operador. Quatro testes Rust passaram após incluir classificação de rota ICE. Diagnóstico agora mostra protocolo, classe da rota remota e RTT de rede sem imprimir endereços/credenciais ICE; RTT não é latência fim a fim. Instalador TLS passou instalação, GPU e remoção; ZIP TLS passou WSS contra o SFU remoto. O pacote inclui Test-Streaming.ps1 para o PC QHD, com entrada oculta de JWT e logs sem gravação de vídeo.
 
-O proprietário informou outro PC com RTX 4080, driver 32.0.16.1714 e monitor 2560×1440 a 239 Hz. Teste nesse PC ainda não executado. A Radeon integrada está sem monitor ativo; isso ainda não valida captura/encode AMF.
+O proprietário informou outro PC com RTX 4080, driver 32.0.16.1714 e monitor 2560×1440 a 239 Hz. O primeiro teste QHD nesse PC está registrado abaixo. A Radeon integrada está sem monitor ativo; isso ainda não valida captura/encode AMF.
 
 Após o proprietário encaminhar as portas, TCP 8101 público respondeu e mídia AV1/HEVC passou por UDP público: 658/653 quadros D3D11, pausa respeitada, RTT de rede de 1–3 ms. A rota local ao WAN foi Ethernet. Nenhuma sala estava ativa; retiramos temporariamente os candidatos internos para forçar a rota pública, verificamos `remote non-private` tanto no publicador quanto no espectador e restauramos a configuração ao final. Pod voltou a 1/1 Running e HTTP 200. RTT de rede não mede latência de captura/encode/filas/decode/apresentação.
 
 Preparação do diagnóstico QHD: encoder e publicação agora são inicializados antes de adquirir o primeiro frame DXGI, tanto no CLI quanto na interface. Isso evita reter uma textura emprestada enquanto a rede confirma a publicação. A janela medida pelo CLI começa após preparação; continua incluindo pausas/adaptação por congestionamento. Regressão AV1/WSS passou e GUI publicar/parar/republicar recebeu 1.110 quadros D3D11 na repetição. Um primeiro smoke GUI terminou sem publicar; a repetição passou, e o diagnóstico foi ampliado para incluir estado de conexão/permissão com token redigido. Investigar inicialização fria caso volte a ocorrer.
+
+## Primeira amostra QHD na RTX 4080 — 13/10/2026
+
+Logs fornecidos pelo proprietário no ZIP de diagnóstico; hardware.json confirma RTX 4080, driver 32.0.16.1714 e monitor 2560×1440 a 239 Hz. O identificador da faixa coincide com o stream.log do receptor. Os arquivos brutos permanecem privados, fora do Git.
+
+| Medição | Resultado |
+|---|---|
+| Captura / alvo | 2560×1440 / 120 Hz |
+| Intervalo de publicação medido | 30,00 s, após preparação |
+| Quadros codificados / média | 3.602 / 120,05 FPS |
+| Desktop atualizado / polls sem atualização | 87 / 3.515 |
+| AcquireNextFrame p50 / p95 / p99 | 0,042 / 0,066 / 0,090 ms |
+| Cópia GPU + NVENC p95 | 1,916 ms |
+| Bitrate codificado médio | 17,91 Mbps |
+| Outbound WebRTC | 58.490 pacotes, 66.884.690 bytes, 3.593 frames sent |
+| Receptor | 2.394 quadros, todos texturas D3D11, 2560×1440, AV1 |
+| Rota do receptor | UDP, candidato remoto privado, RTT de rede 37 ms |
+
+O SFU registra publicação da faixa às 09:20:47,632 e fechamento do receptor às 09:21:07,929 (America/Cuiaba). O receptor iniciou sua sessão antes do publicador e encerrou seu teste cerca de dez segundos antes do fim da publicação. Houve aproximadamente 20,30 s de sobreposição após publicação; esse intervalo não é a janela exata entre primeiro e último quadro decodificado. Portanto, dividir 2.394 pelos 30 s da sessão não mede FPS do receptor, e a diferença entre contagens dos dois lados não comprova perda de quadros. O log atual não mede essa janela ativa.
+
+A amostra comprova encode QHD a aproximadamente 120 FPS médios e decode QHD por GPU, com conteúdo predominantemente estático (87 atualizações distintas em 30 s). Não comprova 120 atualizações distintas/s, jitter/estabilidade em movimento intenso, apresentação física a 120 Hz ou latência fim a fim abaixo de 100 ms. O RTT 0 ms do publicador também não comprova latência zero; esse contador pode ter precisão/dados insuficientes. Esta amostra usou rota privada no receptor; a validação pública anterior de AV1/HEVC foi feita em 1080p.
+
+Próxima amostra: receptor por 120 s, iniciado primeiro; publicador por 60 s, com movimento contínuo. Registrar janela de chegada dos quadros, intervalos/jitter e apresentação; confirmar caminho público quando o objetivo for WAN. Medir captura até apresentação separadamente do RTT de rede.
