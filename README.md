@@ -1,6 +1,6 @@
 # HyperCast
 
-Base incremental de compartilhamento de tela nativo Windows com SFU LiveKit centralizado. Infraestrutura, captura DXGI, encoder NVENC HEVC/AV1 e publicação pré-codificada estão implementados. A publicação AV1 foi exercitada contra o SFU local. Recepção/renderização e UI ainda não estão implementadas. 2560×1440 a 120 FPS e latência fim a fim <100 ms continuam sendo metas, não resultados comprovados.
+Base incremental de compartilhamento de tela nativo Windows com SFU LiveKit centralizado. Infraestrutura, captura DXGI, encoder NVENC HEVC/AV1, publicação pré-codificada e subscrição seletiva estão implementados. AV1 foi exercitado do publicador até um espectador com frames decodificados. O receptor atual é um diagnóstico sem janela; renderização D3D11 e UI ainda não estão implementadas. 2560×1440 a 120 FPS e latência fim a fim <100 ms continuam sendo metas, não resultados comprovados.
 
 ## Infraestrutura
 
@@ -44,7 +44,7 @@ Todos os emissores devem usar este mesmo banco local; não replique o emissor co
 
 **Limitação da etapa:** isto limita participantes autorizados a publicar, não o número de faixas de um cliente modificado. O LiveKit padrão não fornece quota rígida de faixas por sala em YAML. `limit.num_tracks`/`bytes_per_sec` são limites de alocação do nó e não resolvem esse requisito. Antes de disponibilizar a publicação no passo 3, implementar admissão síncrona no SFU para contar faixas ativas e pendentes e rejeitar a quarta, ou uma integração de publicação cuja fronteira de confiança imponha uma faixa por identidade. Webhook que remove uma faixa depois da publicação não equivale à rejeição antecipada.
 
-`src/subscription.rs` contém somente a política Grid/Destaque: invisível → pausar, principal → completa, secundária → miniatura. A aplicação dessa política às subscrições LiveKit será feita no passo 4. O SFU não transcodifica: miniaturas com bitrate reduzido exigem camadas AV1 SVC, simulcast ou outro fluxo produzido pelo encoder. Reduzir apenas a renderização não reduz rede/decodificação. HEVC de camada única não fornece automaticamente miniaturas baratas.
+`src/subscription.rs` define a política Grid/Destaque, aplicada às publicações remotas por `src/receiver.rs`: invisível → desabilitar e cancelar subscrição, principal → completa, secundária → camada baixa quando a publicação sinaliza simulcast. Sem camadas reduzidas, a secundária é pausada. O receptor seleciona somente fontes de compartilhamento de tela e limita a três subscrições. O SFU não transcodifica: miniaturas com bitrate reduzido exigem camadas AV1 SVC, simulcast ou outro fluxo produzido pelo encoder. Reduzir apenas a renderização não reduz rede/decodificação. O encoder atual publica uma camada única.
 
 ## Captura DXGI
 
@@ -93,6 +93,31 @@ O SDK opera com `auto_subscribe=false`. Foram usados dois transportes WebRTC por
 
 Para apenas testar entrada na sala, use um token de espectador e `--connect-url ws://127.0.0.1:8100 --seconds 5`. Essa opção não subscreve nem renderiza vídeo.
 
+## Recepção seletiva sem janela
+
+Em outro terminal, com o publicador ativo e um token de espectador:
+
+```powershell
+$env:HYPERCAST_ROOM_TOKEN = python tools/room_token.py --room amigos --name Espectador --role viewer
+try {
+    ./target/x86_64-pc-windows-msvc/debug/hypercast.exe --receive-url ws://127.0.0.1:8100 --view-mode spotlight --focus hc-screen-1 --seconds 30
+} finally {
+    Remove-Item Env:HYPERCAST_ROOM_TOKEN
+}
+```
+
+`--view-mode grid` seleciona até três telas. No Destaque, `--focus` usa a identidade da vaga de publicação; sem esse argumento, a primeira identidade ordenada é escolhida. `--pause-after 6` permite exercitar a pausa global e o cancelamento de subscrições após seis segundos. As opções de layout ainda são fixas durante uma execução; a futura UI precisará fornecer controles de troca de foco.
+
+O diagnóstico usa o decode do SDK e um sink com fila de um frame, descartando os mais antigos quando necessário. Ativa zero playout delay antes de inicializar o runtime. Conta frames e dimensões sem convertê-los para I420/RGBA. Isso não comprova D3D11VA/NVDEC nem entrega uma textura pronta para swapchain: a ponte para decode/render GPU e a visualização ainda precisam ser implementadas. A execução termina com erro se nenhuma tela tiver sido recebida no intervalo.
+
+Teste automático local do caminho AV1 e da pausa, exigindo NVIDIA/DXGI/SFU:
+
+```powershell
+python -m tests.integration_media
+```
+
+O teste usa tokens temporários nos ambientes dos subprocessos, cria uma sala exclusiva e não grava o conteúdo da tela em arquivo.
+
 `--dump caminho.hevc` ou `--dump caminho.obu` salva o stream local comprimido para diagnóstico; exige `--encode` e recusa sobrescrever arquivo existente. Essas gravações podem conter a tela compartilhada. FFmpeg foi usado somente para verificar a decodificação dos arquivos, não como caminho de captura/encode do aplicativo.
 
 ## Verificação
@@ -108,7 +133,13 @@ O segundo comando exige SFU em loopback na porta 8100. Verifica autenticação a
 
 1. Admissão rígida de faixas no SFU, pool GPU assíncrono limitado, implementação AMF e recuperação de dispositivo/reconexão.
 2. Validar publicação HEVC sobre WebRTC (o encode HEVC local já foi validado), múltiplos publicadores, perda/jitter, camadas reduzidas e captura 1440p@120 real.
-3. Subscrição seletiva real, decodificação GPU e swapchain D3D11 flip-discard. UI leve com egui sobre integração nativa de apresentação; não transferir frames via WebView/CPU.
+3. Ponte de decodificação GPU, swapchain D3D11 flip-discard e controles de layout/foco. UI leve com egui sobre integração nativa de apresentação; não transferir frames via WebView/CPU.
 4. Instalador autônomo com DLLs necessárias, checagem de GPU/codec, desinstalação e assinatura. O usuário final não precisará de Rust nem Visual Studio.
 
 Referências: [configuração LiveKit](https://github.com/livekit/livekit/blob/v1.13.9/config-sample.yaml), [publicação pré-codificada](https://docs.livekit.io/transport/media/pre-encoded/), [Desktop Duplication](https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/desktop-dup-api), [análise do homelab](docs/homelab.md).
+
+## Versionamento e CI
+
+Repositório: [LucasCamy/HyperCast](https://github.com/LucasCamy/HyperCast), branch `main`. `.env`, tokens, banco de admissão, toolchain local, artefatos compilados e logs ficam fora do Git. `Cargo.lock`, fontes e header NVENC com licença original são versionados. O helper MSVC usa Rust local em `.tools` quando disponível ou o `cargo` instalado no PATH em um clone novo.
+
+O workflow `CI` verifica formatação e build/test nativo no Windows, além dos testes Python e da autenticação contra um SFU temporário no Linux. Os testes de captura/encode/decode que exigem GPU permanecem locais; runners hospedados não substituem o hardware alvo.

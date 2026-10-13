@@ -29,7 +29,7 @@ fn validate_url(address: &str) -> Result<()> {
     Ok(())
 }
 
-async fn connect(
+pub(crate) async fn connect(
     address: &str,
     token: &str,
 ) -> Result<(Room, tokio::sync::mpsc::UnboundedReceiver<RoomEvent>)> {

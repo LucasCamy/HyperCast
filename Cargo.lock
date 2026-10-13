@@ -873,6 +873,7 @@ dependencies = [
  "clap",
  "livekit",
  "tokio",
+ "tokio-stream",
  "url",
  "windows",
 ]

@@ -1,0 +1,46 @@
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt
+      - name: Select Rust
+        run: rustup override set 1.99.0
+      - name: Formatting
+        run: cargo fmt --check
+      - name: Native build and tests (no GPU required)
+        shell: pwsh
+        run: ./tools/cargo-native.ps1 test --locked --features 'nvenc,livekit-network'
+  server:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Admission unit tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Generate ephemeral CI credentials
+        run: python3 tools/init_env.py
+      - name: Start local SFU
+        run: docker compose up -d
+      - name: Wait for HTTP
+        run: curl --retry 20 --retry-connrefused --retry-delay 1 --fail http://127.0.0.1:8100/
+      - name: JWT integration tests
+        run: python3 -m tests.integration_tokens
+      - name: Stop SFU
+        if: always()
+        run: docker compose down

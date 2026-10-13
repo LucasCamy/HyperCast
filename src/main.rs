@@ -2,13 +2,25 @@ use anyhow::Result;
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(about = "HyperCast: local GPU capture diagnostic (steps 1/2)")]
+#[command(about = "HyperCast: GPU capture, NVENC publishing and selective receive diagnostics")]
 struct Args {
     #[arg(long)]
     list: bool,
     #[cfg(feature = "livekit-network")]
     #[arg(long)]
     connect_url: Option<String>,
+    #[cfg(feature = "livekit-network")]
+    #[arg(long, conflicts_with = "connect_url")]
+    receive_url: Option<String>,
+    #[cfg(feature = "livekit-network")]
+    #[arg(long, value_enum, default_value = "spotlight")]
+    view_mode: hypercast::subscription::ViewMode,
+    #[cfg(feature = "livekit-network")]
+    #[arg(long, requires = "receive_url")]
+    focus: Option<String>,
+    #[cfg(feature = "livekit-network")]
+    #[arg(long, requires = "receive_url", value_parser = clap::value_parser!(u32).range(1..=3600))]
+    pause_after: Option<u32>,
     #[cfg(all(windows, feature = "nvenc"))]
     #[arg(long)]
     encode: bool,
@@ -22,7 +34,7 @@ struct Args {
     #[arg(long, requires = "encode")]
     dump: Option<std::path::PathBuf>,
     #[cfg(all(windows, feature = "nvenc", feature = "livekit-network"))]
-    #[arg(long, requires = "encode", conflicts_with = "connect_url")]
+    #[arg(long, requires = "encode", conflicts_with_all = ["connect_url", "receive_url"])]
     publish_url: Option<String>,
     #[arg(long, default_value_t = 0)]
     adapter: u32,
@@ -44,6 +56,26 @@ fn main() -> Result<()> {
     let args = Args::parse();
     #[cfg(feature = "livekit-network")]
     let runtime = tokio::runtime::Runtime::new()?;
+    #[cfg(feature = "livekit-network")]
+    if let Some(address) = &args.receive_url {
+        let frames = runtime.block_on(hypercast::receiver::receive(
+            address,
+            &hypercast::network::token_from_env()?,
+            hypercast::receiver::ReceiveOptions {
+                mode: args.view_mode,
+                focus_identity: args.focus,
+                pause_after: args
+                    .pause_after
+                    .map(|seconds| Duration::from_secs(seconds as u64)),
+                duration: Duration::from_secs(args.seconds as u64),
+            },
+        ))?;
+        anyhow::ensure!(
+            frames > 0,
+            "No screen frames received during the diagnostic window"
+        );
+        return Ok(());
+    }
     #[cfg(feature = "livekit-network")]
     if let Some(address) = &args.connect_url {
         return runtime.block_on(hypercast::network::diagnostic(

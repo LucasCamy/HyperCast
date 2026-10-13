@@ -1,8 +1,22 @@
-/// Policy only: the LiveKit adapter and UI are step 3/4 work.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// UI-independent layout policy used by the native LiveKit receiver.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum ViewMode {
     Grid,
     Spotlight,
+}
+
+/// A single-layer track cannot supply a cheap thumbnail. Pause it rather than
+/// silently downloading/decoding another full-resolution stream in Spotlight.
+pub fn delivery_demand(
+    mode: ViewMode,
+    visible: bool,
+    focused: bool,
+    reduced_layer: bool,
+) -> Demand {
+    match demand(mode, visible, focused) {
+        Demand::Thumbnail if !reduced_layer => Demand::Paused,
+        value => value,
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Demand {
@@ -33,5 +47,24 @@ mod tests {
         }
         assert_eq!(demand(ViewMode::Spotlight, true, false), Demand::Thumbnail);
         assert_eq!(demand(ViewMode::Spotlight, true, true), Demand::Full);
+    }
+    #[test]
+    fn spotlight_only_requests_thumbnails_when_layers_exist() {
+        assert_eq!(
+            delivery_demand(ViewMode::Spotlight, true, false, false),
+            Demand::Paused
+        );
+        assert_eq!(
+            delivery_demand(ViewMode::Spotlight, true, false, true),
+            Demand::Thumbnail
+        );
+        assert_eq!(
+            delivery_demand(ViewMode::Spotlight, true, true, false),
+            Demand::Full
+        );
+        assert_eq!(
+            delivery_demand(ViewMode::Grid, true, false, false),
+            Demand::Grid
+        );
     }
 }
