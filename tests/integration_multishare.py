@@ -23,7 +23,7 @@ def main():
             log = open(ROOT/f".tools/multi-publisher-{index+1}.log","wb")
             logs.append(log)
             publishers.append(subprocess.Popen([str(exe),"--encode","--codec","av1","--publish-url","ws://127.0.0.1:8100","--seconds","25"],
-                cwd=ROOT,env={**os.environ,"HYPERCAST_ROOM_TOKEN":token},stdout=log,stderr=subprocess.STDOUT))
+                cwd=ROOT,env={**os.environ,"HYPERCAST_URL":os.environ.get("HYPERCAST_TEST_URL","ws://127.0.0.1:8100"),"HYPERCAST_ROOM_TOKEN":token},stdout=log,stderr=subprocess.STDOUT))
         try:
             rt.issue(room,"Fourth","publisher",key,secret,ROOT/"infra/admission.sqlite3")
         except RuntimeError:
@@ -32,7 +32,7 @@ def main():
             raise AssertionError("Fourth publisher admitted")
         token = rt.issue(room,"Viewer","viewer",key,secret,ROOT/"infra/admission.sqlite3")
         gui = subprocess.Popen([str(exe),"--gui"],cwd=ROOT,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
-            env={**os.environ,"HYPERCAST_ROOM_TOKEN":token,"HYPERCAST_AUTO_CONNECT":"1","HYPERCAST_VIEW_MODE":"grid",
+            env={**os.environ,"HYPERCAST_URL":os.environ.get("HYPERCAST_TEST_URL","ws://127.0.0.1:8100"),"HYPERCAST_ROOM_TOKEN":token,"HYPERCAST_AUTO_CONNECT":"1","HYPERCAST_VIEW_MODE":"grid",
                  "HYPERCAST_SMOKE_LAYOUTS":"1","HYPERCAST_SMOKE_SECONDS":"16"})
         time.sleep(3)
         screenshot(gui.pid,ROOT/".tools/layout-grid.png")

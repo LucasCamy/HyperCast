@@ -22,6 +22,10 @@ struct App {
     engine: Option<Engine>,
     address: String,
     token: String,
+    invite: String,
+    name: String,
+    client_id: String,
+    token_mode: bool,
     mode: ViewMode,
     focus: Option<String>,
     paused: bool,
@@ -32,6 +36,7 @@ struct App {
     presenters: HashMap<String, Presenter>,
     error: String,
     auto_connect: bool,
+    relay_only: bool,
     started: Instant,
     smoke_seconds: Option<u64>,
     rendered: u64,
@@ -70,8 +75,12 @@ impl App {
         Self {
             engine: None,
             address: std::env::var("HYPERCAST_URL")
-                .unwrap_or_else(|_| "ws://127.0.0.1:8100".into()),
+                .unwrap_or_else(|_| "wss://hypercast.cloudlane.com.br".into()),
             token: std::env::var("HYPERCAST_ROOM_TOKEN").unwrap_or_default(),
+            invite: std::env::var("HYPERCAST_INVITE").unwrap_or_default(),
+            name: std::env::var("HYPERCAST_NAME").unwrap_or_default(),
+            client_id: crate::invitation::client_id(),
+            token_mode: std::env::var("HYPERCAST_ROOM_TOKEN").is_ok(),
             mode: if std::env::var("HYPERCAST_VIEW_MODE").as_deref() == Ok("grid") {
                 ViewMode::Grid
             } else {
@@ -90,6 +99,7 @@ impl App {
             presenters: HashMap::new(),
             error: String::new(),
             auto_connect: std::env::var("HYPERCAST_AUTO_CONNECT").as_deref() == Ok("1"),
+            relay_only: std::env::var("HYPERCAST_RELAY_ONLY").as_deref() == Ok("1"),
             started: Instant::now(),
             smoke_seconds: std::env::var("HYPERCAST_SMOKE_SECONDS")
                 .ok()
@@ -109,6 +119,13 @@ impl App {
                 focus: self.focus.clone(),
                 paused: self.paused,
             }));
+        }
+    }
+    fn join_room(&self, ctx: egui::Context) -> Engine {
+        if self.token_mode {
+            Engine::connect(self.address.trim().to_owned(), self.token.trim().to_owned(), ctx, self.parent, self.relay_only)
+        } else {
+            Engine::connect_invite(self.address.trim().to_owned(), self.invite.trim().to_owned(), self.name.trim().to_owned(), self.client_id.clone(), ctx, self.parent, self.relay_only)
         }
     }
 }
@@ -139,14 +156,9 @@ impl eframe::App for App {
                 println!("GUI layout: resumed grid");
             }
         }
-        if self.auto_connect && self.engine.is_none() && !self.token.is_empty() {
+        if self.auto_connect && self.engine.is_none() && (!self.token.is_empty() || !self.invite.is_empty()) {
             self.auto_connect = false;
-            self.engine = Some(Engine::connect(
-                self.address.clone(),
-                self.token.clone(),
-                ctx.clone(),
-                self.parent,
-            ));
+            self.engine = Some(self.join_room(ctx.clone()));
         }
         if self.smoke_seconds.is_some()
             && !self.smoke_reconnected
@@ -166,6 +178,7 @@ impl eframe::App for App {
                 self.token.clone(),
                 ctx.clone(),
                 self.parent,
+                self.relay_only,
             ));
             println!("GUI lifecycle: disconnected and restarted media engine");
         }
@@ -242,7 +255,7 @@ impl eframe::App for App {
             println!("GUI publisher: {sent} sent");
             println!(
                 "GUI status: connected={connected}, can_publish={can_publish}; {}",
-                status.replace(&self.token, "[token]")
+                if self.token.is_empty() { status.clone() } else { status.replace(&self.token, "[token]") }
             );
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -312,6 +325,13 @@ impl eframe::App for App {
                                 .char_limit(2048)
                                 .hint_text("wss://seu-servidor"),
                         );
+                        ui.add_enabled(self.engine.is_none(), egui::Checkbox::new(&mut self.token_mode, "Token manual (avançado)"));
+                        if !self.token_mode {
+                            ui.label("Seu nome");
+                            ui.add_enabled(self.engine.is_none(), egui::TextEdit::singleline(&mut self.name).char_limit(64).desired_width(208.0));
+                            ui.label("Convite da sala");
+                            ui.add_enabled(self.engine.is_none(), egui::TextEdit::singleline(&mut self.invite).password(true).char_limit(64).desired_width(208.0));
+                        } else {
                         ui.label("Token da sala");
                             ui.add_enabled(self.engine.is_none(),
                             egui::TextEdit::singleline(&mut self.token)
@@ -320,27 +340,25 @@ impl eframe::App for App {
                                 .desired_width(208.0)
                                 .hint_text("Cole seu token de acesso"),
                         );
+                        }
                         if self.engine.is_none()
                             && ui
                                 .add_enabled(
-                                    !self.token.trim().is_empty(),
+                                    if self.token_mode { !self.token.trim().is_empty() } else { !self.invite.trim().is_empty() && !self.name.trim().is_empty() },
                                     egui::Button::new("Entrar na sala")
                                         .min_size(Vec2::new(208.0, 44.0)),
                                 )
                                 .clicked()
                         {
                             self.error.clear();
-                            self.engine = Some(Engine::connect(
-                                self.address.clone(),
-                                self.token.trim().to_owned(),
-                                ctx.clone(),
-                                self.parent,
-                            ));
+                            self.engine = Some(self.join_room(ctx.clone()));
                         }
                         ui.add_space(20.0);
                         ui.separator();
                         ui.add_space(12.0);
-                        ui.label(RichText::new("DIAGNÓSTICO").size(11.0).color(MUTED));
+                        egui::CollapsingHeader::new("Diagnóstico").default_open(false).show(ui, |ui| {
+                        ui.add_enabled(self.engine.is_none(), egui::Checkbox::new(&mut self.relay_only, "Forçar TURN/TLS (teste)"))
+                            .on_hover_text("Use antes de entrar para testar o relay; desmarcado permite escolher a rota de menor custo");
                         if ui.button("Copiar diagnóstico").on_hover_text("Copiar o log desta sessão, sem token ou imagens, para enviar ao suporte").clicked() {
                             match crate::diagnostics::export_text() {
                                 Ok(text) => ctx.copy_text(text),
@@ -351,6 +369,7 @@ impl eframe::App for App {
                             ui.label(RichText::new("Log salvo automaticamente").size(11.0).color(MUTED))
                                 .on_hover_text(path.display().to_string());
                         }
+                        });
                         ui.add_space(12.0);
                         ui.label(RichText::new("PARTICIPANTES").size(11.0).color(MUTED));
                         if people.is_empty() {

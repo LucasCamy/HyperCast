@@ -1,6 +1,6 @@
 [package]
 name = "hypercast"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.92"
 description = "Windows GPU screen capture for a centralized LiveKit SFU"
@@ -11,10 +11,13 @@ default = []
 # Native network/encoder modules may also be built without the desktop UI.
 livekit-network = ["dep:livekit", "dep:tokio", "dep:url", "dep:tokio-stream", "dep:log"]
 nvenc = ["dep:cc"]
-desktop = ["nvenc", "livekit-network", "dep:eframe", "dep:raw-window-handle"]
+desktop = ["nvenc", "livekit-network", "dep:eframe", "dep:raw-window-handle", "dep:reqwest", "dep:serde_json", "dep:uuid"]
 
 [dependencies]
 anyhow = "1.0"
+reqwest = { version = "=0.12.28", default-features = false, features = ["blocking", "native-tls", "json"], optional = true }
+serde_json = { version = "=1.0.154", optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
 log = { version = "0.4", optional = true }
 clap = { version = "4.5", features = ["derive"] }
 livekit = { version = "=0.9.4", features = ["native-tls"], optional = true }

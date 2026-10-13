@@ -17,11 +17,11 @@ def main():
     publisher_token=rt.issue(room,"Lucas","publisher",key,secret,ROOT/"infra/admission.sqlite3")
     viewer_token=rt.issue(room,"Viewer","viewer",key,secret,ROOT/"infra/admission.sqlite3")
     gui=subprocess.Popen([str(exe),"--gui"],cwd=ROOT,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
-        env={**os.environ,"HYPERCAST_ROOM_TOKEN":publisher_token,"HYPERCAST_AUTO_CONNECT":"1","HYPERCAST_SMOKE_SHARE":"1","HYPERCAST_SMOKE_SECONDS":"14"})
+        env={**os.environ,"HYPERCAST_URL":os.environ.get("HYPERCAST_TEST_URL","ws://127.0.0.1:8100"),"HYPERCAST_ROOM_TOKEN":publisher_token,"HYPERCAST_AUTO_CONNECT":"1","HYPERCAST_SMOKE_SHARE":"1","HYPERCAST_SMOKE_SECONDS":"14"})
     viewer=None
     try:
         viewer=subprocess.Popen([str(exe),"--receive-url","ws://127.0.0.1:8100","--seconds","16"],cwd=ROOT,
-            stdout=subprocess.PIPE,stderr=subprocess.STDOUT,env={**os.environ,"HYPERCAST_ROOM_TOKEN":viewer_token})
+            stdout=subprocess.PIPE,stderr=subprocess.STDOUT,env={**os.environ,"HYPERCAST_URL":os.environ.get("HYPERCAST_TEST_URL","ws://127.0.0.1:8100"),"HYPERCAST_ROOM_TOKEN":viewer_token})
         time.sleep(11)
         screenshot(gui.pid,ROOT/".tools/layout-publishing.png")
         raw,_=gui.communicate(timeout=35)

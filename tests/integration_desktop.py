@@ -81,11 +81,11 @@ def main():
     publisher_token = rt.issue(room, "Lucas", "publisher", key, secret, ROOT/"infra/admission.sqlite3")
     viewer_token = rt.issue(room, "Viewer", "viewer", key, secret, ROOT/"infra/admission.sqlite3")
     pub = subprocess.Popen([str(exe),"--encode","--codec","av1","--publish-url","ws://127.0.0.1:8100","--seconds","24"],
-        cwd=ROOT, env={**os.environ,"HYPERCAST_ROOM_TOKEN":publisher_token}, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        cwd=ROOT, env={**os.environ,"HYPERCAST_URL":os.environ.get("HYPERCAST_TEST_URL","ws://127.0.0.1:8100"),"HYPERCAST_ROOM_TOKEN":publisher_token}, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     gui = None
     try:
         gui = subprocess.Popen([str(exe),"--gui"], cwd=ROOT, stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
-            env={**os.environ,"HYPERCAST_ROOM_TOKEN":viewer_token,"HYPERCAST_AUTO_CONNECT":"1","HYPERCAST_SMOKE_SECONDS":"14","HYPERCAST_SMOKE_RECONNECT":"1"})
+            env={**os.environ,"HYPERCAST_URL":os.environ.get("HYPERCAST_TEST_URL","ws://127.0.0.1:8100"),"HYPERCAST_ROOM_TOKEN":viewer_token,"HYPERCAST_AUTO_CONNECT":"1","HYPERCAST_SMOKE_SECONDS":"14","HYPERCAST_SMOKE_RECONNECT":"1"})
         time.sleep(3)
         user, hwnd = owned_window(gui.pid)
         user.ShowWindow(hwnd, 6)  # Minimize only the child process owned by this test.

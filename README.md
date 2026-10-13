@@ -12,7 +12,11 @@ Uma amostra AV1 na RTX 4080 confirmou codificação 2560×1440 a 120,05 FPS méd
 
 Abra `hypercast.exe` do ZIP ou instale a versão por usuário. Os pacotes incluem bibliotecas de mídia: o usuário não precisa instalar Rust, Python, FFmpeg ou Visual C++ Redistributable. Precisam de Windows 10 2004+ x64 e driver gráfico compatível. Publicação usa NVIDIA NVENC, driver 610+; AMF não está implementado.
 
-Informe servidor e token, entre, escolha o monitor e use **Compartilhar minha tela**. Token de espectador habilita apenas recepção. URL/token não são persistidos pela interface. A API secret fica no emissor administrativo.
+Informe nome e convite, entre, escolha o monitor e use **Compartilhar minha tela**.
+Servidor público já vem preenchido; JWTs são obtidos automaticamente via HTTPS.
+Todos os membros do convite padrão podem compartilhar, com até três telas
+simultâneas e doze participantes. Convite não é persistido pelo cliente. API secret
+fica exclusivamente no servidor. [Convites e operação](docs/invitations.md).
 
 HEVC/H.265 é o padrão da interface. Logs automáticos ficam em `%LOCALAPPDATA%/HyperCast/diagnostics/gui-*.log`; use **Copiar diagnóstico** para enviar o log da execução atual. São limitados e não gravam imagens ou JWTs. A captura tenta reconstruir o pipeline após mudança de device/resolução; veja [validação](docs/validation.md).
 
@@ -27,9 +31,17 @@ python tools/room_token.py --room amigos --name Lucas --role publisher
 python tools/room_token.py --room amigos --name Amigo --role viewer
 ```
 
-O emissor administrativo imprime JWTs bearer de cinco minutos. Distribua-os por canal seguro. `init_env.py` cria chaves aleatórias sem sobrescrever `.env`. Nenhuma chave de servidor deve entrar no instalador.
+Esses comandos de JWT são para diagnóstico/desenvolvimento; o modo Token manual
+permanece na interface. Em produção, use convites criados por
+`python -m tools.room_invite`. `init_env.py` cria chaves aleatórias sem sobrescrever
+`.env`. Nenhuma chave de servidor deve entrar no instalador.
 
-Compose principal: rede host para Linux. Override: Docker Desktop, sinalização em loopback. Cliente exige WSS fora de loopback, com TLS nativo habilitado e validação de certificado. Não há TURN; redes que bloqueiam UDP/ICE-TCP podem falhar. SFU instalado no homelab k3s, namespace hypercast, com sinalização em wss://hypercast.cloudlane.com.br. AV1/HEVC foram validados pela rota pública UDP após encaminhamento de portas no roteador. [Estado do homelab](docs/homelab.md), [manifests/operação](k8s/README.md).
+Compose principal: rede host para Linux. Override: Docker Desktop, sinalização
+em loopback. Cliente exige WSS fora de loopback e valida certificado. Produção
+k3s usa wss://hypercast.cloudlane.com.br e TURN externo TLS TCP 5349; teste
+relay-only HEVC passou com decode D3D11. Redes que permitem apenas TCP 443 ainda
+podem bloquear 5349. [Estado do homelab](docs/homelab.md),
+[TURN](docs/turn-tls.md), [manifests/operação](k8s/README.md).
 
 | Porta | Transporte | Função |
 |---|---|---|
@@ -41,9 +53,17 @@ Compose principal: rede host para Linux. Override: Docker Desktop, sinalização
 
 ## Quota de compartilhamentos
 
-`HYPERCAST_MAX_PUBLISHERS` aceita 1–3. SQLite `BEGIN IMMEDIATE` reserva identidades `hc-screen-1..3` por sala; consulta ao SFU mantém sessões conectadas ocupando vagas mesmo após expiração do token. A quarta solicitação é recusada. Todos os emissores devem usar esse mesmo banco; não apague reservas para contornar o limite.
+`HYPERCAST_MAX_PUBLISHERS` aceita 1–3 no SFU. Todos os membros podem entrar com
+permissão para compartilhar; o SFU reserva quota atomicamente antes de aceitar
+uma publicação. Até três telas pendentes/ativas, uma por participante. A quarta
+publicação é recusada; parar uma tela libera a vaga sem sair da sala.
 
-A imagem **hypercast-sfu:1.13.9-1** aplica admissão síncrona ao LiveKit fixado. Cada vaga publica uma única faixa `screen_share`; faixas pendentes e ativas contam. Segunda tela na mesma vaga, identidades fora do pool e outras fontes são rejeitadas antes da publicação. O SDK recebe `LIMIT_EXCEEDED` imediatamente. Trocar a imagem pelo LiveKit oficial remove essa proteção. Reduzir a quota exige drenar sessões/reservas incompatíveis. Limites YAML do nó não substituem essa quota. Sala permite doze participantes e três subscrições de vídeo.
+O LiveKit customizado aceita identidades de membro emitidas pelo backend e as
+identidades antigas de diagnóstico. Outras fontes e segunda tela do mesmo membro
+são recusadas antes da publicação; SDK recebe `LIMIT_EXCEEDED`. Trocar pelo
+LiveKit oficial remove essa proteção. Quota é local ao SFU de uma réplica;
+migração de publicadores entre salas/nós não está habilitada. Limites YAML do nó
+não substituem essa quota. Sala permite doze participantes e três subscrições.
 
 ## Desenvolvimento e instalador
 

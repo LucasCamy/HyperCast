@@ -1,5 +1,12 @@
 # SFU no Cloudlane k3s
 
+Produção recebeu gateway/convites e TURN: HTTP 8100 vai ao gateway; SFU interno
+8107, API loopback 8106 e TURN/TLS 5349. Os manifests de bootstrap abaixo não
+representam sozinhos o estado atual. Não reaplicar o SFU de bootstrap com listener
+8100 enquanto o gateway estiver ativo. Usar render_turn.py/render_auth.py e os
+scripts de ativação documentados em [convites](../docs/invitations.md) e
+[TURN](../docs/turn-tls.md). Segredos de configuração/TLS permanecem no cluster.
+
 Implantação de nó único na VM Kubernetes, sem instalar software no hipervisor PVE. Renderizar os manifests em JSON permite validá-los com a API real do cluster; JSON também é YAML válido.
 
 ```powershell

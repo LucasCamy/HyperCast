@@ -1,5 +1,32 @@
 # Preparação TURN/TLS no Cloudlane
 
+## Ativo em produção — 13/10/2026
+
+Coturn 4.18.0 instalado no namespace hypercast, imagem oficial fixada por digest,
+pod não-root com capabilities removidas, filesystem read-only, probes e limites.
+Listener TLS TCP 5349 na VM 192.168.15.19; certificado e chave em Secret.
+Credenciais REST temporárias são emitidas pelo LiveKit usando segredo exclusivo,
+que não aparece nos manifests públicos. TLS público passou com certificado válido.
+
+Peer ACL permite somente o IP do nó SFU 192.168.15.19. Relay UDP interno usa
+8110–8209; não há external-ip e não é necessário encaminhar essa faixa no
+roteador, porque o único peer permitido é o SFU local. Não usar essa configuração
+como TURN P2P genérico ou para um SFU em outro host sem revisar rede/ACL.
+
+HEVC com publicador e receptor em relay-only passou: 637 quadros D3D11,
+pausa respeitada, local relay=true e transporte TLS nos dois clientes.
+WAN foi acessado por Ethernet/default gateway 192.168.30.1, não pela rota VPN.
+O candidato remoto privado nesse teste é o trecho relay→SFU dentro da VM.
+RTT de 2 ms não mede latência fim a fim. GUI inclui Forçar TURN/TLS (teste).
+
+Hook /etc/letsencrypt/renewal-hooks/deploy/hypercast-turn.sh sincroniza o
+certificado renovado no Secret e reinicia somente o coturn; procedimento passou.
+Reinício do relay pode interromper sessões relayed brevemente e exigir reconexão.
+A sinalização continua no Tunnel; TLS 5349 é direto. Redes limitadas a 443
+podem falhar; alternativa é TURN em VPS com porta pública 443.
+
+As seções seguintes preservam o histórico da preparação anterior.
+
 ## Preparação executada — 13/10/2026
 
 Token do operador validado e acesso à zona cloudlane.com.br confirmado. Criado

@@ -4,6 +4,13 @@ A análise inicial usou LucasCamy/homelab-docs e a skill cloudlane-homelab. Em 1
 
 ## Implantação executada
 
+Atualização: gateway/convites e TURN/TLS agora estão ativos; ver
+[convites](invitations.md) e [TURN](turn-tls.md). Gateway ocupa TCP 8100; SFU
+interno usa 8107, mantendo ICE/RTP nas portas originais. API loopback 8106.
+TURN TCP 5349 e relay UDP interno 8110–8209. Não abrir portas de API no roteador.
+Imagens da API/SFU foram importadas no nó por digest; coturn/Caddy usam imagens
+oficiais por digest. Quota atual é por publicação, não por entrada de membro.
+
 - Nó Kubernetes vm-200, Ubuntu 24.04, k3s v1.36.5+k3s1; namespace hypercast.
 - LiveKit customizado 1.13.9 com quota síncrona de até três publicadores. Imagem local testada importada para containerd e referenciada por digest.
 - Deployment de uma réplica, hostNetwork, não-root, filesystem somente leitura, probes e Service ClusterIP. TCP 8100/8101 e UDP 8102–8105 conferidos antes de reservar.

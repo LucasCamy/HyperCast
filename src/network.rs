@@ -58,6 +58,12 @@ pub(crate) async fn connect(
     address: &str,
     token: &str,
 ) -> Result<(Room, tokio::sync::mpsc::UnboundedReceiver<RoomEvent>)> {
+    connect_with_policy(address, token, std::env::var("HYPERCAST_RELAY_ONLY").as_deref() == Ok("1")).await
+}
+
+pub(crate) async fn connect_with_policy(
+    address: &str, token: &str, relay_only: bool,
+) -> Result<(Room, tokio::sync::mpsc::UnboundedReceiver<RoomEvent>)> {
     if std::env::var("HYPERCAST_TRACE_CODEC").as_deref() == Ok("1")
         && log::set_logger(&DIAGNOSTIC_LOG).is_ok()
     {
@@ -73,6 +79,9 @@ pub(crate) async fn connect(
     // the pinned SFU during native publication. Dual transports avoid that path.
     options.single_peer_connection = false;
     options.connect_timeout = Duration::from_secs(10);
+    if relay_only {
+        options.rtc_config.ice_transport_type = livekit::webrtc::peer_connection_factory::IceTransportsType::Relay;
+    }
     Ok(Room::connect(address, token, options).await?)
 }
 
@@ -134,6 +143,23 @@ pub struct EncodedPublisher {
     last_timestamp: Option<i64>,
     seen_keyframe: bool,
     event_task: Option<tokio::task::JoinHandle<()>>,
+}
+
+/// Keep a pending publication without capturing or transmitting screen pixels.
+pub async fn admission_hold(address: &str, token: &str, seconds: u32, release_after: Option<u32>) -> Result<()> {
+    let (room, mut events) = connect(address, token).await?;
+    let room = Arc::new(room);
+    let event_task = tokio::spawn(async move { while events.recv().await.is_some() {} });
+    let publisher = EncodedPublisher::in_room(room.clone(), 1920, 1080, 120, 40_000_000, true).await?;
+    println!("Admission hold: publication accepted without pixel capture");
+    let before_release = release_after.unwrap_or(seconds).min(seconds);
+    tokio::time::sleep(Duration::from_secs(before_release as u64)).await;
+    publisher.stop().await?;
+    println!("Admission hold: unpublished, remaining connected");
+    tokio::time::sleep(Duration::from_secs((seconds-before_release) as u64)).await;
+    room.close().await?;
+    event_task.abort();
+    Ok(())
 }
 
 impl EncodedPublisher {
@@ -306,6 +332,12 @@ pub fn print_ice_path(label: &str, stats: &[livekit::webrtc::stats::RtcStats]) {
             _ => None,
         });
         let Some(remote) = remote else { continue };
+        let local = stats.iter().find_map(|entry| match entry {
+            RtcStats::LocalCandidate(candidate) if candidate.rtc.id == pair.candidate_pair.local_candidate_id => Some(candidate),
+            _ => None,
+        });
+        let relay = local.is_some_and(|c| c.local_candidate.candidate_type == Some(livekit::webrtc::stats::IceCandidateType::Relay));
+        let relay_protocol = local.and_then(|c| c.local_candidate.relay_protocol);
         let protocol = match remote.remote_candidate.protocol.as_str() {
             "udp" => "udp",
             "tcp" => "tcp",
@@ -315,6 +347,9 @@ pub fn print_ice_path(label: &str, stats: &[livekit::webrtc::stats::RtcStats]) {
         let rtt = pair.candidate_pair.current_round_trip_time * 1000.0;
         if rtt.is_finite() && rtt >= 0.0 {
             println!("WebRTC ICE {label}: {protocol}, remote {scope}, network RTT {rtt:.2} ms");
+            println!("WebRTC route {label}: local relay={relay}, relay transport={relay_protocol:?}");
+            #[cfg(all(windows, feature = "desktop"))]
+            crate::diagnostics::write("route", &format!("{label}: local relay={relay}, relay transport={relay_protocol:?}"), "");
             #[cfg(all(windows, feature = "desktop"))]
             crate::diagnostics::write("ice", &format!("{label}: {protocol}, remote {scope}, network RTT {rtt:.2} ms"), "");
         }

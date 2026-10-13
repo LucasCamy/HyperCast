@@ -1,10 +1,22 @@
 # HyperCast para Windows
 
-Abra hypercast.exe. Informe servidor e token de sala, depois Entrar na sala.
-Um token de espectador permite assistir; um token de publicador permite enviar
-um monitor. Selecione monitor e formato AV1 ou HEVC antes de compartilhar.
+Abra hypercast.exe. O servidor público já vem preenchido. Informe nome (letras
+sem acentos, números, hífen ou sublinhado) e convite da sala, depois Entrar na sala.
+O aplicativo obtém automaticamente um JWT curto; ninguém precisa gerar um token
+manual para cada entrada. O convite padrão de amigos permite assistir e compartilhar.
+Todos podem entrar (até doze participantes); o SFU aceita até três telas simultâneas,
+incluindo publicações em preparação. Ao parar uma tela, outra pessoa pode iniciar.
+Selecione monitor e formato AV1 ou HEVC antes de compartilhar.
+Convites somente de espectador permanecem disponíveis ao operador. O modo
+Token manual (avançado) continua acessível para diagnóstico.
 HEVC/H.265 é o padrão da interface; AV1 deve ser selecionado em hardware compatível.
 Sair encerra a conexão. Minimizar pausa a recepção; restaurar retoma sua seleção.
+Convites não são salvos em disco pelo cliente. Apenas um identificador aleatório
+do dispositivo é persistido em LocalAppData/HyperCast/client-id, para que reentrar
+com o mesmo convite não consuma outra utilização. Nome e convite são informados
+novamente após fechar o aplicativo.
+O botão Forçar TURN/TLS (teste), marcado antes de entrar, usa somente relay.
+Normalmente deixá-lo desmarcado para permitir UDP direto.
 
 Grid recebe até três telas. Destaque recebe a escolhida e pausa as outras;
 miniaturas guardam o último quadro visto. Clique no participante ou no nome

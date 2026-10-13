@@ -80,6 +80,10 @@ pub struct Engine {
     pub shared: Arc<Mutex<Shared>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
+enum Access {
+    Token(String),
+    Invite { code: String, name: String, request_id: String },
+}
 impl Drop for Engine {
     fn drop(&mut self) {
         let _ = self.commands.send(Command::Disconnect);
@@ -231,7 +235,13 @@ fn update_subscriptions(room: &Room, layout: &Layout) {
 }
 
 impl Engine {
-    pub fn connect(address: String, token: String, ctx: egui::Context, parent: usize) -> Self {
+    pub fn connect(address: String, token: String, ctx: egui::Context, parent: usize, relay_only: bool) -> Self {
+        Self::connect_access(address, Access::Token(token), ctx, parent, relay_only)
+    }
+    pub fn connect_invite(address: String, code: String, name: String, request_id: String, ctx: egui::Context, parent: usize, relay_only: bool) -> Self {
+        Self::connect_access(address, Access::Invite { code, name, request_id }, ctx, parent, relay_only)
+    }
+    fn connect_access(address: String, access: Access, ctx: egui::Context, parent: usize, relay_only: bool) -> Self {
         crate::diagnostics::write("connection", "Starting room connection", "");
         let (tx, commands) = mpsc::channel();
         let shared = Arc::new(Mutex::new(Shared {
@@ -240,11 +250,26 @@ impl Engine {
         }));
         let state = shared.clone();
         let thread = std::thread::spawn(move || {
+            let token = match access {
+                Access::Token(token) => token,
+                Access::Invite { code, name, request_id } => {
+                    match crate::invitation::join(&address, &code, &name, &request_id) {
+                        Ok(token) => token,
+                        Err(error) => {
+                            let message = error.to_string().replace(&code, "[invite]");
+                            crate::diagnostics::write("invitation_error", &message, &code);
+                            state.lock().unwrap().status = message;
+                            ctx.request_repaint();
+                            return;
+                        }
+                    }
+                }
+            };
             let result = (|| -> Result<()> {
                 let runtime = tokio::runtime::Runtime::new()?;
                 let _runtime_guard = runtime.enter();
                 livekit::webrtc::enable_zero_playout_delay()?;
-                let (room, mut events) = runtime.block_on(network::connect(&address, &token))?;
+                let (room, mut events) = runtime.block_on(network::connect_with_policy(&address, &token, relay_only))?;
                 let room = Arc::new(room);
                 crate::diagnostics::write("connection", "Room connected", "");
                 {
@@ -331,7 +356,11 @@ impl Engine {
                                     }
                                     Err(error) => {
                                         crate::diagnostics::write("publication_error", &format!("{error:#}"), &token);
-                                        state.lock().unwrap().status = error.to_string().replace(&token, "[token]");
+                                        state.lock().unwrap().status = if error.to_string().contains("LimitExceeded") {
+                                            "A sala atingiu o limite de telas. Você pode assistir e compartilhar quando alguém parar.".into()
+                                        } else {
+                                            error.to_string().replace(&token, "[token]")
+                                        };
                                     }
                                 }
                             }

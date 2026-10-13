@@ -1,5 +1,17 @@
 # Revisão de pendências — 13/10/2026
 
+## Atualização executada
+
+Logs automáticos, recuperação limitada, convites/entrada automática e TURN/TLS
+foram implementados e testados; detalhes em validation.md, invitations.md e
+turn-tls.md. Após ajuste solicitado pelo proprietário, todos os membros do
+convite padrão podem publicar; até três telas pendentes/ativas por sala, sem
+reservar vagas ao entrar. Teste real comprovou liberação ao parar sem desconectar.
+
+AMF não tem GPU AMD disponível para validação, conforme resposta mais recente
+do proprietário. Miniaturas vivas e medição fim a fim continuam pendentes; as
+miniaturas atuais permanecem estáticas. A avaliação abaixo registra o plano inicial.
+
 ## Evidência do amigo com RTX 3090
 
 Analisados os seis diretórios em LogsTUburuHypercast fornecidos pelo proprietário.

@@ -1900,7 +1900,7 @@ dependencies = [
 
 [[package]]
 name = "hypercast"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "cc",
@@ -1909,9 +1909,12 @@ dependencies = [
  "livekit",
  "log",
  "raw-window-handle",
+ "reqwest",
+ "serde_json",
  "tokio",
  "tokio-stream",
  "url",
+ "uuid",
  "windows 0.61.3",
 ]
 

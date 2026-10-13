@@ -1,5 +1,37 @@
 # Validação — 12 e 13/10/2026
 
+## Convites, participação livre e TURN/TLS — 13/10/2026
+
+Coturn oficial 4.18.0 por digest, Caddy por digest e backend de convites foram
+implantados no k3s. SFU atualizado por digest para quota atômica por sala e
+participante, aplicada antes do ACK AddTrack. Até doze membros podem entrar
+com canPublish=true; somente três telas pendentes/ativas são admitidas. Segunda
+tela do mesmo membro continua recusada. Parar uma tela libera vaga sem sair.
+
+Testes Go de identidade/fonte/duplicação e corrida de doze reservas para três
+vagas passaram no build. Teste nativo contra produção, sem capturar pixels,
+confirmou três publicações pendentes admitidas, quarto membro conectado e quarta
+publicação recusada; depois de unpublish, esse membro publicou enquanto o primeiro
+continuava conectado. Isso cobre cancelamento/liberação de publicação pendente.
+
+TURN WAN TCP 5349 passou TLS com certificado validado. Teste HEVC publisher→SFU→
+receiver com ambos relay-only recebeu 637 quadros D3D11 e respeitou pausa.
+Stats indicaram local relay=true e relay transport=Some(Tls) nos dois clientes.
+Candidato remoto privado é o peer local SFU; entrada WAN foi por Ethernet e
+gateway 192.168.30.1. RTT de 2 ms não comprova latência fim a fim. Hook de
+renovação sincronizou o Secret TLS e reiniciou coturn com sucesso.
+
+API guarda hash de convite, validade e máximo de dispositivos. Identidade e
+grants vêm do servidor; o cliente guarda somente ID aleatório para reentrada
+idempotente. Dezesseis testes Python e seis Rust passaram. GUI trocou convite
+por JWT e publicou/parou/republicou com relay-only. Revogação bloqueia novas
+emissões, sem expulsar usuários já conectados. Gateway público preserva WSS
+e RoomService no hostname anterior; API/segredos não foram expostos no roteador.
+
+AMF continua não implementado: proprietário confirmou ausência de GPU AMD
+disponível com monitor ativo para validação. Miniaturas vivas e medição fim a fim
+QHD/120 ainda pendentes. Não confundir essas entregas com comprovação sub-100 ms.
+
 ## Diagnóstico automático e recuperação — 13/10/2026
 
 Interface passou a persistir logs limitados a 1 MiB, com retenção de até 16

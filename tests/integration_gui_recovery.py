@@ -17,7 +17,7 @@ def main():
     exe = ROOT/'target/x86_64-pc-windows-msvc/debug/hypercast.exe'
     before = set((Path(os.environ['LOCALAPPDATA'])/'HyperCast/diagnostics').glob('gui-*.log'))
     run = subprocess.run([str(exe), '--gui'], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        timeout=35, env={**os.environ, 'HYPERCAST_ROOM_TOKEN': token, 'HYPERCAST_AUTO_CONNECT': '1',
+        timeout=35, env={**os.environ,"HYPERCAST_URL":os.environ.get("HYPERCAST_TEST_URL","ws://127.0.0.1:8100"), 'HYPERCAST_ROOM_TOKEN': token, 'HYPERCAST_AUTO_CONNECT': '1',
         'HYPERCAST_CODEC': 'h265', 'HYPERCAST_SMOKE_SHARE': '1', 'HYPERCAST_SMOKE_SECONDS': '14',
         'HYPERCAST_SMOKE_CAPTURE_LOSS': '1'})
     output = run.stdout.decode('utf-8', errors='replace')

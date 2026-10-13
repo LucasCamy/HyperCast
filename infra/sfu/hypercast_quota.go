@@ -4,6 +4,8 @@ import (
     "os"
     "strconv"
     "fmt"
+    "strings"
+    "sync"
     "github.com/livekit/protocol/livekit"
 )
 
@@ -15,11 +17,36 @@ var hypercastLimit = func() int {
     return value
 }()
 
-func hypercastAllowedIdentity(identity string, limit int) bool {
-    for slot := 1; slot <= limit; slot++ {
+type hypercastReservations struct {
+    sync.Mutex
+    rooms map[string]map[string]bool
+}
+var hypercastRooms = hypercastReservations{rooms: make(map[string]map[string]bool)}
+
+func (q *hypercastReservations) reserve(room, participant string, limit int) bool {
+    q.Lock()
+    defer q.Unlock()
+    members := q.rooms[room]
+    if members == nil { members = make(map[string]bool); q.rooms[room] = members }
+    if members[participant] || len(members) >= limit { return false }
+    members[participant] = true
+    return true
+}
+func (q *hypercastReservations) release(room, participant string) {
+    q.Lock()
+    defer q.Unlock()
+    delete(q.rooms[room], participant)
+    if len(q.rooms[room]) == 0 { delete(q.rooms, room) }
+}
+
+func hypercastAllowedIdentity(identity string, _ int) bool {
+    for slot := 1; slot <= 3; slot++ {
         if identity == fmt.Sprintf("hc-screen-%d", slot) { return true }
     }
-    return false
+    id := strings.TrimPrefix(identity, "hc-member-")
+    if id == identity || len(id) != 32 { return false }
+    for _, char := range id { if !(char >= '0' && char <= '9' || char >= 'a' && char <= 'f') { return false } }
+    return true
 }
 
 func hypercastQuota(identity string, limit int, req *livekit.AddTrackRequest, existing []*livekit.TrackInfo) string {
@@ -34,12 +61,16 @@ func hypercastQuota(identity string, limit int, req *livekit.AddTrackRequest, ex
     return ""
 }
 
-// Called while pendingTracksLock is held, before a new track is acknowledged.
-// Pending and active publications both count: simultaneous AddTrack requests
-// cannot sneak a second screen through a check based only on active RTP tracks.
+// Participant pending lock serializes duplicates; room mutex serializes all
+// participants BEFORE publication ACK. Room membership does not consume quota.
 func (p *ParticipantImpl) hypercastCheckPublication(req *livekit.AddTrackRequest) string {
     var tracks []*livekit.TrackInfo
     for _, track := range p.GetPublishedTracks() { tracks = append(tracks, track.ToProto()) }
     for _, pending := range p.pendingTracks { tracks = append(tracks, pending.trackInfos...) }
-    return hypercastQuota(string(p.Identity()), hypercastLimit, req, tracks)
+    if reason := hypercastQuota(string(p.Identity()), hypercastLimit, req, tracks); reason != "" { return reason }
+    if p.IsClosed() { return "Participant is closed" }
+    if !hypercastRooms.reserve(p.ClaimGrants().Video.Room, string(p.ID()), hypercastLimit) {
+        return "Room screen publication limit reached"
+    }
+    return ""
 }

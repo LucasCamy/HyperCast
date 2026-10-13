@@ -20,6 +20,12 @@ struct Args {
     #[arg(long, conflicts_with_all = ["connect_url", "receive_url"])]
     admission_probe_url: Option<String>,
     #[cfg(feature = "livekit-network")]
+    #[arg(long, conflicts_with_all = ["connect_url", "receive_url", "admission_probe_url"])]
+    admission_hold_url: Option<String>,
+    #[cfg(feature = "livekit-network")]
+    #[arg(long, requires = "admission_hold_url", value_parser = clap::value_parser!(u32).range(1..=3600))]
+    admission_release_after: Option<u32>,
+    #[cfg(feature = "livekit-network")]
     #[arg(long, requires = "admission_probe_url")]
     reject_first: bool,
     #[cfg(feature = "livekit-network")]
@@ -73,6 +79,10 @@ fn main() -> Result<()> {
     }
     #[cfg(feature = "livekit-network")]
     let runtime = tokio::runtime::Runtime::new()?;
+    #[cfg(feature = "livekit-network")]
+    if let Some(address) = &args.admission_hold_url {
+        return runtime.block_on(hypercast::network::admission_hold(address, &hypercast::network::token_from_env()?, args.seconds, args.admission_release_after));
+    }
     #[cfg(feature = "livekit-network")]
     if let Some(address) = &args.admission_probe_url {
         return runtime.block_on(hypercast::network::admission_probe(
