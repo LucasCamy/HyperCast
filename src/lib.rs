@@ -5,6 +5,8 @@ pub mod video_capture;
 #[cfg(all(windows, feature = "desktop"))]
 pub mod desktop;
 #[cfg(all(windows, feature = "desktop"))]
+pub mod updater;
+#[cfg(all(windows, feature = "desktop"))]
 pub mod desktop_engine;
 #[cfg(all(windows, feature = "desktop"))]
 pub mod diagnostics;

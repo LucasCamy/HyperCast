@@ -1,6 +1,6 @@
 [package]
 name = "hypercast"
-version = "0.4.2"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.92"
 description = "Windows GPU screen capture for a centralized LiveKit SFU"
@@ -11,9 +11,11 @@ default = []
 # Native network/encoder modules may also be built without the desktop UI.
 livekit-network = ["dep:livekit", "dep:tokio", "dep:url", "dep:tokio-stream", "dep:log"]
 nvenc = ["dep:cc"]
-desktop = ["nvenc", "livekit-network", "dep:eframe", "dep:raw-window-handle", "dep:reqwest", "dep:serde_json", "dep:uuid"]
+desktop = ["nvenc", "livekit-network", "dep:eframe", "dep:raw-window-handle", "dep:reqwest", "dep:serde_json", "dep:uuid", "dep:sha2", "dep:semver"]
 
 [dependencies]
+sha2 = { version = "=0.10.9", optional = true }
+semver = { version = "=1.0.28", optional = true }
 anyhow = "1.0"
 reqwest = { version = "=0.12.28", default-features = false, features = ["blocking", "native-tls", "json"], optional = true }
 serde_json = { version = "=1.0.154", optional = true }
@@ -34,7 +36,7 @@ raw-window-handle = { version = "0.6", optional = true }
 windows = { version = "=0.61.3", features = [
   "Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11",
   "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi",
-  "Win32_System_Threading", "Win32_Security", "Win32_UI_WindowsAndMessaging"
+  "Win32_System_Threading", "Win32_System_Registry", "Win32_Security", "Win32_UI_WindowsAndMessaging"
 ] }
 
 [profile.release]

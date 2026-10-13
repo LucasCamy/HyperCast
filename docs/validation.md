@@ -1,5 +1,20 @@
 # Validação — 12 e 13/10/2026
 
+## Atualizador — 0.5.0, 13/10/2026
+
+Implementado check manual assíncrono, comparação semântica de versão, detecção
+de instalação HKCU/diretório, download limitado, SHA-256 e handle que bloqueia
+escrita/remoção do arquivo verificado. Nove testes Rust passaram; teste
+operacional adicional fica ignorado no suite normal porque instala uma release
+real numa inscrição isolada. Casos negativos incluem domínio/redirect, draft,
+prerelease, instalador errado, digest ausente, tamanho excessivo e bytes alterados.
+
+Interface portátil exercitada por UI Automation restrita ao PID/executável
+próprio: Atualizar abre a consulta sem bloquear, mostra ausência de release
+antes da primeira publicação e mantém o link de download no navegador.
+Build/empacotamento 0.5.0 passou. Não há polling automático ou token GitHub no
+cliente. Checksum usa a release confiada via HTTPS, não assinatura Authenticode.
+
 ## Debug, dropdown e campos — 0.4.2, 13/10/2026
 
 Retirada seção permanente de diagnóstico e status duplicado. Debug pequeno

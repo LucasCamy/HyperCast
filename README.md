@@ -1,5 +1,9 @@
 # HyperCast
 
+Versão 0.5.0: botão **Atualizar** verifica releases oficiais. A versão instalada
+baixa, verifica e instala a atualização; a portátil abre o download no
+navegador padrão. [Como usar e publicar versões](docs/updates.md).
+
 Versão 0.4.2: **Debug** compacto na base da lateral, diagnóstico em painel
 flutuante, dropdown alinhado e campos de acesso com borda/foco visíveis.
 

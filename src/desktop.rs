@@ -93,6 +93,7 @@ struct App {
     selected_window:Option<usize>,
     fullscreen:bool,
     debug_open:bool,
+    updater:crate::updater::Updater,
     before_fullscreen_mode:ViewMode,
     codec: crate::encoder::Codec,
     parent: usize,
@@ -158,7 +159,7 @@ impl App {
             sound_muted: false,
             displays: crate::screen_capture::displays().unwrap_or_default(),
             selected_display: 0,
-            window_mode:false,windows:crate::video_capture::windows(),selected_window:None,fullscreen:false,debug_open:false,before_fullscreen_mode:ViewMode::Spotlight,
+            window_mode:false,windows:crate::video_capture::windows(),selected_window:None,fullscreen:false,debug_open:false,updater:crate::updater::Updater::default(),before_fullscreen_mode:ViewMode::Spotlight,
             codec: if std::env::var("HYPERCAST_CODEC").as_deref() == Ok("av1") {
                 crate::encoder::Codec::Av1
             } else {
@@ -314,6 +315,7 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.updater.poll();
         if ctx.input(|i|i.key_pressed(egui::Key::F11)){self.set_fullscreen(&ctx,!self.fullscreen);}
         if self.fullscreen && ctx.input(|i|i.key_pressed(egui::Key::Escape)){self.set_fullscreen(&ctx,false);}
         if self.smoke_seconds.is_some() && std::env::var("HYPERCAST_SMOKE_SOUND").as_deref() == Ok("1") {
@@ -501,6 +503,9 @@ impl eframe::App for App {
                             ui.label(RichText::new("HYPERCAST").size(16.0).strong());
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
                                 ui.label(RichText::new(if connected{"ONLINE"}else{"OFFLINE"}).size(10.0).color(if connected{ACCENT}else{MUTED}));
+                                if ui.small_button("Atualizar").on_hover_text("Verificar atualização do HyperCast").clicked(){
+                                    self.updater.open=true;self.updater.check(ctx.clone());
+                                }
                             });
                         });
                         ui.add_space(8.0);
@@ -920,10 +925,51 @@ impl eframe::App for App {
                     if !self.error.is_empty(){ui.colored_label(DANGER,&self.error);}
                 });
         }
-        ctx.request_repaint_after(Duration::from_millis(500));
+        if !self.fullscreen && self.updater.open {
+            let mut open=self.updater.open;
+            let mut install=false;
+            egui::Window::new("Atualização").id(egui::Id::new("update_window"))
+                .open(&mut open).fixed_pos(egui::pos2(16.0,48.0)).default_width(260.0).max_width(260.0)
+                .resizable(false).collapsible(false).show(&ctx,|ui|{
+                    ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
+                    ui.label(format!("Versão atual: {}",env!("CARGO_PKG_VERSION")));
+                    ui.label(RichText::new(match &self.updater.installation{
+                        crate::updater::Installation::Installed(_)=>"Instalada · atualização pelo aplicativo",
+                        _=>"Portátil · download pelo navegador",
+                    }).size(11.0).color(MUTED));
+                    ui.label(&self.updater.status);
+                    if let Some((progress,label))=self.updater.progress(){ui.add(egui::ProgressBar::new(progress).text(label));}
+                    if let crate::updater::Installation::Unknown(message)=&self.updater.installation {
+                        ui.label(RichText::new("Não foi possível reconhecer a instalação").size(11.0).color(MUTED)).on_hover_text(message);
+                    }
+                    if !self.updater.busy {
+                        if self.updater.installer.is_some(){
+                            ui.label(RichText::new("O HyperCast será fechado para instalar. A sessão atual será encerrada.").size(12.0).color(MUTED));
+                            if ui.button("Instalar e reiniciar").clicked(){install=true;}
+                        }else if let Some(release)=self.updater.release.clone(){
+                            if matches!(self.updater.installation,crate::updater::Installation::Installed(_)){
+                                if ui.button("Baixar atualização").clicked(){self.updater.download(ctx.clone());}
+                            }else if ui.button("Baixar no navegador").clicked(){ctx.open_url(egui::OpenUrl::new_tab(release.page));}
+                        }
+                        if ui.button("Verificar atualização").clicked(){self.updater.check(ctx.clone());}
+                        if ui.small_button("Abrir página de downloads").clicked(){ctx.open_url(egui::OpenUrl::new_tab(crate::updater::RELEASES));}
+                    }
+                });
+            self.updater.open=open;
+            if install {
+                self.engine=None;self.presenters.clear();self.last_presented.clear();
+                let result=self.updater.installer.as_ref().unwrap().launch(&self.updater.installation);
+                match result {
+                    Ok(())=>ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                    Err(error)=>self.updater.status=format!("Não foi possível instalar: {error:#}"),
+                }
+            }
+        }
+        ctx.request_repaint_after(Duration::from_millis(if self.updater.busy{100}else{500}));
     }
 }
 pub fn run() -> anyhow::Result<()> {
+    crate::updater::clean_old_downloads();
     // Diagnostics failure must not prevent joining a room.
     if let Err(error) = crate::diagnostics::init() {
         eprintln!("Could not initialize GUI diagnostics: {error}");

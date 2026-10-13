@@ -1,5 +1,10 @@
 # HyperCast para Windows
 
+0.5.0 adiciona **Atualizar** no topo da lateral. Instalações podem baixar e
+instalar com reinício do aplicativo; o ZIP portátil abre o download no navegador
+padrão. Para começar a usar o recurso, atualize 0.4.x manualmente uma vez.
+Veja [atualizações](updates.md).
+
 Versão 0.4.2: **Debug**, na base da lateral, abre o painel de diagnóstico com
 **Copiar diagnóstico** e a opção de teste TURN/TLS. Feche pelo X ou pelo mesmo
 botão. Status da sessão aparece uma única vez na base. Dropdown usa a mesma
