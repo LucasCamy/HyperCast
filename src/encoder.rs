@@ -8,7 +8,10 @@ use std::{
     ptr::NonNull,
     rc::Rc,
 };
-use windows::{Win32::Graphics::Direct3D11::ID3D11Device, core::Interface};
+use windows::{
+    Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D},
+    core::Interface,
+};
 
 unsafe extern "C" {
     fn hc_nvenc_open(
@@ -41,9 +44,10 @@ unsafe extern "C" {
         capacity: usize,
     ) -> i32;
     fn hc_nvenc_close(handle: *mut c_void);
+    fn hc_nvenc_preview(handle: *mut c_void) -> *mut c_void;
 }
 
-#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Codec {
     H265,
     Av1,
@@ -72,6 +76,16 @@ fn error_text(buffer: &[c_char]) -> String {
 }
 
 impl HardwareEncoder {
+    pub fn preview_texture(&self) -> Option<ID3D11Texture2D> {
+        // SAFETY: native helper returns a new owned COM reference, never the
+        // borrowed duplication surface. Its contents are synchronized in GPU.
+        let raw = unsafe { hc_nvenc_preview(self.handle.as_ptr()) };
+        if raw.is_null() {
+            None
+        } else {
+            Some(unsafe { ID3D11Texture2D::from_raw(raw) })
+        }
+    }
     pub fn new(
         device: &ID3D11Device,
         width: u32,

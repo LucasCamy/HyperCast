@@ -1,9 +1,10 @@
 """Operator-only token CLI, stdlib only. Never distribute API secrets to clients.
 
 Publishers occupy a fixed identity pool per room. LiveKit's single-identity rule
-bounds publisher participants, not the number of tracks from each participant.
+bounds publisher participants. The patched SFU separately rejects duplicate
+and out-of-pool screen tracks synchronously, including pending publications.
 SQLite rejects concurrent issuance above the cap, including not-yet-connected
-token reservations. A hard per-track quota needs SFU admission in step 3.
+token reservations. Use the custom SFU image, not an unmodified LiveKit image.
 """
 import argparse
 import base64

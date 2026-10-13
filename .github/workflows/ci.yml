@@ -23,10 +23,10 @@ jobs:
         run: cargo fmt --check
       - name: Native build and tests (no GPU required)
         shell: pwsh
-        run: ./tools/cargo-native.ps1 test --locked --features 'nvenc,livekit-network'
+        run: ./tools/cargo-native.ps1 test --locked --features desktop
   server:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -36,7 +36,7 @@ jobs:
       - name: Generate ephemeral CI credentials
         run: python3 tools/init_env.py
       - name: Start local SFU
-        run: docker compose up -d
+        run: docker compose up -d --build
       - name: Wait for HTTP
         run: curl --retry 20 --retry-connrefused --retry-delay 1 --fail http://127.0.0.1:8100/
       - name: JWT integration tests

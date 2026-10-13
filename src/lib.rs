@@ -1,8 +1,14 @@
+#[cfg(all(windows, feature = "desktop"))]
+pub mod desktop;
+#[cfg(all(windows, feature = "desktop"))]
+pub mod desktop_engine;
 #[cfg(all(windows, feature = "nvenc"))]
 pub mod encoder;
 #[cfg(feature = "livekit-network")]
 pub mod network;
 pub mod pacing;
+#[cfg(all(windows, feature = "desktop"))]
+pub mod presenter;
 #[cfg(feature = "livekit-network")]
 pub mod receiver;
 #[cfg(windows)]

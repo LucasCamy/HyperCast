@@ -4,4 +4,8 @@ target/
 *.sqlite3*
 __pycache__/
 *.token
+dist/
+vendor/**/.cargo-ok
+vendor/**/.cargo_vcs_info.json
+vendor/**/Cargo.lock
 

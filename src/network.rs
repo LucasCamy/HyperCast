@@ -8,7 +8,32 @@ use livekit::{
         video_source::{RtcVideoSource, VideoResolution, native::NativeVideoSource},
     },
 };
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
+
+struct DiagnosticLog;
+impl log::Log for DiagnosticLog {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() <= log::Level::Warn
+    }
+    fn log(&self, record: &log::Record<'_>) {
+        if self.enabled(record.metadata()) {
+            let message = record.args().to_string();
+            let first = message.lines().next().unwrap_or("");
+            let lower = first.to_lowercase();
+            if !["token", "password", "authorization", "pwd="]
+                .iter()
+                .any(|word| lower.contains(word))
+            {
+                eprintln!(
+                    "SDK diagnostic: {}",
+                    first.chars().take(500).collect::<String>()
+                );
+            }
+        }
+    }
+    fn flush(&self) {}
+}
+static DIAGNOSTIC_LOG: DiagnosticLog = DiagnosticLog;
 
 pub fn token_from_env() -> Result<String> {
     std::env::var("HYPERCAST_ROOM_TOKEN")
@@ -33,6 +58,11 @@ pub(crate) async fn connect(
     address: &str,
     token: &str,
 ) -> Result<(Room, tokio::sync::mpsc::UnboundedReceiver<RoomEvent>)> {
+    if std::env::var("HYPERCAST_TRACE_CODEC").as_deref() == Ok("1")
+        && log::set_logger(&DIAGNOSTIC_LOG).is_ok()
+    {
+        log::set_max_level(log::LevelFilter::Warn);
+    }
     validate_url(address)?;
     let mut options = RoomOptions::default();
     options.auto_subscribe = false;
@@ -61,14 +91,49 @@ pub async fn diagnostic(address: &str, token: &str, seconds: u32) -> Result<()> 
     Ok(())
 }
 
+/// Exercise synchronous SFU admission without capturing any screen pixels.
+pub async fn admission_probe(address: &str, token: &str, reject_first: bool) -> Result<()> {
+    let (room, mut events) = connect(address, token).await?;
+    let room = Arc::new(room);
+    let event_task = tokio::spawn(async move { while events.recv().await.is_some() {} });
+    let first = EncodedPublisher::in_room(room.clone(), 2560, 1440, 120, 40_000_000, true).await;
+    if reject_first {
+        let error = first
+            .err()
+            .context("SFU incorrectly admitted a forbidden publisher")?;
+        ensure!(
+            error.to_string().contains("LimitExceeded"),
+            "Expected quota rejection, received: {error}"
+        );
+        println!("PASS: SFU rejected forbidden publisher before publication");
+    } else {
+        let first = first?;
+        let duplicate =
+            EncodedPublisher::in_room(room.clone(), 2560, 1440, 120, 40_000_000, true).await;
+        let error = duplicate
+            .err()
+            .context("SFU incorrectly admitted a second screen")?;
+        ensure!(
+            error.to_string().contains("LimitExceeded"),
+            "Expected quota rejection, received: {error}"
+        );
+        println!("PASS: SFU rejected duplicate screen before publication");
+        first.stop().await?;
+    }
+    event_task.abort();
+    room.close().await?;
+    Ok(())
+}
+
 pub struct EncodedPublisher {
-    room: Room,
+    room: Arc<Room>,
+    publication: LocalTrackPublication,
     source: NativeVideoSource,
     codec: EncodedVideoCodec,
     resolution: VideoResolution,
     last_timestamp: Option<i64>,
     seen_keyframe: bool,
-    event_task: tokio::task::JoinHandle<()>,
+    event_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl EncodedPublisher {
@@ -82,6 +147,21 @@ impl EncodedPublisher {
         av1: bool,
     ) -> Result<Self> {
         let (room, mut events) = connect(address, token).await?;
+        let mut publisher = Self::in_room(Arc::new(room), width, height, fps, bitrate, av1).await?;
+        publisher.event_task = Some(tokio::spawn(async move {
+            while events.recv().await.is_some() {}
+        }));
+        Ok(publisher)
+    }
+
+    pub async fn in_room(
+        room: Arc<Room>,
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate: u32,
+        av1: bool,
+    ) -> Result<Self> {
         let resolution = VideoResolution { width, height };
         let source = NativeVideoSource::new_encoded(resolution.clone());
         let track =
@@ -112,9 +192,9 @@ impl EncodedPublisher {
             publication.sid(),
             room.name()
         );
-        let event_task = tokio::spawn(async move { while events.recv().await.is_some() {} });
         Ok(Self {
             room,
+            publication,
             source,
             resolution,
             codec: if av1 {
@@ -124,7 +204,7 @@ impl EncodedPublisher {
             },
             last_timestamp: None,
             seen_keyframe: false,
-            event_task,
+            event_task: None,
         })
     }
 
@@ -182,8 +262,20 @@ impl EncodedPublisher {
                 );
             }
         }
-        self.event_task.abort();
+        if let Some(task) = self.event_task {
+            task.abort();
+        }
         self.room.close().await?;
+        Ok(())
+    }
+    pub async fn stop(self) -> Result<()> {
+        if let Some(task) = self.event_task {
+            task.abort();
+        }
+        self.room
+            .local_participant()
+            .unpublish_track(&self.publication.sid())
+            .await?;
         Ok(())
     }
 }

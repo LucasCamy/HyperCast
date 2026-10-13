@@ -2,18 +2,20 @@
 name = "hypercast"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.90"
+rust-version = "1.92"
 description = "Windows GPU screen capture for a centralized LiveKit SFU"
 license = "MIT"
 
 [features]
 default = []
-# Opt-in until the hardware encode bridge is implemented (step 3).
-livekit-network = ["dep:livekit", "dep:tokio", "dep:url", "dep:tokio-stream"]
+# Native network/encoder modules may also be built without the desktop UI.
+livekit-network = ["dep:livekit", "dep:tokio", "dep:url", "dep:tokio-stream", "dep:log"]
 nvenc = ["dep:cc"]
+desktop = ["nvenc", "livekit-network", "dep:eframe", "dep:raw-window-handle"]
 
 [dependencies]
 anyhow = "1.0"
+log = { version = "0.4", optional = true }
 clap = { version = "4.5", features = ["derive"] }
 livekit = { version = "=0.9.4", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"], optional = true }
@@ -24,13 +26,20 @@ tokio-stream = { version = "0.1", optional = true }
 cc = { version = "1", optional = true }
 
 [target.'cfg(windows)'.dependencies]
+eframe = { version = "=0.35.0", default-features = false, features = ["glow", "default_fonts", "accesskit"], optional = true }
+raw-window-handle = { version = "0.6", optional = true }
 windows = { version = "=0.61.3", features = [
   "Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11",
   "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi",
-  "Win32_System_Threading", "Win32_Security"
+  "Win32_System_Threading", "Win32_Security", "Win32_UI_WindowsAndMessaging"
 ] }
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+[patch.crates-io]
+webrtc-sys = { path = "vendor/webrtc-sys" }
+libwebrtc = { path = "vendor/libwebrtc" }
+livekit = { path = "vendor/livekit" }
 

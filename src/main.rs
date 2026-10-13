@@ -1,14 +1,27 @@
+#![cfg_attr(
+    all(windows, feature = "desktop", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
 use anyhow::Result;
 use clap::Parser;
 
 #[derive(Parser)]
 #[command(about = "HyperCast: GPU capture, NVENC publishing and selective receive diagnostics")]
 struct Args {
+    #[cfg(feature = "desktop")]
+    #[arg(long)]
+    gui: bool,
     #[arg(long)]
     list: bool,
     #[cfg(feature = "livekit-network")]
     #[arg(long)]
     connect_url: Option<String>,
+    #[cfg(feature = "livekit-network")]
+    #[arg(long, conflicts_with_all = ["connect_url", "receive_url"])]
+    admission_probe_url: Option<String>,
+    #[cfg(feature = "livekit-network")]
+    #[arg(long, requires = "admission_probe_url")]
+    reject_first: bool,
     #[cfg(feature = "livekit-network")]
     #[arg(long, conflicts_with = "connect_url")]
     receive_url: Option<String>,
@@ -34,7 +47,7 @@ struct Args {
     #[arg(long, requires = "encode")]
     dump: Option<std::path::PathBuf>,
     #[cfg(all(windows, feature = "nvenc", feature = "livekit-network"))]
-    #[arg(long, requires = "encode", conflicts_with_all = ["connect_url", "receive_url"])]
+    #[arg(long, requires = "encode", conflicts_with_all = ["connect_url", "receive_url", "admission_probe_url"])]
     publish_url: Option<String>,
     #[arg(long, default_value_t = 0)]
     adapter: u32,
@@ -54,8 +67,20 @@ fn main() -> Result<()> {
     };
     use std::time::{Duration, Instant};
     let args = Args::parse();
+    #[cfg(feature = "desktop")]
+    if args.gui || std::env::args().len() == 1 {
+        return hypercast::desktop::run();
+    }
     #[cfg(feature = "livekit-network")]
     let runtime = tokio::runtime::Runtime::new()?;
+    #[cfg(feature = "livekit-network")]
+    if let Some(address) = &args.admission_probe_url {
+        return runtime.block_on(hypercast::network::admission_probe(
+            address,
+            &hypercast::network::token_from_env()?,
+            args.reject_first,
+        ));
+    }
     #[cfg(feature = "livekit-network")]
     if let Some(address) = &args.receive_url {
         let frames = runtime.block_on(hypercast::receiver::receive(

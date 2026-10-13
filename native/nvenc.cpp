@@ -4,6 +4,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <d3d11.h>
+#include <d3d10.h>
 #include <wrl/client.h>
 #include <nvEncodeAPI.h>
 #include <algorithm>
@@ -236,4 +237,29 @@ int hc_nvenc_rates(void* handle, uint32_t bitrate, uint32_t fps, char* error, si
     return -1;
 }
 void hc_nvenc_close(void* handle) noexcept { delete static_cast<Encoder*>(handle); }
+void* hc_nvenc_preview(void* handle) noexcept {
+    try {
+        auto encoder = static_cast<Encoder*>(handle);
+        if (!encoder || !encoder->input_ready) return nullptr;
+        // Immutable snapshot: UI must never read the texture NVENC overwrites.
+        ComPtr<ID3D10Multithread> protect;
+        Encoder::hr(encoder->context.As(&protect), "Preview context protection");
+        protect->SetMultithreadProtected(TRUE);
+        D3D11_TEXTURE2D_DESC desc{}; encoder->input->GetDesc(&desc);
+        desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+        ComPtr<ID3D11Texture2D> snapshot;
+        Encoder::hr(encoder->device->CreateTexture2D(&desc, nullptr, &snapshot), "Preview GPU snapshot");
+        encoder->context->CopyResource(snapshot.Get(), encoder->input.Get());
+        encoder->context->End(encoder->copy_done.Get()); encoder->context->Flush();
+        auto start = GetTickCount64();
+        for (;;) {
+            auto status = encoder->context->GetData(encoder->copy_done.Get(), nullptr, 0, D3D11_ASYNC_GETDATA_DONOTFLUSH);
+            Encoder::hr(status, "Wait preview copy");
+            if (status == S_OK) break;
+            if (GetTickCount64() - start > 1000) return nullptr;
+            Sleep(0);
+        }
+        return snapshot.Detach();
+    } catch (...) { return nullptr; }
+}
 }

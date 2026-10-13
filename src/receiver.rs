@@ -30,6 +30,7 @@ pub struct ReceiveOptions {
 #[derive(Default)]
 struct Counters {
     frames: AtomicU64,
+    gpu_frames: AtomicU64,
     width: AtomicU32,
     height: AtomicU32,
 }
@@ -106,6 +107,7 @@ pub async fn receive(address: &str, token: &str, options: ReceiveOptions) -> Res
     livekit::webrtc::enable_zero_playout_delay()?;
     let (room, mut events) = network::connect(address, token).await?;
     let total = Arc::new(AtomicU64::new(0));
+    let gpu_total = Arc::new(AtomicU64::new(0));
     let mut sinks: HashMap<TrackSid, SinkTask> = HashMap::new();
     let start = tokio::time::Instant::now();
     let deadline = start + options.duration;
@@ -138,11 +140,17 @@ pub async fn receive(address: &str, token: &str, options: ReceiveOptions) -> Res
                         let counters = Arc::new(Counters::default());
                         let observed = counters.clone();
                         let total = total.clone();
+                        let gpu_total = gpu_total.clone();
                         let mut stream = NativeVideoStream::with_options(track.rtc_track(),
                             NativeVideoStreamOptions { queue_size_frames: Some(1) });
                         println!("Receiving screen {} with a one-frame sink queue", sid);
                         let task = tokio::spawn(async move {
                             while let Some(frame) = stream.next().await {
+                                #[cfg(windows)]
+                                if frame.buffer.as_native().and_then(|native| native.d3d11_texture()).is_some() {
+                                    observed.gpu_frames.fetch_add(1, Ordering::Relaxed);
+                                    gpu_total.fetch_add(1, Ordering::Relaxed);
+                                }
                                 observed.width.store(frame.buffer.width(), Ordering::Relaxed);
                                 observed.height.store(frame.buffer.height(), Ordering::Relaxed);
                                 observed.frames.fetch_add(1, Ordering::Relaxed);
@@ -185,5 +193,9 @@ pub async fn receive(address: &str, token: &str, options: ReceiveOptions) -> Res
     room.close().await?;
     let count = total.load(Ordering::Relaxed);
     println!("Receiver total: {count} decoded frames");
+    println!(
+        "Receiver GPU: {} D3D11 texture frames",
+        gpu_total.load(Ordering::Relaxed)
+    );
     Ok(count)
 }
