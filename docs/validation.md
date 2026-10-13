@@ -96,3 +96,9 @@ O SFU registra publicação da faixa às 09:20:47,632 e fechamento do receptor �
 A amostra comprova encode QHD a aproximadamente 120 FPS médios e decode QHD por GPU, com conteúdo predominantemente estático (87 atualizações distintas em 30 s). Não comprova 120 atualizações distintas/s, jitter/estabilidade em movimento intenso, apresentação física a 120 Hz ou latência fim a fim abaixo de 100 ms. O RTT 0 ms do publicador também não comprova latência zero; esse contador pode ter precisão/dados insuficientes. Esta amostra usou rota privada no receptor; a validação pública anterior de AV1/HEVC foi feita em 1080p.
 
 Próxima amostra: receptor por 120 s, iniciado primeiro; publicador por 60 s, com movimento contínuo. Registrar janela de chegada dos quadros, intervalos/jitter e apresentação; confirmar caminho público quando o objetivo for WAN. Medir captura até apresentação separadamente do RTT de rede.
+
+## Compatibilidade de publicação RTX 3090 — 13/10/2026
+
+hardware.json enviado pelo proprietário confirma RTX 3090, driver 32.0.16.1714 e monitor 1920×1080 a 144 Hz. O teste AV1 falhou na consulta de preset (NVENC status 8). Essa GPU não possui encoder AV1; o teste deve usar HEVC/H.265. A ponte passou a validar fabricante da GPU de captura, versão da API oferecida pelo driver e lista de codecs NVENC antes de consultar o preset, com erro específico quando AV1 não é suportado. O script de publicação usa HEVC por padrão; a interface mantém seleção manual de codec.
+
+Regressão local AV1 e HEVC → SFU → D3D11VA passou na RTX 5060, incluindo pausa/subscrição. A RTX 3090 não está disponível para execução pelo agente; nova publicação HEVC no PC do amigo ainda precisa de confirmação. Essa alteração não implementa AMF nem muda a rede do servidor.

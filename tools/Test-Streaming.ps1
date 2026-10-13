@@ -1,6 +1,6 @@
 param(
     [ValidateSet('Viewer','Publisher')][string]$Role = 'Viewer',
-    [ValidateSet('av1','h265')][string]$Codec = 'av1',
+    [ValidateSet('av1','h265')][string]$Codec = 'h265',
     [ValidateRange(10,120)][int]$Seconds = 30,
     [ValidateRange(0,15)][int]$Adapter = 0,
     [ValidateRange(0,15)][int]$Monitor = 0,

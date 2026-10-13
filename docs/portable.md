@@ -23,6 +23,9 @@ Para diagnóstico, abra PowerShell na pasta do ZIP e execute
 Primeiro extraia TODO o ZIP. Para manter a janela aberta em caso de erro,
 use Test-Publisher.cmd ou Test-Viewer.cmd na pasta extraida. Erros de
 preparacao ficam em error.log; erros do aplicativo tambem ficam em stream.log.
+O teste de publicacao usa HEVC/H.265 por padrao para compatibilidade.
+Para AV1 em hardware compativel, execute ./Test-Streaming.ps1 -Role Publisher -Codec av1.
+RTX 20/30, incluindo RTX 3090, nao codificam AV1; na interface escolha HEVC/H.265.
 O script pede o token com entrada oculta, conecta ao domínio HyperCast por
 30 segundos e salva hardware/contadores em LocalAppData/HyperCast/diagnostics.
 Publicador compartilha o monitor selecionado; nenhum arquivo de vídeo é gravado.

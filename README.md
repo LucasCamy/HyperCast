@@ -61,6 +61,8 @@ Saídas em `dist/`: instalador por usuário, ZIP portátil e SHA256SUMS. Build s
 
 O CLI mantém captura/encode/publicação e recepção sem janela. Use `HYPERCAST_ROOM_TOKEN` no ambiente, nunca na linha de comando. Publicação: `--encode --codec av1 --fps 120 --seconds 30 --publish-url ws://127.0.0.1:8100`. Espectador: `--receive-url ws://127.0.0.1:8100 --view-mode grid --seconds 30`. Destaque aceita `--focus hc-screen-1`; `--pause-after 6` testa pausa. `--list` enumera monitores. `--dump` grava bitstream somente quando solicitado explicitamente.
 
+O iniciador Test-Publisher.cmd usa HEVC/H.265 por padrão. RTX 20/30, incluindo RTX 3090, não possuem encoder AV1; selecione HEVC na interface. Para testar AV1 em hardware compatível, use Test-Streaming.ps1 -Role Publisher -Codec av1. A ponte consulta os codecs anunciados pelo driver antes do preset e rejeita opções incompatíveis com uma mensagem específica.
+
 ```powershell
 python -m unittest discover -s tests -v
 python -m tests.integration_tokens

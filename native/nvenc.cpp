@@ -4,6 +4,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <d3d11.h>
+#include <dxgi.h>
 #include <d3d10.h>
 #include <wrl/client.h>
 #include <nvEncodeAPI.h>
@@ -12,6 +13,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 using Microsoft::WRL::ComPtr;
 
@@ -69,9 +71,24 @@ struct Encoder {
         if (!d || !w || !h || w > 3840 || h > 2160 || w % 2 || h % 2 || f < 1 || f > 240 || bitrate < 1000000 || bitrate > 45000000)
             throw std::runtime_error("Invalid NVENC configuration (max 3840x2160, even dimensions, 1-240 FPS, 1-45 Mbps)");
         width = w; height = h; fps = f; device = d;
+        ComPtr<IDXGIDevice> dxgi_device;
+        ComPtr<IDXGIAdapter> adapter;
+        DXGI_ADAPTER_DESC adapter_desc{};
+        hr(device.As(&dxgi_device), "Query capture adapter");
+        hr(dxgi_device->GetAdapter(&adapter), "Get capture adapter");
+        hr(adapter->GetDesc(&adapter_desc), "Get capture adapter description");
+        if (adapter_desc.VendorId != 0x10DE)
+            throw std::runtime_error("The capture GPU is not NVIDIA. Select a monitor connected to NVIDIA; AMF is not available in this build.");
         device->GetImmediateContext(&context);
         dll = LoadLibraryExW(L"nvEncodeAPI64.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
         if (!dll) throw std::runtime_error("NVIDIA NVENC driver DLL not found in System32");
+        auto maximum_version = reinterpret_cast<decltype(&NvEncodeAPIGetMaxSupportedVersion)>(GetProcAddress(dll, "NvEncodeAPIGetMaxSupportedVersion"));
+        if (!maximum_version) throw std::runtime_error("NVENC driver version query unavailable; update the NVIDIA driver.");
+        uint32_t driver_version = 0;
+        check(maximum_version(&driver_version), "Query NVENC driver API version");
+        const uint32_t required_version = (NVENCAPI_MAJOR_VERSION << 4) | NVENCAPI_MINOR_VERSION;
+        if (driver_version < required_version)
+            throw std::runtime_error("The NVIDIA driver does not support the NVENC API required by this build. Update the NVIDIA driver.");
         auto create = reinterpret_cast<NVENCSTATUS(NVENCAPI*)(NV_ENCODE_API_FUNCTION_LIST*)>(GetProcAddress(dll, "NvEncodeAPICreateInstance"));
         if (!create) throw std::runtime_error("NvEncodeAPICreateInstance unavailable");
         api.version = NV_ENCODE_API_FUNCTION_LIST_VER;
@@ -83,6 +100,20 @@ struct Encoder {
         open.deviceType = NV_ENC_DEVICE_TYPE_DIRECTX;
         check(api.nvEncOpenEncodeSessionEx(&open, &session), "Open D3D11 NVENC session (device must be NVIDIA)");
         const GUID codec = av1 ? NV_ENC_CODEC_AV1_GUID : NV_ENC_CODEC_HEVC_GUID;
+        // Check the selected GPU, not its generation/name: decode support does not imply encode support.
+        uint32_t codec_count = 0;
+        check(api.nvEncGetEncodeGUIDCount(session, &codec_count), "Query supported encode codecs");
+        if (!codec_count || codec_count > 64) throw std::runtime_error("Invalid NVENC codec capability count");
+        std::vector<GUID> codecs(codec_count);
+        uint32_t written = 0;
+        check(api.nvEncGetEncodeGUIDs(session, codecs.data(), codec_count, &written), "Read supported encode codecs");
+        if (written > codec_count) throw std::runtime_error("Invalid NVENC codec capability result");
+        const bool supported = std::any_of(codecs.begin(), codecs.begin() + written,
+            [&codec](const GUID& candidate) { return IsEqualGUID(candidate, codec); });
+        if (!supported)
+            throw std::runtime_error(av1
+                ? "AV1 hardware encoding is not supported by this GPU. Select HEVC/H.265 (Test-Streaming.ps1 -Role Publisher -Codec h265)."
+                : "HEVC/H.265 hardware encoding is not supported by this GPU.");
         NV_ENC_PRESET_CONFIG preset{};
         preset.version = NV_ENC_PRESET_CONFIG_VER;
         preset.presetCfg.version = NV_ENC_CONFIG_VER;
