@@ -1,10 +1,10 @@
 # Validação — 12 e 13/10/2026
 
-## Atualizador — 0.5.0, 13/10/2026
+## Atualizador — 0.5.1, 13/10/2026
 
 Implementado check manual assíncrono, comparação semântica de versão, detecção
 de instalação HKCU/diretório, download limitado, SHA-256 e handle que bloqueia
-escrita/remoção do arquivo verificado. Nove testes Rust passaram; teste
+escrita/remoção do arquivo verificado. Dez testes Rust passaram; teste
 operacional adicional fica ignorado no suite normal porque instala uma release
 real numa inscrição isolada. Casos negativos incluem domínio/redirect, draft,
 prerelease, instalador errado, digest ausente, tamanho excessivo e bytes alterados.
@@ -12,8 +12,14 @@ prerelease, instalador errado, digest ausente, tamanho excessivo e bytes alterad
 Interface portátil exercitada por UI Automation restrita ao PID/executável
 próprio: Atualizar abre a consulta sem bloquear, mostra ausência de release
 antes da primeira publicação e mantém o link de download no navegador.
-Build/empacotamento 0.5.0 passou. Não há polling automático ou token GitHub no
+Build/empacotamento 0.5.1 passou. Não há polling automático ou token GitHub no
 cliente. Checksum usa a release confiada via HTTPS, não assinatura Authenticode.
+
+O teste real da candidata 0.5.0 encontrou recusa do destino pelo Inno: caminho
+canônico Rust continha o prefixo `\\?\`. A 0.5.1 converte caminhos de drive e
+UNC para o formato aceito, preservando Unicode, e inclui teste de regressão.
+O instalador mantém mensagens de erro visíveis e escreve `install.log` no
+diretório privado do download. 0.5.0 foi marcada como prerelease substituída.
 
 ## Debug, dropdown e campos — 0.4.2, 13/10/2026
 

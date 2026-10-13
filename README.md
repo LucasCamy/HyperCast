@@ -1,6 +1,6 @@
 # HyperCast
 
-Versão 0.5.0: botão **Atualizar** verifica releases oficiais. A versão instalada
+Versão 0.5.1: botão **Atualizar** verifica releases oficiais. A versão instalada
 baixa, verifica e instala a atualização; a portátil abre o download no
 navegador padrão. [Como usar e publicar versões](docs/updates.md).
 

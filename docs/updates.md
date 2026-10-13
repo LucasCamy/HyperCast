@@ -1,4 +1,4 @@
-# Atualizações pelo aplicativo — 0.5.0
+# Atualizações pelo aplicativo — 0.5.1
 
 Use **Atualizar**, no topo da lateral. Ele abre a janela e consulta a versão
 estável mais recente do repositório oficial. **Verificar atualização** permite
@@ -15,7 +15,7 @@ navegador padrão do Windows, inclusive Chrome se estiver definido como padrão.
 Extraia o ZIP novo em outra pasta. **Abrir página de downloads** fica disponível
 mesmo sem atualização ou em caso de falha na consulta.
 
-0.4.x não possui o atualizador: instale 0.5.0 manualmente uma vez. As versões
+0.4.x não possui o atualizador: instale 0.5.1 manualmente uma vez. As versões
 seguintes poderão ser atualizadas pelo botão. A detecção usa a associação do
 executável ao diretório registrado pelo Inno Setup em HKCU; não depende da
 existência de um `unins000.exe` próximo de um executável portátil.

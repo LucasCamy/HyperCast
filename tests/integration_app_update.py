@@ -27,9 +27,16 @@ def registration():
             return {name:winreg.QueryValueEx(key,name)[0] for name in ('InstallLocation','DisplayVersion')}
     except FileNotFoundError:return None
 
-def invoke(child,exe,name):
-    subprocess.run(['powershell','-NoProfile','-ExecutionPolicy','Bypass','-File',str(ROOT/'tests/invoke_update_control.ps1'),
-        '-TargetPid',str(child.pid),'-ExpectedExecutable',str(exe),'-Name',name],check=True,timeout=12,creationflags=subprocess.CREATE_NO_WINDOW)
+def invoke(child,exe,name,required=True):
+    result=subprocess.run(['powershell','-NoProfile','-ExecutionPolicy','Bypass','-File',str(ROOT/'tests/invoke_update_control.ps1'),
+        '-TargetPid',str(child.pid),'-ExpectedExecutable',str(exe),'-Name',name],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=12,creationflags=subprocess.CREATE_NO_WINDOW)
+    if result.returncode:
+        (ROOT/'.tools/updater-control-error.log').write_bytes(result.stdout)
+        if required:
+            print(result.stdout.decode(errors='replace'))
+            raise subprocess.CalledProcessError(result.returncode,result.args)
+        return False
+    return True
 
 def main():
     assert registration() is None,'Existing user installation: refusing to replace its registration'
@@ -43,8 +50,8 @@ def main():
     originals={p:p.read_bytes() for p in (ROOT/'Cargo.toml',ROOT/'Cargo.lock')}
     prototype=ROOT/'.tools/updater-prototype.exe'
     try:
-        manifest=originals[ROOT/'Cargo.toml'].decode().replace(f'version = "{version}"','version = "0.4.99"',1)
-        lock=originals[ROOT/'Cargo.lock'].decode().replace(f'name = "hypercast"\nversion = "{version}"','name = "hypercast"\nversion = "0.4.99"')
+        manifest=originals[ROOT/'Cargo.toml'].decode().replace('\r\n','\n').replace(f'version = "{version}"','version = "0.4.99"',1)
+        lock=originals[ROOT/'Cargo.lock'].decode().replace('\r\n','\n').replace(f'name = "hypercast"\nversion = "{version}"','name = "hypercast"\nversion = "0.4.99"')
         (ROOT/'Cargo.toml').write_text(manifest,encoding='utf-8');(ROOT/'Cargo.lock').write_text(lock,encoding='utf-8')
         with (ROOT/'.tools/updater-prototype-build.log').open('wb') as out:
             subprocess.run(['powershell','-NoProfile','-ExecutionPolicy','Bypass','-File',str(ROOT/'tools/cargo-native.ps1'),
@@ -53,7 +60,7 @@ def main():
     finally:
         for path,data in originals.items():path.write_bytes(data)
     env={k:v for k,v in os.environ.items() if not k.startswith(('HYPERCAST_','LIVEKIT_','GH_','GITHUB_','CLOUDFLARE_'))}
-    env.update(HYPERCAST_AUTO_CONNECT='0',HYPERCAST_SMOKE_SECONDS='90')
+    env.update(HYPERCAST_AUTO_CONNECT='0',HYPERCAST_SMOKE_SECONDS='300')
     child=None;installed=False
     try:
         assert registration() is None
@@ -62,18 +69,20 @@ def main():
         exe=FIXTURE/'hypercast.exe';shutil.copy2(prototype,exe)
         with (ROOT/'.tools/updater-gui-prototype.log').open('wb') as out:
             child=subprocess.Popen([str(exe),'--gui'],cwd=ROOT,env=env,stdout=out,stderr=subprocess.STDOUT)
-            time.sleep(2);invoke(child,exe,'Atualizar');time.sleep(3)
+            deadline=time.monotonic()+12
+            while not invoke(child,exe,'Atualizar',False):
+                assert child.poll() is None,'Prototype failed to start'
+                assert time.monotonic()<deadline,'Owned UI did not become ready';time.sleep(.5)
+            time.sleep(3)
             screenshot(child.pid,ROOT/'.tools/updater-available.png')
             invoke(child,exe,'Baixar atualização')
             # Invoke only when the verified-install action enters the owned accessibility tree.
-            deadline=time.monotonic()+65
+            deadline=time.monotonic()+180
             while True:
                 assert child.poll() is None,'Prototype exited before download completion'
-                try:
-                    invoke(child,exe,'Instalar e reiniciar');break
-                except subprocess.CalledProcessError:
-                    assert time.monotonic()<deadline,'Verified installer action unavailable; inspect test screenshots/log'
-                    time.sleep(1)
+                if invoke(child,exe,'Instalar e reiniciar',False):break
+                assert time.monotonic()<deadline,'Verified installer action unavailable; inspect test screenshots/log'
+                time.sleep(1)
             assert child.wait(timeout=20)==0,'Updater did not close its caller'
         deadline=time.monotonic()+60
         while True:

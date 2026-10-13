@@ -5,7 +5,7 @@ use reqwest::blocking::Client;
 use semver::Version;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{fs::{self, File, OpenOptions}, io::{Read, Write}, os::windows::fs::{MetadataExt, OpenOptionsExt},
+use std::{ffi::OsString, fs::{self, File, OpenOptions}, io::{Read, Write}, os::windows::{fs::{MetadataExt, OpenOptionsExt},ffi::{OsStrExt,OsStringExt}},
     path::{Path, PathBuf}, process::Command, sync::{Arc, atomic::{AtomicU64, Ordering}, mpsc}, time::Duration};
 use windows::{core::w, Win32::{Foundation::ERROR_FILE_NOT_FOUND, System::Registry::{
     HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegGetValueW}}};
@@ -36,10 +36,23 @@ impl VerifiedInstaller {
         let Installation::Installed(current)=detect_installation()? else {bail!("Instalação não encontrada");};
         ensure!(&current==directory,"O diretório instalado mudou; verifique novamente");
         // _lock denies write/delete sharing until the loader has opened the image.
-        Command::new(&self.path).args(["/SILENT","/SUPPRESSMSGBOXES","/NORESTART","/HYPERCASTUPDATE=1"])
-            .arg(format!("/DIR={}",directory.display())).spawn().context("Não foi possível iniciar a atualização")?;
+        // Inno accepts drive/UNC paths, not Rust's canonical \\?\ device prefix.
+        // Keep installer error dialogs visible; only normal wizard pages are silent.
+        Command::new(&self.path).args(["/SILENT","/NORESTART","/HYPERCASTUPDATE=1"])
+            .arg(installer_path_argument("/DIR=",directory))
+            .arg(installer_path_argument("/LOG=",&self.directory.join("install.log")))
+            .spawn().context("Não foi possível iniciar a atualização")?;
         Ok(())
     }
+}
+fn installer_path_argument(prefix:&str,path:&Path)->OsString{
+    let mut text=path.as_os_str().encode_wide().collect::<Vec<_>>();
+    let verbatim=[92u16,92,63,92];
+    if text.starts_with(&verbatim){
+        if text[4..].starts_with(&[85,78,67,92]) {text.splice(..8,[92,92]);}
+        else{text.drain(..4);}
+    }
+    let mut argument=OsString::from(prefix);argument.push(OsString::from_wide(&text));argument
 }
 
 pub struct Updater {
@@ -161,8 +174,10 @@ pub fn clean_old_downloads(){
         let Ok(files)=fs::read_dir(&directory) else{continue;};
         for file in files.flatten().take(4){
             let name=file.file_name();let name=name.to_string_lossy();
-            let Some(version)=name.strip_prefix("HyperCast-").and_then(|s|s.strip_suffix("-windows-x64-setup.exe")) else{continue;};
-            if Version::parse(version).is_err(){continue;}
+            if name!="install.log"{
+                let Some(version)=name.strip_prefix("HyperCast-").and_then(|s|s.strip_suffix("-windows-x64-setup.exe")) else{continue;};
+                if Version::parse(version).is_err(){continue;}
+            }
             let Ok(metadata)=fs::symlink_metadata(file.path()) else{continue;};
             if !metadata.is_file() || metadata.file_attributes()&REPARSE_POINT!=0 {continue;}
             if metadata.modified().ok().and_then(|t|t.elapsed().ok()).is_some_and(|age|age>Duration::from_secs(86400)){
@@ -229,6 +244,11 @@ mod tests{
         for url in ["http://github.com/x","https://github.com.evil.example/x","https://localhost/x","https://user@github.com/x","https://github.com:444/x"]{
             assert!(!trusted_transport(&url::Url::parse(url).unwrap()));}
         assert!(trusted_transport(&url::Url::parse("https://release-assets.githubusercontent.com/x").unwrap()));
+    }
+    #[test]fn installer_uses_normal_windows_paths_and_preserves_unicode(){
+        assert_eq!(installer_path_argument("/DIR=",Path::new(r"\\?\C:\Usuários\Meu aplicativo")),OsString::from(r"/DIR=C:\Usuários\Meu aplicativo"));
+        assert_eq!(installer_path_argument("/DIR=",Path::new(r"\\?\UNC\server\share\app")),OsString::from(r"/DIR=\\server\share\app"));
+        assert_eq!(installer_path_argument("/LOG=",Path::new(r"F:\HyperCast\install.log")),OsString::from(r"/LOG=F:\HyperCast\install.log"));
     }
     #[test]fn verifies_bytes_and_holds_write_delete_lock(){
         let directory=std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());fs::create_dir(&directory).unwrap();let path=directory.join("setup.exe");

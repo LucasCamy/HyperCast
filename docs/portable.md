@@ -1,6 +1,6 @@
 # HyperCast para Windows
 
-0.5.0 adiciona **Atualizar** no topo da lateral. Instalações podem baixar e
+0.5.1 adiciona **Atualizar** no topo da lateral. Instalações podem baixar e
 instalar com reinício do aplicativo; o ZIP portátil abre o download no navegador
 padrão. Para começar a usar o recurso, atualize 0.4.x manualmente uma vez.
 Veja [atualizações](updates.md).
