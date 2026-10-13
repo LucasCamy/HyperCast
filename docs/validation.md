@@ -21,6 +21,17 @@ UNC para o formato aceito, preservando Unicode, e inclui teste de regressão.
 O instalador mantém mensagens de erro visíveis e escreve `install.log` no
 diretório privado do download. 0.5.0 foi marcada como prerelease substituída.
 
+`tests.integration_app_update` passou com a release pública 0.5.1: uma build
+privada anterior do mesmo cliente consultou a release, baixou o asset por HTTPS,
+verificou SHA-256, encerrou sua janela, atualizou o diretório registrado isolado
+e reabriu o executável publicado. Comparados DisplayVersion do registro e hash
+do binário com o pacote oficial. Consulta posterior na GUI instalada mostrou
+versão atual. Instalação de teste foi removida; inscrição HKCU limpa. Manifests
+temporários restaurados. Nenhuma sessão/instalação do usuário foi substituída.
+GUI portátil 0.5.1 também consultou a release pública e mostrou versão atual,
+identificada como portátil; a mesma release instalada foi identificada como
+instalação. Binário de desenvolvimento recompilado na versão real após o teste.
+
 ## Debug, dropdown e campos — 0.4.2, 13/10/2026
 
 Retirada seção permanente de diagnóstico e status duplicado. Debug pequeno
