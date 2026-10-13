@@ -1,5 +1,29 @@
 # Validação — 12 e 13/10/2026
 
+## Layout desktop — 0.3.1, 13/10/2026
+
+UI/UX Pro Max aplicada ao cliente egui; padrões de seleção de tela e controles
+de sessão de Discord/Zoom consultados. Não foram adicionados frameworks web,
+gravação/miniaturas da área de trabalho ou animações contínuas.
+
+Seleção de monitor/resolução e HEVC/AV1 agora fica acima do canvas; controles
+de publicação, parada, pausa, áudio e saída ficam na barra inferior. A lateral
+usa cartões de participantes com iniciais, nome, estado e seleção de foco.
+Formulário desaparece após conectar; servidor/token ficam em acesso avançado.
+Monitor/formato ficam bloqueados durante publicação para preservar o pipeline.
+
+Janela real inspecionada em 1320×820 e 960×620; sessão real isolada com três
+nomes sintéticos e publicações sem pixels confirmou os cartões. Screenshot
+versionado mostra somente a janela inicial, sem convite/token/mídia.
+
+ZIP final passou na integração de áudio/vídeo via TURN TLS: 1212 frames enviados
+no último ciclo, 1485 recebidos e 1451 apresentações GPU; stop/republication e
+silenciamento/retomada de áudio passaram. Uma tentativa inicial teve timeout
+de ICE; a repetição conectou. Outro resultado de teste confundiu logs de duas
+GUIs de revisão com os do teste de mídia; o teste passou a selecionar por PID.
+Não é evidência de latência <100 ms ou estabilidade QHD120 sob movimento.
+Instalador gerado; instalação/desinstalação 0.3.1 não repetida.
+
 ## Áudio do sistema — 0.3.0, 13/10/2026
 
 Servidor SFU e API implantados no k3s após o proprietário sair da sala e

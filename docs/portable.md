@@ -1,5 +1,16 @@
 # HyperCast para Windows
 
+Na versão 0.3.1, monitor e formato ficam na faixa acima das telas. Abra a seleção
+de monitor para ver as opções com resolução; escolha HEVC/H.265 ou AV1 nos
+botões ao lado. Essas opções ficam bloqueadas durante a transmissão: pare para
+trocar. A barra inferior mostra o monitor selecionado e distingue compartilhar,
+parar, pausar recepção, áudio do sistema e sair.
+
+Participantes aparecem em cartões com inicial, nome e estado. Clique em quem
+está compartilhando para destacar a tela. Após entrar, o formulário de acesso
+é substituído por um resumo da sala. Servidor/token manual ficam em
+**Servidor e acesso avançado** na entrada.
+
 Versão 0.3.0: marque **Áudio do sistema** antes ou durante o
 compartilhamento para enviar som de jogos, vídeos e programas. A opção começa
 desativada; não captura microfone. Parar a tela também para o áudio.

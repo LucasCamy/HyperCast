@@ -23,7 +23,8 @@ def main():
         if publisher: grants['canPublishSources'] = ['screen_share','screen_share_audio']
         return rt.sign({'iss':key,'sub':'hc-member-'+uuid.uuid4().hex,'nbf':now-5,'exp':now+300,'video':grants},secret)
     base = {k:v for k,v in os.environ.items() if k not in {'LIVEKIT_API_KEY','LIVEKIT_API_SECRET','LIVEKIT_KEYS'}}
-    base.update(HYPERCAST_URL='wss://hypercast.cloudlane.com.br',HYPERCAST_AUTO_CONNECT='1',HYPERCAST_RELAY_ONLY='1')
+    relay_only = os.environ.get('HYPERCAST_AUDIO_TEST_RELAY_ONLY','1') == '1'
+    base.update(HYPERCAST_URL='wss://hypercast.cloudlane.com.br',HYPERCAST_AUTO_CONNECT='1',HYPERCAST_RELAY_ONLY='1' if relay_only else '0')
     executable = os.environ.get('HYPERCAST_TEST_EXE',str(ROOT/'target/x86_64-pc-windows-msvc/debug/hypercast.exe'))
     children=[]; outputs=[]
     diagnostics = Path(os.environ['LOCALAPPDATA'])/'HyperCast/diagnostics'
@@ -43,8 +44,11 @@ def main():
             time.sleep(1)
         for child in children[1:]: assert child.wait(timeout=40)==0,'GUI failed'
         for output in outputs: output.close()
-        logs=[path.read_text(errors='replace') for path in set(diagnostics.glob('gui-*.log'))-before]
+        target_pids={child.pid for child in children[1:]}
+        logs=[path.read_text(errors='replace') for path in set(diagnostics.glob('gui-*.log'))-before
+            if any(path.name.endswith(f'-{pid}.log') for pid in target_pids)]
         assert len(logs)==2,'Missing session diagnostics'
+        assert any('System audio published:' in log for log in logs),'No audio publication; inspect the child/session diagnostics'
         publisher=next(log for log in logs if 'System audio published:' in log)
         viewer=next(log for log in logs if 'Subscribed to system audio' in log)
         assert publisher.count('System audio published:')==2,'Stop/republication failed'
@@ -62,8 +66,8 @@ def main():
         assert max(map(int,re.findall(r'audio_stats: sent=\d+ received=(\d+)',viewer)),default=0)>200,'Insufficient decoded audio'
         for log in logs:
             assert not re.search(r'audio_error:|audio_playback_error:|audio_unpublish_error:|publication_error:|capture_error:',log),'Audio/video pipeline error'
-            assert 'relay transport=Some(Tls)' in log,'TURN TLS was not selected'
-        print('PASS: system PCM capture, Opus, TURN TLS, decoded non-silent stereo, WASAPI output, stop and republish')
+            if relay_only: assert 'relay transport=Some(Tls)' in log,'TURN TLS was not selected'
+        print('PASS: system PCM capture, Opus, '+('TURN TLS' if relay_only else 'WebRTC')+', decoded non-silent stereo, WASAPI output, stop and republish')
     finally:
         for child in children:
             if child.poll() is None: child.terminate(); child.wait(timeout=10)
