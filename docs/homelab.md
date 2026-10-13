@@ -15,6 +15,12 @@ A descoberta STUN encontrou o WAN, mas sua auto-validação falhou atrás do NAT
 
 ## Evidência
 
+Preparação TURN em 13/10/2026: DNS-only turn.hypercast.cloudlane.com.br criado
+na zona Cloudflare apontando ao WAN atual; certificado Let's Encrypt DNS-01
+emitido na VM e timer Certbot ativo. Operador informou encaminhamento TCP 5349
+para a VM. Serviço coturn e integração no SFU ainda pendentes; ver
+[preparação TURN/TLS](turn-tls.md). Credenciais DNS ficam protegidas e fora do Git.
+
 Quota real rejeitou segundo screen_share e identidades fora do pool. AV1 via SFU remoto passou com 650 quadros D3D11; depois WSS público passou com 591 quadros. São amostras funcionais 1080p, sem comprovar estabilidade QHD/120 ou latência. Sinalização atravessou Cloudflare; mídia usou a rota LAN/VPN disponível.
 
 ## Rota pública validada

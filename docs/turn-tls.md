@@ -1,5 +1,24 @@
 # Preparação TURN/TLS no Cloudlane
 
+## Preparação executada — 13/10/2026
+
+Token do operador validado e acesso à zona cloudlane.com.br confirmado. Criado
+registro A turn.hypercast.cloudlane.com.br → 179.181.177.175, DNS-only, TTL 300.
+O CNAME proxied da sinalização hypercast.cloudlane.com.br foi preservado.
+O proprietário informou encaminhamento TCP 5349 → 192.168.15.19 TCP 5349.
+
+Certbot e plugin DNS Cloudflare instalados na VM Kubernetes pelo repositório
+Ubuntu. Certificado Let's Encrypt emitido por DNS-01 com nome hypercast-turn,
+válido até 11/01/2027. Arquivos ficam em /etc/letsencrypt/live/hypercast-turn/.
+Credential INI guardada root:root, modo 0600, para renovação; valor não é
+versionado. O timer certbot.timer está ativo. A conta ACME foi criada sem e-mail;
+um contato pode ser associado posteriormente para avisos operacionais.
+
+O coturn ainda não está implantado, o SFU não anuncia TURN externo e TCP 5349
+não tem listener. A renovação do certificado deverá incluir atualização do
+Secret e reinício/recarga do coturn quando esse workload estiver implantado.
+Porta encaminhada e certificado emitido não comprovam funcionamento de relay.
+
 ## Restrição confirmada pelo proprietário
 
 O roteador Vivo reserva WAN TCP 443 para gerenciamento da operadora e não
