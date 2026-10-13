@@ -33,7 +33,7 @@ class AdmissionTests(unittest.TestCase):
     def test_three_publishers_fourth_rejected_and_viewer_allowed(self, _):
         claims = [decode(self.issue()) for _ in range(3)]
         self.assertEqual({c["sub"] for c in claims}, {"hc-screen-1", "hc-screen-2", "hc-screen-3"})
-        self.assertEqual(claims[0]["video"]["canPublishSources"], ["screen_share"])
+        self.assertEqual(claims[0]["video"]["canPublishSources"], ["screen_share", "screen_share_audio"])
         with self.assertRaises(RuntimeError): self.issue()
         viewer = decode(self.issue("viewer"))
         self.assertFalse(viewer["video"]["canPublish"])

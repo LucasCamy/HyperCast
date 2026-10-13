@@ -109,7 +109,7 @@ def issue(room, name, role, key, secret, db_path, cap=3, ttl=300):
                         "canPublish": role == "publisher", "canPublishData": False,
                         "canUpdateOwnMetadata": False}}
     if role == "publisher":
-        claims["video"]["canPublishSources"] = ["screen_share"]
+        claims["video"]["canPublishSources"] = ["screen_share", "screen_share_audio"]
     return sign(claims, secret)
 
 def main():

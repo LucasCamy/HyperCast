@@ -11,6 +11,13 @@ Essas permissões não são aceitas do cliente no endpoint público. Todos os me
 do convite padrão podem compartilhar; a quota de telas é aplicada no SFU apenas
 ao publicar, e não ao entrar. Até doze participantes e três telas simultâneas.
 
+Desde 0.3.0, convites de publicador concedem `screen_share` e
+`screen_share_audio`; microfone continua proibido. Uma faixa de áudio deve
+acompanhar uma tela pendente/ativa do mesmo membro e não consome uma quarta
+vaga. O SFU rejeita áudio isolado/duplicado e encerra áudio ao fechar sua tela.
+Reentre com o mesmo convite para obter as novas permissões. Tokens manuais
+anteriores que permitem apenas vídeo precisam ser gerados novamente.
+
 ## Operador
 
 ```powershell

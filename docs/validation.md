@@ -1,5 +1,35 @@
 # Validação — 12 e 13/10/2026
 
+## Áudio do sistema — 0.3.0, 13/10/2026
+
+Servidor SFU e API implantados no k3s após o proprietário sair da sala e
+autorizar o reinício. Mesmas portas/DNS/TURN; Opus habilitado, subscrição de
+áudio limitada a três. Novos JWTs de publicador permitem tela e áudio de tela.
+Testes Go incluem áudio pareado, duplicata, áudio isolado, microfone e quota
+concorrente. Dezesseis testes Python e seis Rust passaram. Integração de quota
+contra o SFU atualizado manteve três telas, quarta recusada e liberação ao parar.
+
+`tests/system-audio.ps1` passou: a captura excluiu o próprio processo enquanto
+ele reproduzia um tom sintético; limites de buffers PCM foram respeitados.
+Uma primeira tentativa coincidiu com FFplay externo de outro teste; repetir
+sem esse áudio externo confirmou a exclusão. Não foram gravados sons.
+
+`tests.integration_system_audio` passou com o executável do ZIP final 0.3.0:
+som gerado externamente → captura PCM → Opus → SFU/TURN TLS → decode de
+áudio não silencioso com canais L/R distintos → WASAPI playout. O receptor
+renderizou zeros no teste para evitar feedback entre dois processos no mesmo
+PC. Detectar os canais separados exigiu sinalizar estéreo no AddTrack e no
+SDP answer do subscriber; estéreo permaneceu correto após parar/republicar.
+As janelas de silenciamento da GUI foram associadas ao timestamp de volume
+zero nos logs, confirmando zero sinks e retomada do contador após reativar.
+
+Layout revisado na janela do aplicativo, sem credenciais/mídia: checkbox
+**Áudio do sistema** visível na barra de compartilhamento; volume e mute na
+lateral. ZIP e instalador gerados; instalação/desinstalação 0.3.0 não repetida.
+Não comprova sincronismo físico áudio/vídeo, latência <100 ms ou QHD120 em
+movimento. Som do sistema requer Windows build 20348+; hotplug pode exigir
+desativar/reativar. Mais detalhes em [áudio do sistema](system-audio.md).
+
 ## Correções de captura HDR e encerramento — 0.2.1, 13/10/2026
 
 O diagnóstico `message (6).txt` da versão 0.2.0 mostra textura mudando para

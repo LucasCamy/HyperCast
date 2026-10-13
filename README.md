@@ -1,5 +1,11 @@
 # HyperCast
 
+Áudio do sistema está disponível na versão 0.3.0: captura WASAPI sem microfone,
+Opus estéreo 48 kHz, volume/silenciamento e recepção conforme Grid/Destaque.
+Marque **Áudio do sistema** na interface. Requer Windows 11/build
+20348+ para excluir a saída do próprio aplicativo e evitar eco. Veja
+[áudio do sistema](docs/system-audio.md).
+
 ![Interface nativa HyperCast](assets/layout.png)
 
 Aplicativo nativo Windows para compartilhar telas por SFU LiveKit centralizado. Pipeline DXGI → NVENC → WebRTC → D3D11VA → swapchain DirectX, interface egui e até três publicadores por sala. Imagens brutas ficam na GPU; cópias entre texturas GPU e bitstream comprimido em RAM fazem parte do pipeline.

@@ -23,7 +23,7 @@ assert source.count(anchor) == 1
 source = source.replace(anchor, anchor + '\thypercastRooms.release(p.ClaimGrants().Video.Room, string(p.ID()))\n')
 anchor = '\t\tp.listener().OnTrackUnpublished(p, mt)\n'
 assert source.count(anchor) == 1
-source = source.replace(anchor, '\t\tif ti.Source == livekit.TrackSource_SCREEN_SHARE { hypercastRooms.release(quotaRoom, quotaParticipant) }\n' + anchor)
+source = source.replace(anchor, '\t\tif ti.Source == livekit.TrackSource_SCREEN_SHARE { p.hypercastEndScreen(quotaRoom, quotaParticipant) }\n' + anchor)
 anchor = '\ttrackID := livekit.TrackID(ti.Sid)\n\tmt.AddOnClose('
 assert source.count(anchor) == 1
 source = source.replace(anchor, '\tquotaRoom, quotaParticipant := p.ClaimGrants().Video.Room, string(p.ID())\n' + anchor)

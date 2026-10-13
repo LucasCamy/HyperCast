@@ -15,6 +15,14 @@ func TestHypercastQuota(t *testing.T) {
     if hypercastQuota("hc-screen-1", 3, screen, pending) == "" { t.Fatal("duplicate/pending screen admitted") }
     preview := &livekit.AddTrackRequest{Type: livekit.TrackType_VIDEO, Source: livekit.TrackSource_UNKNOWN, Name:"screen-preview"}
     if hypercastQuota("hc-screen-1", 3, preview, pending) == "" { t.Fatal("unknown source bypassed screen quota") }
+    audio := &livekit.AddTrackRequest{Type: livekit.TrackType_AUDIO, Source: livekit.TrackSource_SCREEN_SHARE_AUDIO}
+    if hypercastQuota("hc-screen-1", 3, audio, nil) == "" { t.Fatal("unpaired audio admitted") }
+    screenWithType := []*livekit.TrackInfo{{Type:livekit.TrackType_VIDEO, Source:livekit.TrackSource_SCREEN_SHARE}}
+    if hypercastQuota("hc-screen-1", 3, audio, screenWithType) != "" { t.Fatal("paired audio refused") }
+    screenWithType = append(screenWithType, &livekit.TrackInfo{Type:livekit.TrackType_AUDIO, Source:livekit.TrackSource_SCREEN_SHARE_AUDIO})
+    if hypercastQuota("hc-screen-1", 3, audio, screenWithType) == "" { t.Fatal("duplicate audio admitted") }
+    audio.Source = livekit.TrackSource_MICROPHONE
+    if hypercastQuota("hc-screen-1", 3, audio, screenWithType) == "" { t.Fatal("microphone admitted") }
 }
 
 func TestHypercastConcurrentRoomReservations(t *testing.T) {

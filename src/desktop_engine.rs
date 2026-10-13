@@ -4,6 +4,7 @@ use crate::{
     pacing::FramePacer,
     screen_capture::{CaptureConfig, ScreenCapture},
     subscription::ViewMode,
+    system_audio::{AudioReceiver, SystemAudioPublisher},
 };
 use anyhow::Result;
 use eframe::egui;
@@ -14,7 +15,7 @@ use livekit::{
 };
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, Mutex, mpsc, atomic::{AtomicU64, Ordering}},
     time::{Duration, Instant},
 };
 use tokio_stream::StreamExt;
@@ -58,12 +59,14 @@ pub struct Shared {
     pub frames: HashMap<String, Arc<VideoFrame>>,
     pub received: u64,
     pub sent: u64,
+    pub audio_status: String,
 }
 #[derive(Clone)]
 pub struct Layout {
     pub mode: ViewMode,
     pub focus: Option<String>,
     pub paused: bool,
+    pub volume: u32,
 }
 pub enum Command {
     Layout(Layout),
@@ -73,6 +76,7 @@ pub enum Command {
         codec: Codec,
     },
     StopShare,
+    SystemAudio(bool),
     Disconnect,
 }
 pub struct Engine {
@@ -102,6 +106,7 @@ struct Cast {
     count: u64,
     paused: bool,
     fps: u32,
+    audio: Option<SystemAudioPublisher>,
 }
 struct Sink {
     owner: String,
@@ -147,6 +152,7 @@ impl Cast {
             codec == Codec::Av1,
         ))?;
         Ok(Self {
+            audio: None,
             selection: (adapter, output, codec),
             capture,
             encoder: Some(encoder),
@@ -188,7 +194,13 @@ impl Cast {
         }
         Ok(())
     }
-    fn stop(self, runtime: &tokio::runtime::Runtime) {
+    fn set_audio(&mut self, enabled: bool, runtime: &tokio::runtime::Runtime, room: &Arc<Room>) -> Result<()> {
+        if !enabled { if let Some(audio) = self.audio.take() { audio.stop(runtime); } }
+        else if self.audio.is_none() { self.audio = Some(SystemAudioPublisher::start(runtime, room.clone())?); }
+        Ok(())
+    }
+    fn stop(mut self, runtime: &tokio::runtime::Runtime) {
+        if let Some(audio) = self.audio.take() { audio.stop(runtime); }
         if let Some(publisher) = self.publisher {
             if let Err(error) = runtime.block_on(publisher.stop()) {
                 crate::diagnostics::write("unpublish_error", &format!("{error:#}"), "");
@@ -234,6 +246,18 @@ fn update_subscriptions(room: &Room, layout: &Layout) {
         }
         if publication.simulcasted() && enabled {
             publication.set_video_quality(VideoQuality::High);
+        }
+    }
+    for participant in room.remote_participants().into_values() {
+        let identity = participant.identity().to_string();
+        let has_screen = screens.iter().any(|(owner, _)| owner == &identity);
+        for publication in participant.track_publications().into_values() {
+            if publication.source() != TrackSource::ScreenshareAudio { continue; }
+            let enabled = has_screen && !layout.paused && layout.volume > 0
+                && (layout.mode == ViewMode::Grid || Some(identity.as_str()) == focus);
+            if !enabled && publication.is_subscribed() { publication.set_enabled(false); }
+            publication.set_subscribed(enabled);
+            if enabled && publication.is_subscribed() { publication.set_enabled(true); }
         }
     }
 }
@@ -288,6 +312,7 @@ impl Engine {
                         .is_some_and(|grant| grant.can_publish);
                 }
                 let mut layout = Layout {
+                    volume: 80,
                     mode: ViewMode::Spotlight,
                     focus: None,
                     paused: false,
@@ -304,6 +329,10 @@ impl Engine {
                 #[cfg(debug_assertions)]
                 let mut injected_capture_loss = false;
                 let mut sinks = HashMap::<TrackSid, Sink>::new();
+                let mut audio_sinks = HashMap::<TrackSid, AudioReceiver>::new();
+                let mut audio_requested = false;
+                let audio_volume = Arc::new(AtomicU64::new(80));
+                let audio_received = Arc::new(AtomicU64::new(0));
                 let mut pacer = FramePacer::new(120)?;
                 update_subscriptions(&room, &layout);
                 let mut info_tick = Instant::now();
@@ -337,7 +366,8 @@ impl Engine {
                                 break 'session;
                             }
                             Command::Layout(next) => {
-                                crate::diagnostics::write("layout", &format!("mode={:?} paused={}", next.mode, next.paused), "");
+                                audio_volume.store(next.volume.min(100) as u64, Ordering::Relaxed);
+                                crate::diagnostics::write("layout", &format!("mode={:?} paused={} volume={}", next.mode, next.paused, next.volume), "");
                                 manual_layout = next;
                                 layout = manual_layout.clone();
                                 layout.paused |= window_hidden;
@@ -352,7 +382,13 @@ impl Engine {
                                 recovery_attempts = 0;
                                 crate::diagnostics::write("publication", &format!("adapter={adapter} output={output} codec={codec:?}"), "");
                                 match Cast::new(adapter, output, codec, &runtime, &room) {
-                                    Ok(value) => {
+                                    Ok(mut value) => {
+                                        if let Err(error) = value.set_audio(audio_requested, &runtime, &room) {
+                                            state.lock().unwrap().audio_status = format!("Áudio: {error}");
+                                            crate::diagnostics::write("audio_error", &format!("{error:#}"), &token);
+                                        } else {
+                                            state.lock().unwrap().audio_status = if audio_requested { "Enviando áudio do sistema" } else { "Áudio do sistema desativado" }.into();
+                                        }
                                         cast = Some(value);
                                         let mut state = state.lock().unwrap();
                                         state.publishing = true;
@@ -379,10 +415,20 @@ impl Engine {
                                 }
                                 let mut state = state.lock().unwrap();
                                 state.publishing = false;
+                                state.audio_status = "Áudio do sistema parado".into();
                                 state.status = "Conectado".into();
                                 state
                                     .frames
                                     .remove(&room.local_participant().identity().to_string());
+                            }
+                            Command::SystemAudio(enabled) => {
+                                audio_requested = enabled;
+                                if let Some(value) = &mut cast {
+                                    state.lock().unwrap().audio_status = match value.set_audio(enabled, &runtime, &room) {
+                                        Ok(()) => if enabled { "Enviando áudio do sistema" } else { "Áudio do sistema desativado" }.into(),
+                                        Err(error) => { crate::diagnostics::write("audio_error", &format!("{error:#}"), &token); format!("Áudio: {error}") }
+                                    };
+                                }
                             }
                             _ => {}
                         }
@@ -392,6 +438,12 @@ impl Engine {
                             break;
                         };
                         match event {
+                            RoomEvent::TrackSubscribed { track: RemoteTrack::Audio(track), publication, .. } => {
+                                if publication.source() == TrackSource::ScreenshareAudio && !layout.paused && layout.volume > 0 && audio_sinks.len() < 3 {
+                                    audio_sinks.insert(publication.sid(), AudioReceiver::start(&runtime, track, audio_volume.clone(), audio_received.clone()));
+                                    crate::diagnostics::write("audio", "Subscribed to system audio", "");
+                                } else { publication.set_subscribed(false); }
+                            }
                             RoomEvent::TrackSubscribed {
                                 track: RemoteTrack::Video(track),
                                 publication,
@@ -429,6 +481,7 @@ impl Engine {
                                 sinks.insert(sid, Sink { owner, task });
                             }
                             RoomEvent::TrackUnsubscribed { publication, .. } => {
+                                audio_sinks.remove(&publication.sid());
                                 if let Some(task) = sinks.remove(&publication.sid()) {
                                     task.abort();
                                 }
@@ -440,14 +493,13 @@ impl Engine {
                                 publication,
                                 participant,
                             } => {
+                                audio_sinks.remove(&publication.sid());
                                 if let Some(task) = sinks.remove(&publication.sid()) {
                                     task.abort();
                                 }
-                                state
-                                    .lock()
-                                    .unwrap()
-                                    .frames
-                                    .remove(&participant.identity().to_string());
+                                if publication.kind() == TrackKind::Video {
+                                    state.lock().unwrap().frames.remove(&participant.identity().to_string());
+                                }
                                 update_subscriptions(&room, &layout);
                             }
                             RoomEvent::ParticipantDisconnected(participant) => {
@@ -483,7 +535,10 @@ impl Engine {
                         recovery_attempts += 1;
                         crate::diagnostics::write("recovery", &format!("Rebuilding GPU pipeline, attempt {recovery_attempts}/3"), "");
                         match Cast::new(selection.0, selection.1, selection.2, &runtime, &room) {
-                            Ok(value) => {
+                            Ok(mut value) => {
+                                if let Err(error) = value.set_audio(audio_requested, &runtime, &room) {
+                                    state.lock().unwrap().audio_status = format!("Áudio: {error}");
+                                }
                                 cast = Some(value);
                                 state.lock().unwrap().publishing = true;
                             }
@@ -498,6 +553,12 @@ impl Engine {
                         }
                     }
                     if let Some(value) = &mut cast {
+                        let audio_failure = value.audio.as_ref().and_then(|audio| audio.failure.lock().unwrap().take());
+                        if let Some(message) = audio_failure {
+                            let _ = value.set_audio(false, &runtime, &room);
+                            state.lock().unwrap().audio_status = format!("Áudio: {message}");
+                            crate::diagnostics::write("audio_error", &message, "");
+                        }
                         let tick_result = value.tick(&runtime, &room);
                         #[cfg(debug_assertions)]
                         let tick_result = if !injected_capture_loss && value.count > 120
@@ -578,6 +639,7 @@ impl Engine {
                     if diagnostic_tick.elapsed() >= Duration::from_secs(5) {
                         let shared = state.lock().unwrap();
                         crate::diagnostics::write("media", &format!("sent={} received={} receivers={} publishing={}", shared.sent, shared.received, sinks.len(), shared.publishing), "");
+                        crate::diagnostics::write("audio_stats", &format!("sent={} received={} receivers={}", cast.as_ref().and_then(|value| value.audio.as_ref()).map_or(0, |audio| audio.frames.load(Ordering::Relaxed)), audio_received.load(Ordering::Relaxed), audio_sinks.len()), "");
                         drop(shared);
                         let diagnostic_room = room.clone();
                         runtime.spawn(async move {
@@ -599,6 +661,7 @@ impl Engine {
                 if let Some(value) = cast {
                     value.stop(&runtime);
                 }
+                audio_sinks.clear();
                 for (_, task) in sinks {
                     task.abort();
                     let _ = runtime.block_on(task.task);

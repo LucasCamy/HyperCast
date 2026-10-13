@@ -29,6 +29,9 @@ struct App {
     mode: ViewMode,
     focus: Option<String>,
     paused: bool,
+    system_audio: bool,
+    volume: u32,
+    sound_muted: bool,
     displays: Vec<crate::screen_capture::Display>,
     selected_display: usize,
     codec: crate::encoder::Codec,
@@ -44,6 +47,7 @@ struct App {
     smoke_reconnected: bool,
     smoke_layout_stage: u8,
     smoke_share_stage: u8,
+    smoke_sound_stage: u8,
 }
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -88,6 +92,9 @@ impl App {
             },
             focus: std::env::var("HYPERCAST_FOCUS").ok(),
             paused: false,
+            system_audio: std::env::var("HYPERCAST_SYSTEM_AUDIO").as_deref() == Ok("1"),
+            volume: 80,
+            sound_muted: false,
             displays: crate::screen_capture::displays().unwrap_or_default(),
             selected_display: 0,
             codec: if std::env::var("HYPERCAST_CODEC").as_deref() == Ok("av1") {
@@ -110,11 +117,13 @@ impl App {
             smoke_reconnected: false,
             smoke_layout_stage: 0,
             smoke_share_stage: 0,
+            smoke_sound_stage: 0,
         }
     }
     fn send_layout(&self) {
         if let Some(engine) = &self.engine {
             let _ = engine.commands.send(Command::Layout(Layout {
+                volume: if self.sound_muted { 0 } else { self.volume },
                 mode: self.mode,
                 focus: self.focus.clone(),
                 paused: self.paused,
@@ -122,16 +131,32 @@ impl App {
         }
     }
     fn join_room(&self, ctx: egui::Context) -> Engine {
-        if self.token_mode {
+        let engine = if self.token_mode {
             Engine::connect(self.address.trim().to_owned(), self.token.trim().to_owned(), ctx, self.parent, self.relay_only)
         } else {
             Engine::connect_invite(self.address.trim().to_owned(), self.invite.trim().to_owned(), self.name.trim().to_owned(), self.client_id.clone(), ctx, self.parent, self.relay_only)
-        }
+        };
+        let _ = engine.commands.send(Command::SystemAudio(self.system_audio));
+        let _ = engine.commands.send(Command::Layout(Layout {
+            mode: self.mode, focus: self.focus.clone(), paused: self.paused,
+            volume: if self.sound_muted { 0 } else { self.volume },
+        }));
+        engine
     }
 }
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if self.smoke_seconds.is_some() && std::env::var("HYPERCAST_SMOKE_SOUND").as_deref() == Ok("1") {
+            let elapsed = self.started.elapsed().as_secs();
+            if self.smoke_sound_stage == 0 && elapsed >= 6 {
+                self.sound_muted = true; self.send_layout(); self.smoke_sound_stage = 1;
+                println!("GUI audio: muted");
+            } else if self.smoke_sound_stage == 1 && elapsed >= 12 {
+                self.sound_muted = false; self.send_layout(); self.smoke_sound_stage = 2;
+                println!("GUI audio: resumed");
+            }
+        }
         if self.smoke_seconds.is_some()
             && std::env::var("HYPERCAST_SMOKE_LAYOUTS").as_deref() == Ok("1")
         {
@@ -188,6 +213,7 @@ impl eframe::App for App {
         let mut identity = String::new();
         let mut room = "Sua sala de trabalho".to_owned();
         let mut status = "Pronto para conectar".to_owned();
+        let mut audio_status = String::new();
         let mut people = Vec::new();
         let mut screens = Vec::new();
         let mut videos = Vec::new();
@@ -203,6 +229,7 @@ impl eframe::App for App {
                 room = state.room.clone();
             }
             status = state.status.clone();
+            audio_status = state.audio_status.clone();
             people = state.participants.clone();
             screens = state.screens.clone();
             videos = state
@@ -302,6 +329,10 @@ impl eframe::App for App {
                     }
                 }
                 if ui.add_enabled(connected, egui::Button::new(if self.paused { "Retomar telas" } else { "Pausar recepção" })).clicked() { self.paused = !self.paused; self.send_layout(); }
+                if ui.add_enabled(!connected || can_publish, egui::Checkbox::new(&mut self.system_audio, "Áudio do sistema"))
+                    .on_hover_text("Enviar som dos programas junto com sua tela. Não captura microfone.").changed() {
+                    if let Some(engine) = &self.engine { let _ = engine.commands.send(Command::SystemAudio(self.system_audio)); }
+                }
                 if self.engine.is_some() && ui.button("Sair da sala").clicked() { self.engine = None; self.presenters.clear(); self.last_presented.clear(); }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(RichText::new(format!("{received} recebidos  /  {sent} codificados")).size(12.0).color(MUTED));
@@ -376,6 +407,10 @@ impl eframe::App for App {
                         });
                         ui.add_space(12.0);
                         ui.label(RichText::new("PARTICIPANTES").size(11.0).color(MUTED));
+                        if ui.checkbox(&mut self.sound_muted, "Silenciar áudio recebido").changed() { self.send_layout(); }
+                        if ui.add(egui::Slider::new(&mut self.volume, 0..=100).text("Volume")).changed() { self.send_layout(); }
+                        ui.label(RichText::new(if self.mode == ViewMode::Grid { "Grid: som das telas visíveis" } else { "Destaque: som da tela escolhida" }).size(11.0).color(MUTED));
+                        ui.add_space(12.0);
                         if people.is_empty() {
                             ui.label(
                                 RichText::new("Os amigos aparecem aqui ao entrar.")
@@ -438,6 +473,7 @@ impl eframe::App for App {
                         }).response.on_hover_text("Escolha um formato compatível com as GPUs da sala. Pare o compartilhamento antes de mudar.");
                         ui.add_space(16.0);
                         ui.label(RichText::new(&status).size(12.0).color(MUTED));
+                        if !audio_status.is_empty() { ui.label(RichText::new(&audio_status).size(11.0).color(MUTED)); }
                         if !self.error.is_empty() {
                             ui.colored_label(Color32::LIGHT_RED, &self.error);
                         }

@@ -19,6 +19,7 @@ room:
   empty_timeout: 300
   departure_timeout: 20
   enabled_codecs:
+    - mime: audio/opus
     - mime: video/H265
     - mime: video/AV1
     - mime: video/H264
@@ -27,6 +28,7 @@ room:
     min: 0
     max: 0
 limit:
+  subscription_limit_audio: 3
   subscription_limit_video: 3
   # num_tracks and bytes_per_sec are NODE allocation limits, not room quotas.
   # Bitrate 35-45 Mbps belongs to the encoder, not a node-wide SFU limit.

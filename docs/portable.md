@@ -1,5 +1,17 @@
 # HyperCast para Windows
 
+Versão 0.3.0: marque **Áudio do sistema** antes ou durante o
+compartilhamento para enviar som de jogos, vídeos e programas. A opção começa
+desativada; não captura microfone. Parar a tela também para o áudio.
+**Silenciar áudio recebido** interrompe a subscrição de áudio; **Volume**
+ajusta a reprodução local. Destaque recebe o som da tela escolhida; Grid mistura
+o som das telas visíveis. Pausar recepção ou minimizar pausa vídeo e áudio.
+
+Áudio do sistema requer Windows 11 ou build 20348+ para excluir a reprodução
+do próprio HyperCast e evitar eco. Windows 10 comum pode compartilhar vídeo
+sem áudio. A captura usa PCM estéreo 48 kHz e WebRTC/Opus até 128 kbps.
+Nenhum driver virtual, microfone ou arquivo de gravação é necessário.
+
 Abra hypercast.exe. O servidor público já vem preenchido. Informe nome (letras
 sem acentos, números, hífen ou sublinhado) e convite da sala, depois Entrar na sala.
 O aplicativo obtém automaticamente um JWT curto; ninguém precisa gerar um token

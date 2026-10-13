@@ -41,6 +41,7 @@ class AdmissionTests(unittest.TestCase):
             body=result['token'].split('.')[1]
             claims=json.loads(base64.urlsafe_b64decode(body+'='*(-len(body)%4)))
             self.assertTrue(claims['video']['canPublish'])
+            self.assertEqual(claims['video']['canPublishSources'], ['screen_share','screen_share_audio'])
             identities.append(claims['sub'])
         self.assertEqual(len(set(identities)),5)
         self.app.revoke(invite['invitation_id'])

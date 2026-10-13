@@ -26,7 +26,7 @@ use livekit_protocol as proto;
 use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
 
-use super::EngineResult;
+use super::{EngineError, EngineResult};
 
 pub type OnOfferCreated = Box<dyn FnMut(SessionDescription) + Send + Sync>;
 
@@ -207,7 +207,11 @@ impl PeerTransport {
         options: AnswerOptions,
     ) -> EngineResult<SessionDescription> {
         self.set_remote_description(offer).await?;
-        let answer = self.peer_connection().create_answer(options).await?;
+        let mut answer = self.peer_connection().create_answer(options).await?;
+        // Negotiate stereo reception on the SFU subscriber connection too.
+        let stereo = Self::munge_stereo_for_audio(&answer.to_string());
+        answer = SessionDescription::parse(&stereo, answer.sdp_type())
+            .map_err(|_| EngineError::Internal("Unable to configure Opus stereo reception".into()))?;
         self.peer_connection().set_local_description(answer.clone()).await?;
 
         Ok(answer)

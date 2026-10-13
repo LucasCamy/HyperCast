@@ -440,7 +440,9 @@ impl LocalParticipant {
                     }];
                 }
             }
-            LocalTrack::Audio(_audio_track) => {
+            LocalTrack::Audio(audio_track) => {
+                req.stereo = audio_track.rtc_source().num_channels() == 2;
+                if req.stereo { req.audio_features.push(proto::AudioTrackFeature::TfStereo as i32); }
                 // Setup audio encoding
                 let audio_encoding =
                     options.audio_encoding.as_ref().unwrap_or(&options::audio::MUSIC.encoding);

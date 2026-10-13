@@ -1,6 +1,7 @@
 fn main() {
     println!("cargo:rerun-if-changed=native/nvenc.cpp");
     println!("cargo:rerun-if-changed=native/capture_color.h");
+    println!("cargo:rerun-if-changed=native/system_audio.cpp");
     println!("cargo:rerun-if-changed=native/presenter.cpp");
     println!("cargo:rerun-if-changed=native/vendor/nvEncodeAPI.h");
     println!("cargo:rerun-if-changed=assets/hypercast.ico");
@@ -25,6 +26,7 @@ fn main() {
             .static_crt(true)
             .file("native/nvenc.cpp")
             .file("native/presenter.cpp")
+            .file("native/system_audio.cpp")
             .include("native/vendor")
             .flag_if_supported("/std:c++17")
             .flag_if_supported("/EHsc")
@@ -32,5 +34,7 @@ fn main() {
         println!("cargo:rustc-link-lib=d3d11");
         println!("cargo:rustc-link-lib=dxgi");
         println!("cargo:rustc-link-lib=d3dcompiler");
+        println!("cargo:rustc-link-lib=ole32");
+        println!("cargo:rustc-link-lib=mmdevapi");
     }
 }

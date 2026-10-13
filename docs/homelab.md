@@ -1,5 +1,16 @@
 # HyperCast no Cloudlane Homelab
 
+Atualização de áudio (13/10/2026): SFU e API de convites atualizados após o
+proprietário liberar a sala. `audio/opus` habilitado e até três subscrições de
+áudio. Uma faixa `screen_share_audio` por tela, recusando áudio isolado,
+duplicatas e microfone. Mesmas portas, TURN, DNS e convites existentes.
+Imagens importadas/fixadas no nó: SFU
+`ghcr.io/lucascamy/hypercast-sfu@sha256:23970932c5444605e07d37efc5488c2c0848fea4ffdab13dda05479fb629fd8e`
+e API
+`ghcr.io/lucascamy/hypercast-auth@sha256:cfad7711c9360a0e42ec9b6298d793a0a6edc88ce3ee29f980bab72e41bc8591`.
+Rollback privado no nó em `/etc/hypercast/audio-rollback.json` (0600).
+Detalhes e limites em [áudio do sistema](system-audio.md).
+
 A análise inicial usou LucasCamy/homelab-docs e a skill cloudlane-homelab. Em 13/10/2026, após autorização do proprietário e liberação da VPN, a VM 192.168.15.19 foi inspecionada e o SFU instalado no k3s. Nenhum software foi instalado no hipervisor PVE.
 
 ## Implantação executada

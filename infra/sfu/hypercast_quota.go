@@ -38,6 +38,11 @@ func (q *hypercastReservations) release(room, participant string) {
     delete(q.rooms[room], participant)
     if len(q.rooms[room]) == 0 { delete(q.rooms, room) }
 }
+func (q *hypercastReservations) contains(room, participant string) bool {
+    q.Lock()
+    defer q.Unlock()
+    return q.rooms[room][participant]
+}
 
 func hypercastAllowedIdentity(identity string, _ int) bool {
     for slot := 1; slot <= 3; slot++ {
@@ -51,6 +56,15 @@ func hypercastAllowedIdentity(identity string, _ int) bool {
 
 func hypercastQuota(identity string, limit int, req *livekit.AddTrackRequest, existing []*livekit.TrackInfo) string {
     if !hypercastAllowedIdentity(identity, limit) { return "No publisher slot assigned" }
+    if req.Type == livekit.TrackType_AUDIO && req.Source == livekit.TrackSource_SCREEN_SHARE_AUDIO {
+        hasScreen := false
+        for _, track := range existing {
+            if track.Source == req.Source { return "System audio already published" }
+            if track.Type == livekit.TrackType_VIDEO && track.Source == livekit.TrackSource_SCREEN_SHARE { hasScreen = true }
+        }
+        if !hasScreen { return "System audio requires a screen publication" }
+        return ""
+    }
     if req.Type != livekit.TrackType_VIDEO { return "Only screen video is permitted" }
     if req.Source != livekit.TrackSource_SCREEN_SHARE {
         return "Only screen_share video may be published"
@@ -69,8 +83,34 @@ func (p *ParticipantImpl) hypercastCheckPublication(req *livekit.AddTrackRequest
     for _, pending := range p.pendingTracks { tracks = append(tracks, pending.trackInfos...) }
     if reason := hypercastQuota(string(p.Identity()), hypercastLimit, req, tracks); reason != "" { return reason }
     if p.IsClosed() { return "Participant is closed" }
+    if req.Source == livekit.TrackSource_SCREEN_SHARE_AUDIO {
+        if !hypercastRooms.contains(p.ClaimGrants().Video.Room, string(p.ID())) { return "System audio screen is stopping" }
+        return ""
+    }
     if !hypercastRooms.reserve(p.ClaimGrants().Video.Room, string(p.ID()), hypercastLimit) {
         return "Room screen publication limit reached"
     }
     return ""
+}
+
+// Called synchronously before a screen reservation is released. Serialize with
+// AddTrack so pending audio cannot survive the screen that authorized it.
+func (p *ParticipantImpl) hypercastEndScreen(room, participant string) {
+    p.pendingTracksLock.Lock()
+    tracks := p.GetPublishedTracks()
+    for cid, pending := range p.pendingTracks {
+        kept := pending.trackInfos[:0]
+        for _, info := range pending.trackInfos {
+            if info.Source == livekit.TrackSource_SCREEN_SHARE_AUDIO { p.sendTrackUnpublished(livekit.TrackID(info.Sid)) } else { kept = append(kept, info) }
+        }
+        pending.trackInfos = kept
+        if len(kept) == 0 { delete(p.pendingTracks, cid) }
+    }
+    hypercastRooms.release(room, participant)
+    p.pendingTracksLock.Unlock()
+    // Track close callbacks also acquire pendingTracksLock. Never invoke them
+    // under that lock. The removed room reservation denies new audio requests.
+    for _, track := range tracks {
+        if track.Source() == livekit.TrackSource_SCREEN_SHARE_AUDIO { p.removePublishedTrack(track) }
+    }
 }
