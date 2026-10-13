@@ -137,6 +137,7 @@ pub async fn admission_probe(address: &str, token: &str, reject_first: bool) -> 
 pub struct EncodedPublisher {
     room: Arc<Room>,
     publication: LocalTrackPublication,
+    track_id:String,
     source: NativeVideoSource,
     codec: EncodedVideoCodec,
     resolution: VideoResolution,
@@ -192,6 +193,7 @@ impl EncodedPublisher {
         let source = NativeVideoSource::new_encoded(resolution.clone());
         let track =
             LocalVideoTrack::create_video_track("screen", RtcVideoSource::Native(source.clone()));
+        let track_id=track.rtc_track().id();
         let publication = room
             .local_participant()
             .publish_track(
@@ -221,6 +223,7 @@ impl EncodedPublisher {
         Ok(Self {
             room,
             publication,
+            track_id,
             source,
             resolution,
             codec: if av1 {
@@ -235,7 +238,11 @@ impl EncodedPublisher {
     }
 
     pub fn take_keyframe_request(&self) -> bool {
-        self.source.take_keyframe_request()
+        self.source.take_keyframe_request() || !self.seen_keyframe
+    }
+    pub fn restart_keyframe(&mut self){self.seen_keyframe=false;}
+    pub fn set_resolution(&mut self,width:u32,height:u32){
+        self.resolution=VideoResolution{width,height};self.restart_keyframe();
     }
     pub fn take_rate_control_request(
         &self,
@@ -244,10 +251,11 @@ impl EncodedPublisher {
     }
     /// Complete access unit (HEVC Annex B / AV1 OBU), not individual RTP packets.
     pub fn push(&mut self, bytes: &[u8], timestamp_us: i64, keyframe: bool) -> Result<bool> {
-        ensure!(
-            self.room.connection_state() == ConnectionState::Connected,
-            "Room disconnected/reconnecting; restart publication with a keyframe"
-        );
+        match self.room.connection_state(){
+            ConnectionState::Reconnecting=>{self.restart_keyframe();return Ok(false);}
+            ConnectionState::Disconnected=>anyhow::bail!("Room disconnected"),
+            ConnectionState::Connected=>{}
+        }
         ensure!(
             !bytes.is_empty() && bytes.len() <= 16 * 1024 * 1024,
             "Invalid encoded access-unit size"
@@ -299,10 +307,11 @@ impl EncodedPublisher {
         if let Some(task) = self.event_task {
             task.abort();
         }
-        self.room
-            .local_participant()
-            .unpublish_track(&self.publication.sid())
-            .await?;
+        // A full SDK reconnect can replace the publication SID while retaining the RTC track.
+        let sid=self.room.local_participant().track_publications().into_values()
+            .find(|p|p.track().is_some_and(|t|t.rtc_track().id()==self.track_id))
+            .map(|p|p.sid()).unwrap_or_else(||self.publication.sid());
+        self.room.local_participant().unpublish_track(&sid).await?;
         Ok(())
     }
 }

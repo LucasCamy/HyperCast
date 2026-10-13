@@ -3,6 +3,8 @@
 HyperCast: MIT, código em https://github.com/LucasCamy/HyperCast.
 LiveKit Rust 0.9.4, libwebrtc 0.3.52 e webrtc-sys 0.3.49: Apache-2.0.
 Os fontes correspondentes e alterações estão em vendor/ neste repositório.
+No LiveKit Rust, a republicação após reinício completo de RTC é sequencial:
+vídeo de tela antes do áudio associado, para respeitar a admissão do SFU.
 LiveKit Server 1.13.9: Apache-2.0; commit 6fbe7f7e648aab4b2f734d6044a416bc2cbc482c;
 fontes em https://github.com/livekit/livekit e patch em infra/sfu.
 

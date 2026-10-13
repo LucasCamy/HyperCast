@@ -142,6 +142,9 @@ impl HardwareEncoder {
         timestamp_us: i64,
         force_keyframe: bool,
     ) -> Result<EncodedPacket<'a>> {
+        self.encode_texture(frame.map(|f|f.texture()), timestamp_us, force_keyframe)
+    }
+    pub fn encode_texture<'a>(&'a mut self, frame: Option<&ID3D11Texture2D>, timestamp_us:i64, force_keyframe:bool)->Result<EncodedPacket<'a>> {
         ensure!(!self.poisoned, "Encoder must be recreated after an error");
         ensure!(timestamp_us >= 0, "Negative capture timestamp");
         let mut error = [0; 1024];
@@ -150,7 +153,7 @@ impl HardwareEncoder {
         // SAFETY: both COM texture and exclusive handle are live for this
         // synchronous call. Output/metadata pointers have stated capacities.
         let texture = frame
-            .map(|f| f.texture().as_raw())
+            .map(|f| f.as_raw())
             .unwrap_or(std::ptr::null_mut());
         let status = unsafe {
             hc_nvenc_encode(

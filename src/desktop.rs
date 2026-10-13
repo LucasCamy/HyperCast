@@ -74,6 +74,11 @@ struct App {
     sound_muted: bool,
     displays: Vec<crate::screen_capture::Display>,
     selected_display: usize,
+    window_mode:bool,
+    windows:Vec<crate::video_capture::ApplicationWindow>,
+    selected_window:Option<usize>,
+    fullscreen:bool,
+    before_fullscreen_mode:ViewMode,
     codec: crate::encoder::Codec,
     parent: usize,
     presenters: HashMap<String, Presenter>,
@@ -88,6 +93,7 @@ struct App {
     smoke_layout_stage: u8,
     smoke_share_stage: u8,
     smoke_sound_stage: u8,
+    smoke_source_stage:u8,
 }
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -137,6 +143,7 @@ impl App {
             sound_muted: false,
             displays: crate::screen_capture::displays().unwrap_or_default(),
             selected_display: 0,
+            window_mode:false,windows:crate::video_capture::windows(),selected_window:None,fullscreen:false,before_fullscreen_mode:ViewMode::Spotlight,
             codec: if std::env::var("HYPERCAST_CODEC").as_deref() == Ok("av1") {
                 crate::encoder::Codec::Av1
             } else {
@@ -157,8 +164,24 @@ impl App {
             smoke_reconnected: false,
             smoke_layout_stage: 0,
             smoke_share_stage: 0,
-            smoke_sound_stage: 0,
+            smoke_sound_stage: 0,smoke_source_stage:0,
         }
+    }
+    fn target(&self)->Option<crate::video_capture::CaptureTarget>{
+        let display=self.displays.get(self.selected_display)?;
+        Some(if self.window_mode{
+            let window=self.windows.iter().find(|w|Some(w.hwnd)==self.selected_window)?;
+            crate::video_capture::CaptureTarget::Window{adapter:display.adapter_index,hwnd:window.hwnd,pid:window.pid}
+        }else{crate::video_capture::CaptureTarget::Monitor{adapter:display.adapter_index,output:display.output_index}})
+    }
+    fn set_fullscreen(&mut self,ctx:&egui::Context,enabled:bool){
+        if self.fullscreen==enabled{return;}
+        self.fullscreen=enabled;
+        if enabled {self.before_fullscreen_mode=self.mode;self.mode=ViewMode::Spotlight;}
+        else {self.mode=self.before_fullscreen_mode;}
+        self.send_layout();
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(enabled));
+        self.last_presented.clear();
     }
     fn send_layout(&self) {
         if let Some(engine) = &self.engine {
@@ -187,6 +210,8 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if ctx.input(|i|i.key_pressed(egui::Key::F11)){self.set_fullscreen(&ctx,!self.fullscreen);}
+        if self.fullscreen && ctx.input(|i|i.key_pressed(egui::Key::Escape)){self.set_fullscreen(&ctx,false);}
         if self.smoke_seconds.is_some() && std::env::var("HYPERCAST_SMOKE_SOUND").as_deref() == Ok("1") {
             let elapsed = self.started.elapsed().as_secs();
             if self.smoke_sound_stage == 0 && elapsed >= 6 {
@@ -254,6 +279,8 @@ impl eframe::App for App {
         let mut room = "Sua sala de trabalho".to_owned();
         let mut status = "Pronto para conectar".to_owned();
         let mut audio_status = String::new();
+        let mut active_target=None;
+        let mut source_error=String::new();
         let mut people = Vec::new();
         let mut screens = Vec::new();
         let mut videos = Vec::new();
@@ -270,6 +297,7 @@ impl eframe::App for App {
             }
             status = state.status.clone();
             audio_status = state.audio_status.clone();
+            active_target=state.active_target;source_error=state.source_error.clone();
             people = state.participants.clone();
             screens = state.screens.clone();
             videos = state
@@ -293,17 +321,17 @@ impl eframe::App for App {
             && std::env::var("HYPERCAST_SMOKE_SHARE").as_deref() == Ok("1")
         {
             let elapsed = self.started.elapsed().as_secs();
-            let cycles = std::env::var("HYPERCAST_SMOKE_SHARE_CYCLES")
-                .ok().and_then(|raw| raw.parse::<u32>().ok()).unwrap_or(2).clamp(2, 6);
+            let cycles = if std::env::var("HYPERCAST_SMOKE_SOURCE_SWITCH").as_deref()==Ok("1"){1}else{std::env::var("HYPERCAST_SMOKE_SHARE_CYCLES")
+                .ok().and_then(|raw| raw.parse::<u32>().ok()).unwrap_or(2).clamp(2, 6)};
             let stage = u32::from(self.smoke_share_stage);
             if stage < cycles * 2 - 1 && stage % 2 == 0
                 && (stage == 0 || elapsed >= 2 + u64::from(stage) * 3) {
                 if let (Some(engine), Some(display)) = (&self.engine, self.displays.first()) {
-                    let _ = engine.commands.send(Command::Share {
-                        adapter: display.adapter_index,
-                        output: display.output_index,
-                        codec: self.codec,
-                    });
+                    let window=std::env::var("HYPERCAST_SMOKE_WINDOW_PID").ok().and_then(|s|s.parse::<u32>().ok())
+                        .and_then(|pid|self.windows.iter().find(|w|w.pid==pid));
+                    let command=if let Some(w)=window{Command::ShareWindow{adapter:display.adapter_index,hwnd:w.hwnd,pid:w.pid,codec:self.codec}}
+                        else {Command::Share{adapter:display.adapter_index,output:display.output_index,codec:self.codec}};
+                    let _ = engine.commands.send(command);
                     self.smoke_share_stage += 1;
                     println!("GUI publisher: start");
                 }
@@ -314,6 +342,21 @@ impl eframe::App for App {
                 self.smoke_share_stage += 1;
                 println!("GUI publisher: stopped");
             }
+        }
+        if self.smoke_seconds.is_some() && connected && std::env::var("HYPERCAST_SMOKE_SOURCE_SWITCH").as_deref()==Ok("1") {
+            let elapsed=self.started.elapsed().as_secs();
+            let stage=self.smoke_source_stage;
+            if publishing && ((stage==0 && elapsed>=5)||(stage==1 && elapsed>=9)) {
+                let target=if stage==0 {self.displays.first().map(|d|crate::video_capture::CaptureTarget::Monitor{adapter:d.adapter_index,output:d.output_index})}
+                    else {std::env::var("HYPERCAST_SMOKE_WINDOW_PID").ok().and_then(|s|s.parse::<u32>().ok()).and_then(|pid|self.windows.iter().find(|w|w.pid==pid))
+                        .map(|w|crate::video_capture::CaptureTarget::Window{adapter:self.displays[0].adapter_index,hwnd:w.hwnd,pid:w.pid})};
+                if let (Some(e),Some(t))=(&self.engine,target){let _=e.commands.send(Command::ChangeSource(t));self.smoke_source_stage+=1;}
+            }
+        }
+        if self.smoke_seconds.is_some() && std::env::var("HYPERCAST_SMOKE_FULLSCREEN").as_deref()==Ok("1") {
+            let elapsed=self.started.elapsed().as_secs();
+            if !self.fullscreen && (6..16).contains(&elapsed){self.set_fullscreen(&ctx,true);}
+            else if self.fullscreen && elapsed>=16{self.set_fullscreen(&ctx,false);}
         }
         if self
             .smoke_seconds
@@ -331,6 +374,7 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
+        if !self.fullscreen {
         egui::Panel::top("header")
             .exact_size(76.0)
             .frame(
@@ -365,18 +409,21 @@ impl eframe::App for App {
                 ui.vertical(|ui| {
                     ui.label(RichText::new(if publishing { "SUA TELA ESTÁ AO VIVO" } else { "PRONTO PARA COMPARTILHAR" }).size(10.0).strong().color(if publishing { ACCENT } else { MUTED }));
                     let monitor = self.displays.get(self.selected_display);
-                    ui.label(RichText::new(monitor.map_or("Nenhum monitor".into(), |d| format!("Monitor {} · {} × {}", self.selected_display + 1, d.width, d.height))).size(13.0).color(TEXT));
+                    ui.label(RichText::new(if publishing && active_target.is_some_and(|t|t.process().is_some()) {"Janela de aplicativo ao vivo".into()}else if publishing {"Monitor ao vivo".into()}else if self.window_mode {"Janela de aplicativo".into()}else{monitor.map_or("Nenhum monitor".into(), |d| format!("Monitor {} · {} × {}", self.selected_display + 1, d.width, d.height))}).size(13.0).color(TEXT));
                 });
                 ui.add_space(12.0);
-                if ui.add_enabled(connected && can_publish && !self.displays.is_empty(), egui::Button::new(RichText::new(if publishing { "Parar de compartilhar" } else { "Compartilhar tela" }).size(14.0).strong().color(if publishing { DANGER } else { BG })).min_size(Vec2::new(180.0, 46.0)).corner_radius(9).fill(if publishing { Color32::from_rgb(59,34,34) } else { ACCENT }).stroke(egui::Stroke::new(1.0, if publishing { DANGER.gamma_multiply(0.4) } else { ACCENT }))).on_hover_text(if can_publish { "Enviar o monitor escolhido para os amigos" } else { "Seu acesso permite assistir. Um convite de publicador permite compartilhar." }).clicked() {
+                if ui.add_enabled(connected && can_publish && (publishing || self.target().is_some()), egui::Button::new(RichText::new(if publishing { "Parar de compartilhar" } else { "Compartilhar tela" }).size(14.0).strong().color(if publishing { DANGER } else { BG })).min_size(Vec2::new(180.0, 46.0)).corner_radius(9).fill(if publishing { Color32::from_rgb(59,34,34) } else { ACCENT }).stroke(egui::Stroke::new(1.0, if publishing { DANGER.gamma_multiply(0.4) } else { ACCENT }))).on_hover_text(if can_publish { "Enviar o monitor ou janela escolhido para os amigos" } else { "Seu acesso permite assistir. Um convite de publicador permite compartilhar." }).clicked() {
                     if let Some(engine) = &self.engine {
                         if publishing { let _ = engine.commands.send(Command::StopShare); }
-                        else if let Some(display) = self.displays.get(self.selected_display) { let _ = engine.commands.send(Command::Share { adapter: display.adapter_index, output: display.output_index, codec: self.codec }); }
+                        else if let Some(target)=self.target(){let command=match target{
+                            crate::video_capture::CaptureTarget::Monitor{adapter,output}=>Command::Share{adapter,output,codec:self.codec},
+                            crate::video_capture::CaptureTarget::Window{adapter,hwnd,pid}=>Command::ShareWindow{adapter,hwnd,pid,codec:self.codec},
+                        };let _=engine.commands.send(command);}
                     }
                 }
                 if ui.add_enabled(connected, egui::Button::new(if self.paused { "Retomar recepção" } else { "Pausar recepção" }).min_size(Vec2::new(140.0,46.0)).corner_radius(9)).clicked() { self.paused = !self.paused; self.send_layout(); }
-                if ui.add_enabled(!connected || can_publish, egui::Checkbox::new(&mut self.system_audio, "Áudio do sistema"))
-                    .on_hover_text("Enviar som dos programas junto com sua tela. Não captura microfone.").changed() {
+                if ui.add_enabled(!connected || can_publish, egui::Checkbox::new(&mut self.system_audio, if (publishing && active_target.is_some_and(|t|t.process().is_some())) || (!publishing && self.window_mode) {"Áudio do aplicativo"}else{"Áudio do sistema"}))
+                    .on_hover_text("Monitor: som do sistema. Janela: som do aplicativo e processos filhos; pode incluir outras janelas dele. Não captura microfone.").changed() {
                     if let Some(engine) = &self.engine { let _ = engine.commands.send(Command::SystemAudio(self.system_audio)); }
                 }
                 if self.engine.is_some() && ui.add(egui::Button::new(RichText::new("Sair").color(DANGER)).min_size(Vec2::new(64.0,46.0)).corner_radius(9)).on_hover_text("Sair da sala e interromper compartilhamento e recepção").clicked() { self.engine = None; self.presenters.clear(); self.last_presented.clear(); }
@@ -516,11 +563,13 @@ impl eframe::App for App {
                         ui.add_space(16.0);
                         ui.label(RichText::new(&status).size(12.0).color(MUTED));
                         if !audio_status.is_empty() { ui.label(RichText::new(&audio_status).size(11.0).color(MUTED)); }
+                        if !source_error.is_empty(){ui.colored_label(DANGER,&source_error);}
                         if !self.error.is_empty() {
                             ui.colored_label(Color32::LIGHT_RED, &self.error);
                         }
                     });
             });
+        }
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
@@ -528,25 +577,44 @@ impl eframe::App for App {
                     .inner_margin(egui::Margin::same(28)),
             )
             .show(ui, |ui| {
+                if self.fullscreen {
+                    ui.horizontal(|ui|{
+                        ui.label(RichText::new("Tela em destaque").strong());
+                        if ui.button("Sair da tela cheia · Esc / F11").clicked(){self.set_fullscreen(&ctx,false);}
+                    });
+                } else {
+                let old_target=self.target();
                 egui::Frame::new().fill(PANEL).stroke(egui::Stroke::new(1.0,BORDER)).corner_radius(12).inner_margin(16).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.columns(2, |columns| {
                         let ui = &mut columns[0];
-                        section_title(ui, "SEU MONITOR", if publishing { "AO VIVO" } else { "" });
+                        section_title(ui, "ORIGEM DO COMPARTILHAMENTO", if publishing { "AO VIVO" } else { "" });
+                        ui.horizontal(|ui|{
+                            ui.selectable_value(&mut self.window_mode,false,"Monitor");
+                            ui.selectable_value(&mut self.window_mode,true,"Janela de aplicativo");
+                        });
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
                             let (symbol,_) = ui.allocate_exact_size(Vec2::new(42.0,42.0),egui::Sense::hover());
                             monitor_symbol(ui.painter(),symbol.center(),ACCENT,34.0);
                             ui.vertical(|ui| {
-                                ui.add_enabled_ui(!publishing, |ui| {
+                                ui.add_enabled_ui(true, |ui| {
+                                    if self.window_mode {
+                                        let title=self.windows.iter().find(|w|Some(w.hwnd)==self.selected_window).map(|w|w.title.as_str()).unwrap_or("Selecionar janela…");
+                                        egui::ComboBox::from_id_salt("window_picker").width(ui.available_width().min(275.0)).selected_text(title).show_ui(ui,|ui|{
+                                            for window in &self.windows {ui.selectable_value(&mut self.selected_window,Some(window.hwnd),&window.title);}
+                                        });
+                                        if ui.small_button("Atualizar janelas").clicked(){self.windows=crate::video_capture::windows();}
+                                    }else{
                                     let text = self.displays.get(self.selected_display).map_or("Nenhum monitor".into(), |d| format!("Monitor {} · {} × {}", self.selected_display+1,d.width,d.height));
                                     egui::ComboBox::from_id_salt("display_picker").width(ui.available_width().min(275.0)).selected_text(text).show_ui(ui, |ui| {
                                         for (index,display) in self.displays.iter().enumerate() {
                                             if choice_card(ui, &format!("Monitor {}",index+1),&format!("{} × {}",display.width,display.height),index==self.selected_display,true,None).on_hover_text(format!("{}\n{}",display.display_name,display.gpu_name)).clicked() { self.selected_display=index; }
                                         }
                                     });
+                                    }
                                 });
-                                ui.label(RichText::new(if publishing { "Pare para trocar de tela" } else { "Sua tela inteira será compartilhada" }).size(11.0).color(MUTED));
+                                ui.label(RichText::new(if self.window_mode {"Apenas a janela escolhida; minimizada pode congelar"}else if publishing { "Troque de monitor sem parar" } else { "Sua tela inteira será compartilhada" }).size(11.0).color(MUTED));
                             });
                         });
                         let ui = &mut columns[1];
@@ -561,6 +629,9 @@ impl eframe::App for App {
                         ui.label(RichText::new(if self.codec==crate::encoder::Codec::H265 { "Compatível com RTX 20, 30 e mais novas" } else { "Requer GPU com codificação AV1" }).size(11.0).color(MUTED));
                     });
                 });
+                if publishing && self.target()!=old_target {
+                    if let (Some(engine),Some(target))=(&self.engine,self.target()){let _=engine.commands.send(Command::ChangeSource(target));}
+                }
                 ui.add_space(20.0);
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
@@ -572,6 +643,7 @@ impl eframe::App for App {
                         );
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add_enabled(!videos.is_empty(),egui::Button::new("Tela cheia · F11")).clicked(){self.set_fullscreen(&ctx,true);}
                         if ui
                             .selectable_label(self.mode == ViewMode::Grid, "Grid")
                             .clicked()
@@ -589,6 +661,7 @@ impl eframe::App for App {
                     });
                 });
                 ui.add_space(24.0);
+                }
                 let available = ui.available_size();
                 let rect = ui.allocate_space(available).1;
                 ui.painter().rect_filled(rect, 12.0, PANEL);
@@ -628,6 +701,7 @@ impl eframe::App for App {
                     let focus = self
                         .focus
                         .as_ref()
+                        .filter(|id|screens.contains(id)||videos.iter().any(|(owner,_)|owner==*id))
                         .or_else(|| screens.first())
                         .or_else(|| {
                             videos
@@ -655,7 +729,7 @@ impl eframe::App for App {
                         );
                         return;
                     }
-                    if self.mode == ViewMode::Spotlight {
+                    if self.mode == ViewMode::Spotlight && !self.fullscreen {
                         selected.extend(
                             videos
                                 .iter()
@@ -663,7 +737,7 @@ impl eframe::App for App {
                                 .take(2),
                         );
                     }
-                    let unseen: Vec<_> = if self.mode == ViewMode::Spotlight {
+                    let unseen: Vec<_> = if self.mode == ViewMode::Spotlight && !self.fullscreen {
                         screens
                             .iter()
                             .filter(|id| {

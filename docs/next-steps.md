@@ -2,6 +2,11 @@
 
 ## Atualização executada
 
+0.4.0 adiciona captura WGC de janela com áudio do processo, troca de origem
+mantendo a faixa, tela cheia e recuperação de publicação em reconexão WebRTC.
+Testes de janela e interrupção de sinalização usam salas isoladas sem reiniciar
+produção; veja window-sharing.md e validation.md.
+
 Logs automáticos, recuperação limitada, convites/entrada automática e TURN/TLS
 foram implementados e testados; detalhes em validation.md, invitations.md e
 turn-tls.md. Após ajuste solicitado pelo proprietário, todos os membros do

@@ -1,13 +1,18 @@
 # HyperCast para Windows
 
+Versão 0.4.0: escolha **Monitor** ou **Janela de aplicativo**, com áudio do
+aplicativo opcional. Você pode trocar a origem durante o envio; somente o codec
+continua bloqueado. **Tela cheia/F11** amplia a tela em destaque; **Esc/F11** ou
+o botão superior retornam. [Detalhes e limitações](window-sharing.md).
+
 Na versão 0.3.2, o volume recebido usa barra visível com preenchimento,
 marcador circular e porcentagem ao lado do rótulo. Arraste o marcador ou use
 as setas com o controle focado; o silenciamento continua preservando o volume.
 
 Na versão 0.3.1, monitor e formato ficam na faixa acima das telas. Abra a seleção
 de monitor para ver as opções com resolução; escolha HEVC/H.265 ou AV1 nos
-botões ao lado. Essas opções ficam bloqueadas durante a transmissão: pare para
-trocar. A barra inferior mostra o monitor selecionado e distingue compartilhar,
+botões ao lado. Em 0.3.1 essas opções ficavam bloqueadas durante a transmissão;
+0.4.0 permite trocar a origem. A barra inferior distingue compartilhar,
 parar, pausar recepção, áudio do sistema e sair.
 
 Participantes aparecem em cartões com inicial, nome e estado. Clique em quem

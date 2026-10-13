@@ -1,5 +1,9 @@
 # HyperCast
 
+Versão 0.4.0: seleção de **janelas de aplicativos com áudio do processo**,
+troca de monitor/janela durante o envio, **tela cheia (F11/Esc)** e retomada de
+publicação após reconexão. Veja [uso e limitações](docs/window-sharing.md).
+
 Áudio do sistema está disponível na versão 0.3.0: captura WASAPI sem microfone,
 Opus estéreo 48 kHz, volume/silenciamento e recepção conforme Grid/Destaque.
 Marque **Áudio do sistema** na interface. Requer Windows 11/build

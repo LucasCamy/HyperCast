@@ -2,7 +2,7 @@ use crate::{
     encoder::{Codec, HardwareEncoder},
     network::{self, EncodedPublisher},
     pacing::FramePacer,
-    screen_capture::{CaptureConfig, ScreenCapture},
+    video_capture::{CaptureTarget,VideoCapture},
     subscription::ViewMode,
     system_audio::{AudioReceiver, SystemAudioPublisher},
 };
@@ -60,6 +60,8 @@ pub struct Shared {
     pub received: u64,
     pub sent: u64,
     pub audio_status: String,
+    pub active_target:Option<CaptureTarget>,
+    pub source_error:String,
 }
 #[derive(Clone)]
 pub struct Layout {
@@ -75,6 +77,8 @@ pub enum Command {
         output: u32,
         codec: Codec,
     },
+    ShareWindow { adapter:u32, hwnd:usize, pid:u32, codec:Codec },
+    ChangeSource(CaptureTarget),
     StopShare,
     SystemAudio(bool),
     Disconnect,
@@ -98,8 +102,11 @@ impl Drop for Engine {
 }
 
 struct Cast {
-    selection: (u32, u32, Codec),
-    capture: ScreenCapture,
+    selection: (CaptureTarget, Codec),
+    capture: VideoCapture,
+    dimensions:(u32,u32),
+    has_frame:bool,
+    device: windows::Win32::Graphics::Direct3D11::ID3D11Device,
     encoder: Option<HardwareEncoder>,
     publisher: Option<EncodedPublisher>,
     start: Instant,
@@ -122,16 +129,13 @@ impl Sink {
 }
 impl Cast {
     fn new(
-        adapter: u32,
-        output: u32,
+        target: CaptureTarget,
         codec: Codec,
         runtime: &tokio::runtime::Runtime,
         room: &Arc<Room>,
     ) -> Result<Self> {
-        let capture = ScreenCapture::new(CaptureConfig {
-            adapter_index: adapter,
-            output_index: output,
-        })?;
+        let capture = VideoCapture::new(target)?;
+        let device=capture.device().clone();
         let (width, height) = capture.dimensions();
         crate::diagnostics::write("capture", &format!("{width}x{height} target_fps=120 codec={codec:?}"), "");
         let encoder = HardwareEncoder::new(
@@ -153,7 +157,8 @@ impl Cast {
         ))?;
         Ok(Self {
             audio: None,
-            selection: (adapter, output, codec),
+            selection: (target, codec),
+            dimensions:(width,height),device,has_frame:false,
             capture,
             encoder: Some(encoder),
             publisher: Some(publisher),
@@ -164,10 +169,23 @@ impl Cast {
         })
     }
     fn tick(&mut self, _runtime: &tokio::runtime::Runtime, _room: &Arc<Room>) -> Result<()> {
-        let frame = self.capture.acquire()?;
-        if self.count == 0 && frame.is_none() {
+        if _room.connection_state()!=ConnectionState::Connected {
+            if let Some(p)=&mut self.publisher {p.restart_keyframe();}
             return Ok(());
         }
+        let frame = self.capture.acquire()?;
+        if let Some(frame)=&frame {
+            let mut desc=Default::default();unsafe{frame.texture().GetDesc(&mut desc);}
+            if (desc.Width,desc.Height)!=self.dimensions {
+                self.encoder=Some(HardwareEncoder::new(&self.device,desc.Width,desc.Height,120,40_000_000,self.selection.1)?);
+                self.dimensions=(desc.Width,desc.Height);
+                if let Some(p)=&mut self.publisher {p.set_resolution(desc.Width,desc.Height);}
+            }
+        }
+        if !self.has_frame && frame.is_none() {
+            return Ok(());
+        }
+        self.has_frame |= frame.is_some();
         if let (Some(encoder), Some(publisher)) = (&mut self.encoder, &mut self.publisher) {
             let mut key = self.count == 0 || publisher.take_keyframe_request();
             if let Some(rate) = publisher.take_rate_control_request() {
@@ -183,7 +201,7 @@ impl Cast {
             }
             if !self.paused {
                 let packet =
-                    encoder.encode(frame.as_ref(), self.start.elapsed().as_micros() as i64, key)?;
+                    encoder.encode_texture(frame.as_ref().map(|f|f.texture()), self.start.elapsed().as_micros() as i64, key)?;
                 if publisher.push(packet.bytes, packet.timestamp_us, packet.keyframe)? {
                     self.count += 1;
                 }
@@ -196,9 +214,24 @@ impl Cast {
     }
     fn set_audio(&mut self, enabled: bool, runtime: &tokio::runtime::Runtime, room: &Arc<Room>) -> Result<()> {
         if !enabled { if let Some(audio) = self.audio.take() { audio.stop(runtime); } }
-        else if self.audio.is_none() { self.audio = Some(SystemAudioPublisher::start(runtime, room.clone())?); }
+        else if self.audio.is_none() { self.audio = Some(SystemAudioPublisher::start_for_process(runtime, room.clone(),self.selection.0.process())?); }
         Ok(())
     }
+    fn change_source(&mut self,target:CaptureTarget,runtime:&tokio::runtime::Runtime,room:&Arc<Room>,audio_requested:bool)->Result<()> {
+        if target==self.selection.0 {return Ok(());}
+        // Prepare and validate first; failures leave the original source intact.
+        let capture=VideoCapture::new(target)?;
+        let dimensions=capture.dimensions();let device=capture.device().clone();
+        let encoder=HardwareEncoder::new(&device,dimensions.0,dimensions.1,120,40_000_000,self.selection.1)?;
+        let change_audio=self.selection.0.process()!=target.process();
+        if change_audio {if let Some(audio)=&self.audio{audio.set_process(target.process())?;}}
+        self.capture=capture;self.device=device;self.encoder=Some(encoder);self.dimensions=dimensions;self.selection.0=target;self.has_frame=false;
+        if let Some(p)=&mut self.publisher {p.set_resolution(dimensions.0,dimensions.1);}
+        crate::diagnostics::write("source_switch",&format!("{}x{} application={}",dimensions.0,dimensions.1,target.process().is_some()),"");
+        if change_audio && self.audio.is_none() {self.set_audio(audio_requested,runtime,room)?;}
+        Ok(())
+    }
+    fn audio_status(&self)->String{if self.audio.is_none(){"Áudio desativado".into()}else if self.selection.0.process().is_some(){"Enviando áudio do aplicativo".into()}else{"Enviando áudio do sistema".into()}}
     fn stop(mut self, runtime: &tokio::runtime::Runtime) {
         if let Some(audio) = self.audio.take() { audio.stop(runtime); }
         if let Some(publisher) = self.publisher {
@@ -226,6 +259,7 @@ fn update_subscriptions(room: &Room, layout: &Layout) {
     let focus = layout
         .focus
         .as_deref()
+        .filter(|id|screens.iter().any(|(owner,_)|owner==id))
         .or_else(|| screens.first().map(|(id, _)| id.as_str()));
     let mut count = 0;
     for (identity, publication) in &screens {
@@ -324,7 +358,7 @@ impl Engine {
                 let mut manual_layout = layout.clone();
                 let mut window_hidden = false;
                 let mut cast: Option<Cast> = None;
-                let mut recovery: Option<((u32, u32, Codec), Instant)> = None;
+                let mut recovery: Option<((CaptureTarget, Codec), Instant)> = None;
                 let mut recovery_attempts = 0u8;
                 #[cfg(debug_assertions)]
                 let mut injected_capture_loss = false;
@@ -373,24 +407,22 @@ impl Engine {
                                 layout.paused |= window_hidden;
                                 update_subscriptions(&room, &layout);
                             }
-                            Command::Share {
-                                adapter,
-                                output,
-                                codec,
-                            } if cast.is_none() => {
+                            Command::Share { adapter, output, codec } if cast.is_none() => {
+                                let target=CaptureTarget::Monitor{adapter,output};
                                 recovery = None;
                                 recovery_attempts = 0;
                                 crate::diagnostics::write("publication", &format!("adapter={adapter} output={output} codec={codec:?}"), "");
-                                match Cast::new(adapter, output, codec, &runtime, &room) {
+                                match Cast::new(target, codec, &runtime, &room) {
                                     Ok(mut value) => {
                                         if let Err(error) = value.set_audio(audio_requested, &runtime, &room) {
                                             state.lock().unwrap().audio_status = format!("Áudio: {error}");
                                             crate::diagnostics::write("audio_error", &format!("{error:#}"), &token);
                                         } else {
-                                            state.lock().unwrap().audio_status = if audio_requested { "Enviando áudio do sistema" } else { "Áudio do sistema desativado" }.into();
+                                            state.lock().unwrap().audio_status = value.audio_status();
                                         }
                                         cast = Some(value);
                                         let mut state = state.lock().unwrap();
+                                        state.active_target=Some(target);
                                         state.publishing = true;
                                         state.status = "Preparando compartilhamento…".into();
                                     }
@@ -407,6 +439,27 @@ impl Engine {
                                     }
                                 }
                             }
+                            Command::ShareWindow{adapter,hwnd,pid,codec} if cast.is_none()=>{
+                                recovery=None;recovery_attempts=0;
+                                let target=CaptureTarget::Window{adapter,hwnd,pid};
+                                match Cast::new(target,codec,&runtime,&room){
+                                    Ok(mut value)=>{
+                                        if let Err(e)=value.set_audio(audio_requested,&runtime,&room){state.lock().unwrap().audio_status=format!("Áudio: {e}");}
+                                        let audio_status=if state.lock().unwrap().audio_status.starts_with("Áudio:"){None}else{Some(value.audio_status())};
+                                        cast=Some(value);let mut s=state.lock().unwrap();s.publishing=true;s.active_target=Some(target);if let Some(status)=audio_status{s.audio_status=status;}
+                                    }
+                                    Err(e)=>{crate::diagnostics::write("publication_error",&format!("{e:#}"),&token);state.lock().unwrap().status=format!("Janela: {e}").replace(&token,"[token]");}
+                                }
+                            }
+                            Command::ChangeSource(target)=>{
+                                if let Some(c)=&mut cast {
+                                    let result=c.change_source(target,&runtime,&room,audio_requested);
+                                    let mut s=state.lock().unwrap();s.active_target=Some(c.selection.0);s.audio_status=c.audio_status();
+                                    s.frames.remove(&room.local_participant().identity().to_string());
+                                    if let Err(e)=&result {crate::diagnostics::write("source_error",&format!("{e:#}"),&token);}
+                                    s.source_error=result.err().map(|e|format!("Troca de origem: {e}").replace(&token,"[token]")).unwrap_or_default();
+                                }
+                            }
                             Command::StopShare => {
                                 recovery = None;
                                 crate::diagnostics::write("publication", "Stopped", "");
@@ -416,7 +469,7 @@ impl Engine {
                                 let mut state = state.lock().unwrap();
                                 state.publishing = false;
                                 state.audio_status = "Áudio do sistema parado".into();
-                                state.status = "Conectado".into();
+                                state.status = "Conectado".into();state.source_error.clear();state.active_target=None;
                                 state
                                     .frames
                                     .remove(&room.local_participant().identity().to_string());
@@ -425,7 +478,7 @@ impl Engine {
                                 audio_requested = enabled;
                                 if let Some(value) = &mut cast {
                                     state.lock().unwrap().audio_status = match value.set_audio(enabled, &runtime, &room) {
-                                        Ok(()) => if enabled { "Enviando áudio do sistema" } else { "Áudio do sistema desativado" }.into(),
+                                        Ok(()) => value.audio_status(),
                                         Err(error) => { crate::diagnostics::write("audio_error", &format!("{error:#}"), &token); format!("Áudio: {error}") }
                                     };
                                 }
@@ -523,6 +576,21 @@ impl Engine {
                             | RoomEvent::ParticipantConnected(_) => {
                                 update_subscriptions(&room, &layout)
                             }
+                            RoomEvent::Reconnecting => {
+                                state.lock().unwrap().status="Reconectando… compartilhamento será retomado".into();
+                                if let Some(c)=&mut cast {if let Some(p)=&mut c.publisher {p.restart_keyframe();}}
+                                crate::diagnostics::write("connection","Reconnecting; publication retained","");
+                            }
+                            RoomEvent::Reconnected => {
+                                if let Some(c)=&mut cast {
+                                    c.paused=false;c.fps=120;
+                                    if let Some(e)=&mut c.encoder{e.reconfigure(40_000_000,120)?;}
+                                    if let Some(p)=&mut c.publisher {p.restart_keyframe();}
+                                }
+                                update_subscriptions(&room,&layout);
+                                state.lock().unwrap().status="Reconectado".into();
+                                crate::diagnostics::write("connection","Reconnected; requesting keyframe","");
+                            }
                             RoomEvent::Disconnected { .. } => {
                                 crate::diagnostics::write("connection", "SDK disconnected", "");
                                 break 'session;
@@ -534,7 +602,7 @@ impl Engine {
                         let (selection, _) = recovery.take().unwrap();
                         recovery_attempts += 1;
                         crate::diagnostics::write("recovery", &format!("Rebuilding GPU pipeline, attempt {recovery_attempts}/3"), "");
-                        match Cast::new(selection.0, selection.1, selection.2, &runtime, &room) {
+                        match Cast::new(selection.0, selection.1, &runtime, &room) {
                             Ok(mut value) => {
                                 if let Err(error) = value.set_audio(audio_requested, &runtime, &room) {
                                     state.lock().unwrap().audio_status = format!("Áudio: {error}");
@@ -592,10 +660,12 @@ impl Engine {
                             let mut state = state.lock().unwrap();
                             state.sent = value.count;
                             if value.publisher.is_some() {
-                                state.status = if value.paused {
+                                state.status = if room.connection_state()!=ConnectionState::Connected {
+                                    "Reconectando… compartilhamento será retomado"
+                                } else if value.paused {
                                     "Compartilhamento ativo • envio pausado"
                                 } else {
-                                    "Compartilhando sua tela"
+                                    if value.selection.0.process().is_some(){"Compartilhando janela do aplicativo"}else{"Compartilhando sua tela"}
                                 }
                                 .into();
                             }

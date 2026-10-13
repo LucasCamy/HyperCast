@@ -1739,10 +1739,23 @@ impl RoomSession {
         tokio::spawn({
             let session = self.clone();
             async move {
-                let mut set = tokio::task::JoinSet::new();
-
-                for (_, publication) in published_tracks {
-                    let track = publication.track().unwrap();
+                // HyperCast's SFU requires screen audio to accompany an admitted
+                // screen video. Republish in dependency order, rather than racing
+                // the two tracks in a JoinSet on a full RTC restart.
+                let mut tracks: Vec<_> = published_tracks.into_values()
+                    .filter_map(|publication| publication.track().map(|track| (publication, track)))
+                    .collect();
+                tracks.sort_by_key(|(publication, _)| match publication.source() {
+                    TrackSource::Screenshare => 0,
+                    TrackSource::ScreenshareAudio => 2,
+                    _ => 1,
+                });
+                // Remove dependent audio before screen video. Save track Arcs
+                // above because unpublish clears publication.track().
+                for (publication, _) in tracks.iter().rev() {
+                    let _ = session.local_participant.unpublish_track(&publication.sid()).await;
+                }
+                for (publication, track) in tracks {
 
                     let lp = session.local_participant.clone();
                     let republish_session = session.clone();
@@ -1755,7 +1768,6 @@ impl RoomSession {
                         // which use it to find the existing publication
                         // object and update it in place.
                         let previous_sid = publication.sid();
-                        let _ = lp.unpublish_track(&previous_sid).await;
                         match lp.publish_track(track.clone(), publication.publish_options()).await {
                             Ok(new_publication) => {
                                 republish_session.dispatcher.dispatch(
@@ -1777,11 +1789,8 @@ impl RoomSession {
                         }
                     };
 
-                    set.spawn(republish);
+                    republish.await;
                 }
-
-                // Wait for the tracks to be republished before sending the Connect event
-                while set.join_next().await.is_some() {}
 
                 local_participant.update_track_subscription_permissions().await;
 

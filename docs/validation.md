@@ -1,5 +1,34 @@
 # Validação — 12 e 13/10/2026
 
+## Janelas, origem e reconexão — 0.4.0, 13/10/2026
+
+Captura WGC livre de dispatcher → textura D3D11 → NVENC → SFU → receptor GPU
+exercitada com FFplay sintético 640×360 e áudio de processo. Janela → monitor →
+janela manteve SID de vídeo; áudio mudou pelo mesmo source/faixa sem republicar.
+Resize para janela 854×510 manteve recepção; fechar a janela encerrou os tracks
+sem capturar automaticamente a área de trabalho. Tela cheia e retorno foram
+exercitados em janela nativa real.
+
+Uma interrupção de quatro segundos em proxy TCP de sinalização de apenas um
+cliente provocou reconexão completa do SDK. Publicação retomou com keyframe;
+receptor recebeu novamente vídeo e áudio. O teste revelou a necessidade de
+republicar vídeo antes do áudio, respeitando a quota do SFU. Nenhuma sessão de
+produção foi interrompida pelo operador. Também corrigido teto de FPS do novo
+encoder: criar com taxa adaptativa reduzida impedia posterior retorno a 120.
+
+Integrações: `tests.integration_window_capture` e
+`tests.integration_signal_reconnect`. Áudio não isola janelas de um mesmo
+processo; jogos protegidos/exclusivos e janelas minimizadas têm limitações.
+Os testes não comprovam QHD com movimento contínuo a 120 FPS nem <100 ms fim a
+fim. AMF e miniaturas vivas permanecem pendentes.
+
+Pacote release 0.4.0 passou novamente nas duas integrações e na regressão
+`tests.integration_system_audio` por TURN TLS (Opus estéreo, som não silencioso,
+saída WASAPI, mute/retomada e parada/republicação). No teste de janela houve
+1620 frames enviados até o fechamento; no teste de reconexão, 2146 enviados
+com retomada comprovada no receptor. Seis testes Rust e dezesseis testes Python
+passaram. ZIP portátil e instalador Inno Setup foram gerados, com SHA-256.
+
 ## Controle de volume — 0.3.2, 13/10/2026
 
 A rail do slider herdava o mesmo `inactive.bg_fill` da lateral e desaparecia

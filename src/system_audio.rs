@@ -9,7 +9,7 @@ use std::{borrow::Cow, collections::VecDeque, ffi::{CStr, c_char, c_void}, ptr::
 use tokio_stream::StreamExt;
 
 unsafe extern "C" {
-    fn hc_audio_capture_open(error: *mut c_char, size: usize) -> *mut c_void;
+    fn hc_audio_capture_open_process(process:u32, error: *mut c_char, size: usize) -> *mut c_void;
     fn hc_audio_capture_read(handle: *mut c_void, samples: *mut i16, capacity: u32, error: *mut c_char, size: usize) -> i32;
     fn hc_audio_capture_close(handle: *mut c_void);
     fn hc_audio_playout_open(error: *mut c_char, size: usize) -> *mut c_void;
@@ -30,32 +30,54 @@ fn error(buffer: &[c_char]) -> anyhow::Error {
 }
 
 pub struct SystemAudioPublisher {
-    room: Arc<Room>, sid: TrackSid, stop: Arc<AtomicBool>, thread: Option<thread::JoinHandle<()>>,
+    room: Arc<Room>, sid: TrackSid, track_id:String, stop: Arc<AtomicBool>, thread: Option<thread::JoinHandle<()>>,
+    target_process:Arc<AtomicU64>,applied_process:Arc<AtomicU64>,
     pub frames: Arc<AtomicU64>, pub failure: Arc<Mutex<Option<String>>>,
 }
 impl SystemAudioPublisher {
     pub fn start(runtime: &tokio::runtime::Runtime, room: Arc<Room>) -> Result<Self> {
+        Self::start_for_process(runtime,room,None)
+    }
+    pub fn start_for_process(runtime:&tokio::runtime::Runtime,room:Arc<Room>,process:Option<u32>)->Result<Self>{
         let source = NativeAudioSource::new(AudioSourceOptions::default(), 48000, 2, 20);
         let track = LocalAudioTrack::create_audio_track("system-audio", RtcAudioSource::Native(source.clone()));
+        let track_id=track.rtc_track().id();
         let stop = Arc::new(AtomicBool::new(false)); let frames = Arc::new(AtomicU64::new(0));
         let failure = Arc::new(Mutex::new(None));
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let (activate_tx, activate_rx) = mpsc::sync_channel(1);
         let worker_stop = stop.clone(); let worker_frames = frames.clone(); let worker_failure = failure.clone();
         let handle = runtime.handle().clone();
+        let worker_room=room.clone();
+        let target_process=Arc::new(AtomicU64::new(process.unwrap_or(0) as u64));
+        let applied_process=Arc::new(AtomicU64::new(process.unwrap_or(0) as u64));
+        let worker_target=target_process.clone();let worker_applied=applied_process.clone();
         let worker = thread::spawn(move || {
             let mut message = [0 as c_char; 1024];
             // SAFETY: native handle owns WASAPI/COM and is freed on this thread.
-            let pointer = unsafe { hc_audio_capture_open(message.as_mut_ptr(), message.len()) };
+            let pointer = unsafe { hc_audio_capture_open_process(process.unwrap_or(0), message.as_mut_ptr(), message.len()) };
             let Some(pointer) = NonNull::new(pointer) else { let _ = ready_tx.send(Err(error(&message).to_string())); return; };
-            let capture = NativeHandle { pointer, capture: true };
+            let mut capture = Some(NativeHandle { pointer, capture: true });
+            let mut current_process=process.unwrap_or(0);
             let _ = ready_tx.send(Ok(()));
             if activate_rx.recv_timeout(Duration::from_secs(15)).is_err() { return; }
             let mut samples = vec![0i16; 96000]; let mut pending = VecDeque::with_capacity(2880);
             let mut reported_stereo = false;
             while !worker_stop.load(Ordering::Relaxed) {
+                let next_process=worker_target.load(Ordering::Acquire) as u32;
+                if next_process!=current_process {
+                    pending.clear();source.clear_buffer();capture.take();
+                    let pointer=unsafe{hc_audio_capture_open_process(next_process,message.as_mut_ptr(),message.len())};
+                    let Some(pointer)=NonNull::new(pointer) else{*worker_failure.lock().unwrap()=Some(error(&message).to_string());break;};
+                    capture=Some(NativeHandle{pointer,capture:true});current_process=next_process;
+                    worker_applied.store(next_process as u64,Ordering::Release);
+                    crate::diagnostics::write("audio_source_switch",if next_process==0{"System audio selected"}else{"Application audio selected"},"");
+                }
+                if worker_room.connection_state()!=ConnectionState::Connected {
+                    pending.clear();source.clear_buffer();thread::sleep(Duration::from_millis(10));continue;
+                }
                 // SAFETY: output capacity exactly matches the allocated sample buffer.
-                let n = unsafe { hc_audio_capture_read(capture.pointer.as_ptr(), samples.as_mut_ptr(), samples.len() as u32, message.as_mut_ptr(), message.len()) };
+                let n = unsafe { hc_audio_capture_read(capture.as_ref().unwrap().pointer.as_ptr(), samples.as_mut_ptr(), samples.len() as u32, message.as_mut_ptr(), message.len()) };
                 if n < 0 { *worker_failure.lock().unwrap() = Some(error(&message).to_string()); break; }
                 if !reported_stereo && samples[..n as usize * 2].chunks_exact(2).filter(|pair| (i32::from(pair[0])-i32::from(pair[1])).abs()>2).count() > 5 {
                     reported_stereo = true; crate::diagnostics::write("audio", "Captured distinct stereo channels", "");
@@ -87,16 +109,29 @@ impl SystemAudioPublisher {
         match publication {
             Ok(publication) => {
                 let _ = activate_tx.send(());
-                crate::diagnostics::write("audio", "System audio published: 48000 Hz stereo, Opus 128 kbps; own process excluded", "");
-                Ok(Self { room, sid: publication.sid(), stop, thread: Some(worker), frames, failure })
+                crate::diagnostics::write("audio", if process.is_some(){"Application audio published: 48000 Hz stereo, Opus 128 kbps"}else{"System audio published: 48000 Hz stereo, Opus 128 kbps; own process excluded"}, "");
+                Ok(Self { room, sid: publication.sid(), track_id, target_process,applied_process,stop, thread: Some(worker), frames, failure })
             }
             Err(error) => { stop.store(true, Ordering::Relaxed); drop(activate_tx); let _ = worker.join(); Err(error.into()) }
         }
     }
+    pub fn set_process(&self,process:Option<u32>)->Result<()> {
+        let process=process.unwrap_or(0) as u64;
+        self.target_process.store(process,Ordering::Release);
+        let deadline=std::time::Instant::now()+Duration::from_secs(6);
+        while self.applied_process.load(Ordering::Acquire)!=process {
+            if let Some(error)=self.failure.lock().unwrap().clone(){return Err(anyhow!(error));}
+            if self.stop.load(Ordering::Relaxed)||std::time::Instant::now()>=deadline{return Err(anyhow!("Troca de áudio do aplicativo não respondeu"));}
+            thread::sleep(Duration::from_millis(5));
+        }
+        Ok(())
+    }
     pub fn stop(mut self, runtime: &tokio::runtime::Runtime) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(worker) = self.thread.take() { let _ = worker.join(); }
-        if let Err(error) = runtime.block_on(self.room.local_participant().unpublish_track(&self.sid)) {
+        let sid=self.room.local_participant().track_publications().into_values()
+            .find(|p|p.track().is_some_and(|t|t.rtc_track().id()==self.track_id)).map(|p|p.sid()).unwrap_or_else(||self.sid.clone());
+        if let Err(error) = runtime.block_on(self.room.local_participant().unpublish_track(&sid)) {
             crate::diagnostics::write("audio_unpublish_error", &error.to_string(), "");
         }
         crate::diagnostics::write("audio", &format!("System audio stopped; {} PCM frames sent", self.frames.load(Ordering::Relaxed)), "");

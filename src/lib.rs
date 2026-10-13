@@ -1,6 +1,8 @@
 #[cfg(all(windows, feature = "desktop"))]
 pub mod system_audio;
 #[cfg(all(windows, feature = "desktop"))]
+pub mod video_capture;
+#[cfg(all(windows, feature = "desktop"))]
 pub mod desktop;
 #[cfg(all(windows, feature = "desktop"))]
 pub mod desktop_engine;

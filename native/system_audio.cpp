@@ -58,11 +58,12 @@ struct Capture {
     ComPtr<IAudioCaptureClient> capture;
     Event ready;
     bool started = false;
-    Capture() {
+    Capture(DWORD process = 0) {
+        if (process == GetCurrentProcessId()) throw std::runtime_error("Cannot capture HyperCast audio");
         auto completion = Microsoft::WRL::Make<Completion>();
         completion->params.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
-        completion->params.ProcessLoopbackParams.TargetProcessId = GetCurrentProcessId();
-        completion->params.ProcessLoopbackParams.ProcessLoopbackMode = PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE;
+        completion->params.ProcessLoopbackParams.TargetProcessId = process ? process : GetCurrentProcessId();
+        completion->params.ProcessLoopbackParams.ProcessLoopbackMode = process ? PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE : PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE;
         PROPVARIANT properties{}; properties.vt = VT_BLOB;
         properties.blob.cbSize = sizeof(completion->params);
         properties.blob.pBlobData = reinterpret_cast<BYTE*>(&completion->params);
@@ -134,6 +135,9 @@ struct Playout {
 extern "C" {
 void* hc_audio_capture_open(char* error, size_t size) noexcept {
     try { return new Capture(); } catch (const std::exception& e) { report(error,size,e.what()); } catch (...) { report(error,size,"Audio capture initialization failed"); } return nullptr;
+}
+void* hc_audio_capture_open_process(unsigned process, char* error, size_t size) noexcept {
+    try { return new Capture(process); } catch (const std::exception& e) { report(error,size,e.what()); } catch (...) { report(error,size,"Application audio capture failed"); } return nullptr;
 }
 int hc_audio_capture_read(void* handle, int16_t* samples, uint32_t capacity, char* error, size_t size) noexcept {
     try { if (!handle || !samples || capacity > 96000) throw std::runtime_error("Invalid capture arguments"); return static_cast<Capture*>(handle)->read(samples,capacity); }

@@ -1,6 +1,6 @@
 [package]
 name = "hypercast"
-version = "0.3.2"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.92"
 description = "Windows GPU screen capture for a centralized LiveKit SFU"
