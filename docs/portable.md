@@ -1,5 +1,11 @@
 # HyperCast para Windows
 
+Versão 0.4.2: **Debug**, na base da lateral, abre o painel de diagnóstico com
+**Copiar diagnóstico** e a opção de teste TURN/TLS. Feche pelo X ou pelo mesmo
+botão. Status da sessão aparece uma única vez na base. Dropdown usa a mesma
+largura dos botões Monitor/Janela; nome, convite, servidor e token têm campos
+arredondados com borda verde ao receber foco. Convite/token continuam mascarados.
+
 Na versão 0.4.1, seleção de monitor/janela e **Formato de vídeo** ficam na
 lateral. **Som recebido** abre volume e silenciamento. Os controles
 compartilhar/parar, áudio enviado, pausar recepção e sair ficam fixos na base da

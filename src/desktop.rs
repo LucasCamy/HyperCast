@@ -58,6 +58,20 @@ fn section_title(ui: &mut egui::Ui, label: &str, detail: &str) {
     });
 }
 
+fn text_input(ui:&mut egui::Ui,text:&mut String,hint:&str,password:bool,limit:usize,enabled:bool)->egui::Response{
+    ui.scope(|ui|{
+        ui.visuals_mut().widgets.inactive.corner_radius=egui::CornerRadius::same(8);
+        ui.visuals_mut().widgets.hovered.corner_radius=egui::CornerRadius::same(8);
+        ui.visuals_mut().widgets.active.corner_radius=egui::CornerRadius::same(8);
+        ui.visuals_mut().widgets.inactive.bg_stroke=egui::Stroke::new(1.0,BORDER);
+        ui.visuals_mut().widgets.hovered.bg_stroke=egui::Stroke::new(1.0,MUTED);
+        ui.visuals_mut().selection.stroke=egui::Stroke::new(1.5,ACCENT);
+        ui.add_enabled(enabled,egui::TextEdit::singleline(text).password(password).char_limit(limit)
+            .desired_width(f32::INFINITY).margin(egui::Margin::symmetric(12,10))
+            .background_color(SURFACE).hint_text(hint))
+    }).inner
+}
+
 struct App {
     engine: Option<Engine>,
     address: String,
@@ -78,6 +92,7 @@ struct App {
     windows:Vec<crate::video_capture::ApplicationWindow>,
     selected_window:Option<usize>,
     fullscreen:bool,
+    debug_open:bool,
     before_fullscreen_mode:ViewMode,
     codec: crate::encoder::Codec,
     parent: usize,
@@ -143,7 +158,7 @@ impl App {
             sound_muted: false,
             displays: crate::screen_capture::displays().unwrap_or_default(),
             selected_display: 0,
-            window_mode:false,windows:crate::video_capture::windows(),selected_window:None,fullscreen:false,before_fullscreen_mode:ViewMode::Spotlight,
+            window_mode:false,windows:crate::video_capture::windows(),selected_window:None,fullscreen:false,debug_open:false,before_fullscreen_mode:ViewMode::Spotlight,
             codec: if std::env::var("HYPERCAST_CODEC").as_deref() == Ok("av1") {
                 crate::encoder::Codec::Av1
             } else {
@@ -198,7 +213,10 @@ impl App {
         });
         ui.scope(|ui|{
             ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Truncate);
-            let width=ui.available_width()-8.0;
+            let width=ui.available_width();
+            ui.spacing_mut().interact_size.y=38.0;
+            ui.visuals_mut().widgets.inactive.corner_radius=egui::CornerRadius::same(8);
+            ui.visuals_mut().widgets.hovered.corner_radius=egui::CornerRadius::same(8);
             if self.window_mode{
                 let title=self.windows.iter().find(|w|Some(w.hwnd)==self.selected_window)
                     .map(|w|w.title.as_str()).unwrap_or("Selecionar janela…");
@@ -233,8 +251,14 @@ impl App {
     }
     fn sharing_controls(&mut self,ui:&mut egui::Ui,connected:bool,can_publish:bool,publishing:bool,active:Option<crate::video_capture::CaptureTarget>,status:&str){
         ui.spacing_mut().item_spacing=Vec2::new(8.0,8.0);
-        ui.separator();
-        ui.label(RichText::new(if publishing{if active.is_some_and(|t|t.process().is_some()){"JANELA AO VIVO"}else{"MONITOR AO VIVO"}}else{"SEU COMPARTILHAMENTO"}).size(10.0).strong().color(if publishing{ACCENT}else{MUTED}));
+        ui.horizontal(|ui|{
+        ui.label(RichText::new(if publishing{if active.is_some_and(|t|t.process().is_some()){"JANELA AO VIVO"}else{"MONITOR AO VIVO"}}else{"SEU COMPARTILHAMENTO" }).size(10.0).strong().color(if publishing{ACCENT}else{MUTED}));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
+            ui.spacing_mut().button_padding=Vec2::new(8.0,3.0);
+            if ui.add(egui::Button::new(RichText::new("Debug").size(11.0).color(MUTED))
+                .min_size(Vec2::new(54.0,24.0)).corner_radius(6).fill(SURFACE).stroke(egui::Stroke::new(1.0,BORDER))).on_hover_text("Diagnóstico e opções de depuração").clicked(){self.debug_open=!self.debug_open;}
+        });
+        });
         ui.scope(|ui|{
             ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Truncate);
             ui.label(RichText::new(status).size(11.0).color(MUTED)).on_hover_text(status);
@@ -464,7 +488,7 @@ impl eframe::App for App {
                     .inner_margin(egui::Margin::same(20)),
             )
             .show(ui, |ui| {
-                egui::Panel::bottom("sharing_actions").exact_size(204.0)
+                egui::Panel::bottom("sharing_actions").show_separator_line(false).exact_size(204.0)
                     .frame(egui::Frame::new().fill(PANEL).inner_margin(egui::Margin::symmetric(0,12)))
                     .show(ui,|ui|{self.sharing_controls(ui,connected,can_publish,publishing,active_target,if source_error.is_empty(){&status}else{&source_error});});
                 egui::ScrollArea::vertical()
@@ -488,28 +512,17 @@ impl eframe::App for App {
                         } else {
                         egui::CollapsingHeader::new("Servidor e acesso avançado").default_open(self.token_mode).show(ui, |ui| {
                         ui.label("Servidor");
-                            ui.add_enabled(self.engine.is_none(),
-                            egui::TextEdit::singleline(&mut self.address)
-                                .desired_width(208.0)
-                                .char_limit(2048)
-                                .hint_text("wss://seu-servidor"),
-                        );
+                        text_input(ui,&mut self.address,"wss://seu-servidor",false,2048,self.engine.is_none());
                         ui.add_enabled(self.engine.is_none(), egui::Checkbox::new(&mut self.token_mode, "Token manual (avançado)"));
                         });
                         if !self.token_mode {
                             ui.label("Seu nome");
-                            ui.add_enabled(self.engine.is_none(), egui::TextEdit::singleline(&mut self.name).char_limit(64).desired_width(256.0).hint_text("Como seus amigos vão te reconhecer"));
+                            text_input(ui,&mut self.name,"Como quer aparecer na sala",false,64,self.engine.is_none());
                             ui.label("Convite da sala");
-                            ui.add_enabled(self.engine.is_none(), egui::TextEdit::singleline(&mut self.invite).password(true).char_limit(64).desired_width(256.0).hint_text("Cole o convite da sala"));
+                            text_input(ui,&mut self.invite,"Cole o convite da sala",true,64,self.engine.is_none());
                         } else {
                         ui.label("Token da sala");
-                            ui.add_enabled(self.engine.is_none(),
-                            egui::TextEdit::singleline(&mut self.token)
-                                .password(true)
-                                .char_limit(8192)
-                                .desired_width(208.0)
-                                .hint_text("Cole seu token de acesso"),
-                        );
+                        text_input(ui,&mut self.token,"Cole seu token de acesso",true,8192,self.engine.is_none());
                         }
                         if self.engine.is_none()
                             && ui
@@ -553,8 +566,6 @@ impl eframe::App for App {
 
                         });
                         ui.add_space(8.0);
-                        ui.separator();
-                        ui.add_space(8.0);
                         section_title(ui, "PARTICIPANTES", &format!("{} na sala", people.len() + usize::from(connected)));
                         ui.add_space(8.0);
                         if connected {
@@ -581,26 +592,7 @@ impl eframe::App for App {
                                 ui.label(RichText::new(if connected { "Compartilhe o convite da sala com eles." } else { "Entre na sala para acompanhar as telas." }).size(11.0).color(MUTED));
                             });
                         }
-                        ui.add_space(8.0);
-                        ui.separator();
-                        ui.add_space(8.0);
-                        ui.add_space(8.0);
-                        egui::CollapsingHeader::new("Diagnóstico").default_open(false).show(ui, |ui| {
-                        ui.add_enabled(self.engine.is_none(), egui::Checkbox::new(&mut self.relay_only, "Forçar TURN/TLS (teste)"))
-                            .on_hover_text("Use antes de entrar para testar o relay; desmarcado permite escolher a rota de menor custo");
-                        if ui.button("Copiar diagnóstico").on_hover_text("Copiar o log desta sessão, sem token ou imagens, para enviar ao suporte").clicked() {
-                            match crate::diagnostics::export_text() {
-                                Ok(text) => ctx.copy_text(text),
-                                Err(error) => self.error = format!("Diagnóstico: {error}"),
-                            }
-                        }
-                        if let Some(path) = crate::diagnostics::path() {
-                            ui.label(RichText::new("Log salvo automaticamente").size(11.0).color(MUTED))
-                                .on_hover_text(path.display().to_string());
-                        }
-                        });
-                        ui.label(RichText::new(&status).size(12.0).color(MUTED));
-                        if !audio_status.is_empty() { ui.label(RichText::new(&audio_status).size(11.0).color(MUTED)); }
+                        if audio_status.starts_with("Áudio:") { ui.colored_label(DANGER,&audio_status); }
                         if !source_error.is_empty(){ui.colored_label(DANGER,&source_error);}
                         if !self.error.is_empty() {
                             ui.colored_label(Color32::LIGHT_RED, &self.error);
@@ -909,6 +901,25 @@ impl eframe::App for App {
                     }
                 }
             });
+        if !self.fullscreen && self.debug_open {
+            egui::Window::new("Diagnóstico").id(egui::Id::new("debug_window"))
+                .open(&mut self.debug_open).fixed_pos(egui::pos2(16.0,48.0))
+                .default_width(260.0).max_width(260.0).resizable(false).collapsible(false)
+                .show(&ctx,|ui|{
+                    ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
+                    ui.label(RichText::new(&status).size(12.0));
+                    if !audio_status.is_empty(){ui.label(RichText::new(&audio_status).size(11.0).color(MUTED));}
+                    ui.add_enabled(self.engine.is_none(),egui::Checkbox::new(&mut self.relay_only,"Forçar TURN/TLS (teste)"))
+                        .on_hover_text("Ative antes de entrar para testar o relay; desativado escolhe a rota de menor custo");
+                    if ui.button("Copiar diagnóstico").on_hover_text("Copiar o log da sessão, sem token ou imagens").clicked(){
+                        match crate::diagnostics::export_text(){Ok(text)=>ctx.copy_text(text),Err(error)=>self.error=format!("Diagnóstico: {error}")}
+                    }
+                    if let Some(path)=crate::diagnostics::path(){
+                        ui.label(RichText::new("Log salvo automaticamente").size(11.0).color(MUTED)).on_hover_text(path.display().to_string());
+                    }
+                    if !self.error.is_empty(){ui.colored_label(DANGER,&self.error);}
+                });
+        }
         ctx.request_repaint_after(Duration::from_millis(500));
     }
 }

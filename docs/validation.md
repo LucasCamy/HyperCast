@@ -1,5 +1,18 @@
 # Validação — 12 e 13/10/2026
 
+## Debug, dropdown e campos — 0.4.2, 13/10/2026
+
+Retirada seção permanente de diagnóstico e status duplicado. Debug pequeno
+abre janela egui fixa dentro da largura da lateral, evitando sobreposição ao
+HWND DirectX do vídeo. Removidos separadores redundantes e a linha automática
+do painel inferior. Dropdown ocupa a mesma largura dos botões e tem altura
+de 38 px. Campos usam margem interna, preenchimento, raio e borda de foco;
+limites, masking e bloqueio durante conexão permanecem.
+
+Build desktop e revisão visual de janela inicial, Debug aberto/fechado por
+cliques enviados somente ao HWND do processo de teste, e foco real no campo
+de nome. Sem novos testes unitários para alteração visual; sem reiniciar SFU.
+
 ## Lateral e área de vídeo — 0.4.1, 13/10/2026
 
 Configuração de monitor/janela e codec saiu do centro; os controles deixaram

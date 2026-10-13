@@ -1,5 +1,8 @@
 # HyperCast
 
+Versão 0.4.2: **Debug** compacto na base da lateral, diagnóstico em painel
+flutuante, dropdown alinhado e campos de acesso com borda/foco visíveis.
+
 Versão 0.4.1: configurações e controles na lateral, com mais espaço para as
 telas da sala. Compartilhar/parar, pausar recepção e sair permanecem fixos;
 formato e som recebido ficam em seções expansíveis.
