@@ -254,6 +254,7 @@ impl EncodedPublisher {
     }
     pub async fn close(self) -> Result<()> {
         let stats = self.room.get_stats().await?;
+        print_ice_path("publisher", &stats.publisher_stats);
         for entry in stats.publisher_stats {
             if let livekit::webrtc::stats::RtcStats::OutboundRtp(rtp) = entry {
                 println!(
@@ -280,6 +281,62 @@ impl EncodedPublisher {
     }
 }
 
+/// Report the selected media route without logging endpoint addresses or ICE credentials.
+pub fn print_ice_path(label: &str, stats: &[livekit::webrtc::stats::RtcStats]) {
+    use livekit::webrtc::stats::RtcStats;
+    for entry in stats {
+        let RtcStats::Transport(transport) = entry else {
+            continue;
+        };
+        let pair = stats.iter().find_map(|entry| match entry {
+            RtcStats::CandidatePair(pair)
+                if pair.rtc.id == transport.transport.selected_candidate_pair_id =>
+            {
+                Some(pair)
+            }
+            _ => None,
+        });
+        let Some(pair) = pair else { continue };
+        let remote = stats.iter().find_map(|entry| match entry {
+            RtcStats::RemoteCandidate(remote)
+                if remote.rtc.id == pair.candidate_pair.remote_candidate_id =>
+            {
+                Some(remote)
+            }
+            _ => None,
+        });
+        let Some(remote) = remote else { continue };
+        let protocol = match remote.remote_candidate.protocol.as_str() {
+            "udp" => "udp",
+            "tcp" => "tcp",
+            _ => "other",
+        };
+        let scope = address_scope(&remote.remote_candidate.address);
+        let rtt = pair.candidate_pair.current_round_trip_time * 1000.0;
+        if rtt.is_finite() && rtt >= 0.0 {
+            println!("WebRTC ICE {label}: {protocol}, remote {scope}, network RTT {rtt:.2} ms");
+        }
+    }
+}
+
+fn address_scope(address: &str) -> &'static str {
+    use std::net::IpAddr;
+    match address.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) if ip.is_loopback() => "loopback",
+        Ok(IpAddr::V4(ip))
+            if ip.is_private()
+                || ip.is_link_local()
+                || (ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1])) =>
+        {
+            "private"
+        }
+        Ok(IpAddr::V6(ip)) if ip.is_loopback() => "loopback",
+        Ok(IpAddr::V6(ip)) if ip.is_unique_local() || ip.is_unicast_link_local() => "private",
+        Ok(ip) if !ip.is_unspecified() && !ip.is_multicast() => "non-private",
+        _ => "unknown",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,5 +347,14 @@ mod tests {
         assert!(validate_url("ws://192.168.15.19:8100").is_err());
         assert!(validate_url("https://screen.example.com").is_err());
         assert!(validate_url("wss://user:password@example.com").is_err());
+    }
+    #[test]
+    fn route_scope_identifies_vpn_and_carrier_nat_without_exposing_address() {
+        assert_eq!(address_scope("100.121.252.74"), "private");
+        assert_eq!(address_scope("192.168.15.19"), "private");
+        assert_eq!(address_scope("fd7a:115c:a1e0::1"), "private");
+        assert_eq!(address_scope("127.0.0.1"), "loopback");
+        assert_eq!(address_scope("8.8.8.8"), "non-private");
+        assert_eq!(address_scope("unavailable"), "unknown");
     }
 }

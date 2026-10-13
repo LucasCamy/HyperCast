@@ -23,14 +23,15 @@ def main():
     publisher_env = {**os.environ, "HYPERCAST_ROOM_TOKEN": publisher_token}
     viewer_env = {**os.environ, "HYPERCAST_ROOM_TOKEN": viewer_token}
     codec = os.environ.get("HYPERCAST_TEST_CODEC", "av1")
+    url = os.environ.get("HYPERCAST_TEST_URL", "ws://127.0.0.1:8100")
     log_path = ROOT / ".tools" / (room + "-publisher.log")
     log_path.parent.mkdir(parents=True, exist_ok=True)
     publisher_log = log_path.open("wb")
     publisher = subprocess.Popen([str(exe), "--encode", "--codec", codec,
-        "--publish-url", "ws://127.0.0.1:8100", "--seconds", "18"],
+        "--publish-url", url, "--seconds", "18"],
         env=publisher_env, cwd=ROOT, stdout=publisher_log, stderr=subprocess.STDOUT)
     try:
-        viewer = subprocess.run([str(exe), "--receive-url", "ws://127.0.0.1:8100",
+        viewer = subprocess.run([str(exe), "--receive-url", url,
             "--view-mode", "spotlight", "--focus", "hc-screen-1",
             "--pause-after", "6", "--seconds", "12"],
             env=viewer_env, cwd=ROOT, capture_output=True, text=True,

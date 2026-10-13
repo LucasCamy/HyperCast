@@ -59,3 +59,15 @@ python -m tests.integration_gui_publish
 Integrações de mídia exigem SFU local e hardware compatível. O teste visual usa Pillow em .tools/python-libs. Screenshots de salas reais ficam em .tools e não são versionados; assets/layout.png contém apenas a tela inicial do próprio aplicativo, sem token/mídia de outros aplicativos.
 
 Ainda faltam medições QHD/120 com movimento, jitter/perda e rede real; AMF, HDR, composição de cursor separado, miniaturas vivas e recuperação automática completa de sessão não fazem parte desta versão. As miniaturas atuais são quadros pausados, explicitamente identificados na interface.
+
+## Implantação no homelab — 13/10/2026
+
+SFU instalado no nó vm-200 do k3s, namespace hypercast: pod 1/1 Running, HTTP 200, imagem por digest, Secret exclusivo e tetos UDP de 16 MiB. Manifests passaram dry-run na API real do cluster. Quota remota rejeitou duplicação e identidades fora do pool. AV1 recebeu 650 quadros D3D11 por LAN/VPN; WSS via hypercast.cloudlane.com.br recebeu 591 quadros D3D11, também com mídia pela VPN. HTTPS/WSS público não prova alcance das portas de mídia pela internet.
+
+O teste público revelou ausência do feature TLS no cliente: habilitado native-tls do SDK (Schannel no Windows), recompilado e testado com certificado Cloudflare. Cloudflare recusou o User-Agent padrão Python-urllib com erro 1010; o emissor passou a identificar-se honestamente como HyperCast-Operator, mantendo assinatura, HTTPS e proteção contra redirecionamentos. Nenhuma regra de segurança Cloudflare foi desabilitada.
+
+Doze testes Python passaram, incluindo renderização Kubernetes e seleção explícita de ambiente do operador. Quatro testes Rust passaram após incluir classificação de rota ICE. Diagnóstico agora mostra protocolo, classe da rota remota e RTT de rede sem imprimir endereços/credenciais ICE; RTT não é latência fim a fim. Instalador TLS passou instalação, GPU e remoção; ZIP TLS passou WSS contra o SFU remoto. O pacote inclui Test-Streaming.ps1 para o PC QHD, com entrada oculta de JWT e logs sem gravação de vídeo.
+
+O proprietário informou outro PC com RTX 4080, driver 32.0.16.1714 e monitor 2560×1440 a 239 Hz. Teste nesse PC ainda não executado. A Radeon integrada está sem monitor ativo; isso ainda não valida captura/encode AMF.
+
+Após o proprietário encaminhar as portas, TCP 8101 público respondeu e mídia AV1/HEVC passou por UDP público: 658/653 quadros D3D11, pausa respeitada, RTT de rede de 1–3 ms. A rota local ao WAN foi Ethernet. Nenhuma sala estava ativa; retiramos temporariamente os candidatos internos para forçar a rota pública, verificamos `remote non-private` tanto no publicador quanto no espectador e restauramos a configuração ao final. Pod voltou a 1/1 Running e HTTP 200. RTT de rede não mede latência de captura/encode/filas/decode/apresentação.

@@ -10,6 +10,7 @@ $hcStage = "$hcDist/HyperCast-0.1.0-windows-x64"
 # No recursive cleanup: stage a fixed allowlist and refuse stale unexpected files.
 New-Item -ItemType Directory -Force "$hcStage/licenses" | Out-Null
 Copy-Item -LiteralPath "$hcRoot/target/x86_64-pc-windows-msvc/release/hypercast.exe" -Destination $hcStage
+Copy-Item -LiteralPath "$PSScriptRoot/Test-Streaming.ps1" -Destination $hcStage
 foreach ($hcDll in @('avcodec-63.dll','avutil-61.dll','swresample-7.dll')) {
     Copy-Item -LiteralPath "$hcRoot/.tools/ffmpeg/bin/$hcDll" -Destination $hcStage
 }
@@ -33,7 +34,7 @@ foreach ($hcLicense in @('COPYING.GPLv3','COPYING.LGPLv3')) {
     Copy-Item -LiteralPath $hcFile -Destination "$hcStage/licenses/$hcLicense.txt"
 }
 $hcZip = "$hcDist/HyperCast-0.1.0-windows-x64-portable.zip"
-$hcAllowed = @('hypercast.exe','avcodec-63.dll','avutil-61.dll','swresample-7.dll',
+$hcAllowed = @('hypercast.exe','Test-Streaming.ps1','avcodec-63.dll','avutil-61.dll','swresample-7.dll',
     'licenses/LICENSE','licenses/THIRD_PARTY.md','licenses/portable.md',
     'licenses/FFmpeg-LGPL-3.0.txt','licenses/LiveKit-NOTICE.md','licenses/WebRTC-LICENSE.md',
     'licenses/nvEncodeAPI.h','licenses/FFmpeg-build.txt','licenses/COPYING.GPLv3.txt',

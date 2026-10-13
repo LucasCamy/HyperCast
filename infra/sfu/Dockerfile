@@ -7,6 +7,7 @@ COPY infra/sfu/hypercast_quota_test.go pkg/rtc/hypercast_quota_test.go
 RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
 RUN python3 /patch.py && CGO_ENABLED=0 go test ./pkg/rtc -run TestHypercastQuota && CGO_ENABLED=0 go build -o /livekit-server ./cmd/server
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+LABEL org.opencontainers.image.source="https://github.com/LucasCamy/HyperCast"
 COPY --from=build /livekit-server /livekit-server
 USER 65532:65532
 ENTRYPOINT ["/livekit-server"]

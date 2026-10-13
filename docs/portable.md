@@ -17,3 +17,12 @@ driver 610+; recepção usa D3D11VA com suporte de hardware ao codec negociado.
 Este é um build de desenvolvimento sem assinatura Authenticode. 1440p a
 120 FPS e latência abaixo de 100 ms são metas ainda não comprovadas.
 Não compartilhe API secret com os clientes; distribua apenas tokens de sala.
+
+Para diagnóstico, abra PowerShell na pasta do ZIP e execute
+`./Test-Streaming.ps1 -Role Viewer` ou `./Test-Streaming.ps1 -Role Publisher`.
+O script pede o token com entrada oculta, conecta ao domínio HyperCast por
+30 segundos e salva hardware/contadores em LocalAppData/HyperCast/diagnostics.
+Publicador compartilha o monitor selecionado; nenhum arquivo de vídeo é gravado.
+Para testar outra tela, use -Adapter e -Monitor conforme hypercast.exe --list.
+O log informa o caminho ICE selecionado e RTT de rede; RTT não é latência
+fim a fim. Para validar internet, usar cliente em outra conexão sem VPN.

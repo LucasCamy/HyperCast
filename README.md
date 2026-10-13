@@ -25,7 +25,7 @@ python tools/room_token.py --room amigos --name Amigo --role viewer
 
 O emissor administrativo imprime JWTs bearer de cinco minutos. Distribua-os por canal seguro. `init_env.py` cria chaves aleatórias sem sobrescrever `.env`. Nenhuma chave de servidor deve entrar no instalador.
 
-Compose principal: rede host para Linux. Override: Docker Desktop, sinalização em loopback. Cliente exige WSS fora de loopback. Para produção, ajuste o IP anunciado, configure HTTPS/WSS e restrinja RoomService. Não há TURN; redes que bloqueiam UDP/ICE-TCP podem falhar. O homelab foi analisado, sem alterar recursos remotos: [topologia](docs/homelab.md).
+Compose principal: rede host para Linux. Override: Docker Desktop, sinalização em loopback. Cliente exige WSS fora de loopback, com TLS nativo habilitado e validação de certificado. Não há TURN; redes que bloqueiam UDP/ICE-TCP podem falhar. SFU instalado no homelab k3s, namespace hypercast, com sinalização em wss://hypercast.cloudlane.com.br. AV1/HEVC foram validados pela rota pública UDP após encaminhamento de portas no roteador. [Estado do homelab](docs/homelab.md), [manifests/operação](k8s/README.md).
 
 | Porta | Transporte | Função |
 |---|---|---|

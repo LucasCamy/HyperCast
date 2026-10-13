@@ -190,6 +190,9 @@ pub async fn receive(address: &str, token: &str, options: ReceiveOptions) -> Res
         );
     }
     sinks.clear();
+    if let Ok(stats) = room.get_stats().await {
+        crate::network::print_ice_path("subscriber", &stats.subscriber_stats);
+    }
     room.close().await?;
     let count = total.load(Ordering::Relaxed);
     println!("Receiver total: {count} decoded frames");

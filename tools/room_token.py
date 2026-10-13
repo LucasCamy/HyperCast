@@ -24,13 +24,19 @@ import uuid
 ROOT = Path(__file__).resolve().parent.parent
 NAME = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
 
-def load_env():
-    path = ROOT / ".env"
+def load_env(path=None):
+    explicit = path is not None
+    path = Path(path) if explicit else ROOT / ".env"
+    if explicit and not path.is_file():
+        raise FileNotFoundError("Operator environment file not found")
     if path.exists():
         for line in path.read_text(encoding="utf-8").splitlines():
             if line and not line.startswith("#"):
                 key, value = line.split("=", 1)
-                os.environ.setdefault(key, value)
+                if explicit:
+                    os.environ[key] = value
+                else:
+                    os.environ.setdefault(key, value)
     key, secret = os.environ["LIVEKIT_API_KEY"], os.environ["LIVEKIT_API_SECRET"]
     if len(secret) < 32 or secret == "generated-by-tools-init_env":
         raise ValueError("Generate a strong API secret using tools/init_env.py")
@@ -54,7 +60,8 @@ def participants(room, key, secret):
                   "exp": now + 60, "video": {"room": room, "roomAdmin": True}}, secret)
     request = urllib.request.Request(url + "/twirp/livekit.RoomService/ListParticipants",
         data=json.dumps({"room": room}).encode(),
-        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json",
+                 "User-Agent": "HyperCast-Operator/0.1 (+https://github.com/LucasCamy/HyperCast)"})
     # No redirect: never forward an administrator bearer token to another origin.
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *args, **kwargs):
@@ -110,9 +117,11 @@ def main():
     parser.add_argument("--room", required=True)
     parser.add_argument("--name", required=True)
     parser.add_argument("--role", choices=["viewer", "publisher"], default="viewer")
+    parser.add_argument("--env-file", type=Path, help="Explicit operator environment for the target SFU")
+    parser.add_argument("--db", type=Path, default=ROOT / "infra/admission.sqlite3", help="Shared reservation database for this SFU")
     args = parser.parse_args()
-    key, secret = load_env()
-    print(issue(args.room, args.name, args.role, key, secret, ROOT / "infra/admission.sqlite3",
+    key, secret = load_env(args.env_file)
+    print(issue(args.room, args.name, args.role, key, secret, args.db,
                 cap=int(os.environ.get("HYPERCAST_MAX_PUBLISHERS", "3"))))
 
 if __name__ == "__main__":

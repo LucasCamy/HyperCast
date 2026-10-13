@@ -17,7 +17,7 @@ def main():
         token = rt.sign({"iss": key, "sub": identity, "nbf": now-5, "exp": now+120,
             "video": {"room": room, "roomJoin": True, "canPublish": True,
                       "canSubscribe": True, "canPublishSources": ["screen_share"]}}, secret)
-        args = [str(exe), "--admission-probe-url", "ws://127.0.0.1:8100"]
+        args = [str(exe), "--admission-probe-url", os.environ.get("HYPERCAST_TEST_URL", "ws://127.0.0.1:8100")]
         if forbidden:
             args.append("--reject-first")
         result = subprocess.run(args, cwd=ROOT, env={**os.environ, "HYPERCAST_ROOM_TOKEN": token},
