@@ -1,0 +1,7 @@
+.tools/
+target/
+.env
+*.sqlite3*
+__pycache__/
+*.token
+

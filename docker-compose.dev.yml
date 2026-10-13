@@ -1,0 +1,13 @@
+# Optional Windows Docker Desktop validation using explicit port forwarding.
+# Before a real client test, change rtc.node_ip in livekit.yaml to this PC's LAN IP.
+services:
+  livekit:
+    command: ["--config", "/etc/livekit.yaml", "--node-ip", "${HYPERCAST_DEV_NODE_IP:-127.0.0.1}"]
+    network_mode: !reset null
+    ports:
+      - "127.0.0.1:8100:8100/tcp"
+      - "8101:8101/tcp"
+      - "8102-8105:8102-8105/udp"
+  healthcheck:
+    network_mode: "service:livekit"
+

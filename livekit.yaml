@@ -1,0 +1,34 @@
+port: 8100
+bind_addresses: ["0.0.0.0"]
+rtc:
+  tcp_port: 8101
+  # UDP mux: four ports for the documented four-vCPU VM. No RTP port range.
+  udp_port: 8102-8105
+  use_external_ip: false
+  # LAN default from homelab documentation. Replace with the actual SFU address.
+  node_ip: 192.168.15.19
+  packet_buffer_size_video: 1024
+  packet_buffer_size_audio: 200
+  congestion_control:
+    enabled: true
+    allow_pause: true
+room:
+  auto_create: true
+  max_participants: 12
+  empty_timeout: 300
+  departure_timeout: 20
+  enabled_codecs:
+    - mime: video/H265
+    - mime: video/AV1
+    - mime: video/H264
+  playout_delay:
+    enabled: true
+    min: 0
+    max: 0
+limit:
+  subscription_limit_video: 3
+  # num_tracks and bytes_per_sec are NODE allocation limits, not room quotas.
+  # Bitrate 35-45 Mbps belongs to the encoder, not a node-wide SFU limit.
+logging:
+  level: info
+

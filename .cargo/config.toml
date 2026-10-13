@@ -1,0 +1,4 @@
+[target.x86_64-pc-windows-msvc]
+# LiveKit's prebuilt libwebrtc uses the static Microsoft CRT (/MT).
+# Keep Rust and our C++ bridge on the same runtime.
+rustflags = ["-C", "target-feature=+crt-static"]
