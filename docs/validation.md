@@ -1,5 +1,20 @@
 # Validação — 12 e 13/10/2026
 
+## Ajustes da interface — 0.5.3, 13/10/2026
+
+Ações de atualização usam a mesma largura disponível e altura de 40 px.
+Conferidos os estados de versão disponível e instalação pronta, em uma
+instalação temporária isolada com build privada anterior. O download real
+foi verificado e a fixture desinstalada; manifests originais restaurados.
+UI Automation confirmou dimensões iguais nos três botões do painel.
+
+Em tela cheia, X de 20×20 px à direita, margens de 8 px e cabeçalho compacto.
+Botão de áudio do mesmo tamanho, slider de 88 px, nome acessível e controle
+por teclado. Teste com transmissão sintética acionou entrada em tela cheia,
+mute, reativação, volume 25% e saída pelo X; diagnóstico confirmou que os
+ajustes chegaram ao engine. Captura WGC, áudio do processo, mudança de origem
+sem mudar SID e término ao fechar a janela continuaram funcionando.
+
 ## Recuperação de conexão e botão de entrada — 0.5.2, 13/10/2026
 
 Botão de entrada usa a largura disponível dos campos. Revisão visual em

@@ -1,4 +1,7 @@
-# Atualizações pelo aplicativo — 0.5.1
+# Atualizações pelo aplicativo — 0.5.3
+
+Os botões do painel usam a mesma largura e altura, com a ação principal
+destacada e as ações secundárias alinhadas.
 
 Use **Atualizar**, no topo da lateral. Ele abre a janela e consulta a versão
 estável mais recente do repositório oficial. **Verificar atualização** permite

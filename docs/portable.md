@@ -1,5 +1,11 @@
 # HyperCast para Windows
 
+0.5.3 padroniza os botões de atualização. Em tela cheia, use o **X** compacto
+no canto superior direito, **Esc** ou **F11** para sair; o vídeo ocupa mais espaço.
+Ao lado do X, clique no alto-falante para silenciar/reativar e ajuste o slider
+para mudar o volume recebido. Mover o slider reativa o áudio; sair da tela
+cheia mantém o volume escolhido no menu lateral.
+
 0.5.2 alinha **Entrar na sala** aos campos e conserva o último quadro durante
 a reconexão. São até três tentativas, com pelo menos dois segundos entre
 falhas. Após isso, entre na sala novamente. Uma tela remota interrompida fica

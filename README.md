@@ -1,5 +1,9 @@
 # HyperCast
 
+Versão 0.5.3: ações de atualização com tamanho uniforme e saída de tela
+cheia com **X de 20 px** à direita, cabeçalho e margens reduzidos.
+Volume e botão de silenciar ficam ao lado do X, sincronizados com a lateral.
+
 Versão 0.5.2: botão **Entrar na sala** alinhado aos campos, até três
 tentativas de reconexão e último quadro preservado durante a recuperação.
 [Comportamento e testes](docs/reconnection.md).

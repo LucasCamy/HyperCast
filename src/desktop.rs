@@ -20,6 +20,57 @@ const ACCENT: Color32 = Color32::from_rgb(191, 239, 121);
 const SURFACE: Color32 = Color32::from_rgb(28, 35, 36);
 const DANGER: Color32 = Color32::from_rgb(235, 127, 119);
 
+fn update_action(ui: &mut egui::Ui, label: &str, primary: bool) -> egui::Response {
+    ui.add_sized(
+        [ui.available_width(), 40.0],
+        egui::Button::new(RichText::new(label).size(13.0).color(if primary { ACCENT } else { TEXT }))
+            .corner_radius(8)
+            .fill(if primary { ACCENT.gamma_multiply(0.16) } else { SURFACE })
+            .stroke(egui::Stroke::new(1.0, if primary { ACCENT.gamma_multiply(0.45) } else { BORDER })),
+    )
+}
+
+fn exit_fullscreen(ui: &mut egui::Ui) -> egui::Response {
+    let response = ui.scope(|ui| {
+        ui.spacing_mut().button_padding = Vec2::ZERO;
+        ui.spacing_mut().interact_size = Vec2::splat(20.0);
+        ui.add_sized([20.0, 20.0], egui::Button::new("").corner_radius(5).fill(SURFACE))
+    }).inner;
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Sair da tela cheia"));
+    let center = response.rect.center();
+    let stroke = egui::Stroke::new(1.5, if response.hovered() || response.has_focus() { TEXT } else { MUTED });
+    for direction in [-1.0, 1.0] {
+        let offset = Vec2::new(3.5, 3.5 * direction);
+        ui.painter().line_segment([center - offset, center + offset], stroke);
+    }
+    response.on_hover_text("Sair da tela cheia · Esc / F11")
+}
+
+fn fullscreen_sound(ui: &mut egui::Ui, muted: bool) -> egui::Response {
+    let response = ui.scope(|ui| {
+        ui.spacing_mut().button_padding = Vec2::ZERO;
+        ui.spacing_mut().interact_size = Vec2::splat(20.0);
+        ui.add_sized([20.0, 20.0], egui::Button::new("").corner_radius(5).fill(SURFACE))
+    }).inner;
+    let label = if muted { "Reativar áudio recebido" } else { "Silenciar áudio recebido" };
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    let center = response.rect.center();
+    let tint = if response.hovered() || response.has_focus() { TEXT } else { MUTED };
+    ui.painter().rect_filled(egui::Rect::from_center_size(center - Vec2::new(4.0, 0.0), Vec2::new(3.0, 5.0)), 0.5, tint);
+    ui.painter().add(egui::Shape::convex_polygon(vec![
+        center + Vec2::new(-3.0,-2.5), center + Vec2::new(1.0,-5.0),
+        center + Vec2::new(1.0,5.0), center + Vec2::new(-3.0,2.5),
+    ], tint, egui::Stroke::NONE));
+    let stroke = egui::Stroke::new(1.3, if muted { DANGER } else { tint });
+    if muted {
+        ui.painter().line_segment([center - Vec2::splat(5.0), center + Vec2::splat(5.0)], stroke);
+    } else {
+        ui.painter().line_segment([center + Vec2::new(4.0,-3.0), center + Vec2::new(5.5,0.0)], stroke);
+        ui.painter().line_segment([center + Vec2::new(5.5,0.0), center + Vec2::new(4.0,3.0)], stroke);
+    }
+    response.on_hover_text(label)
+}
+
 fn monitor_symbol(painter: &egui::Painter, center: egui::Pos2, color: Color32, size: f32) {
     let stroke = egui::Stroke::new(1.6, color);
     let screen = egui::Rect::from_center_size(center - Vec2::new(0.0, size * 0.08), Vec2::new(size, size * 0.62));
@@ -611,13 +662,32 @@ impl eframe::App for App {
             .frame(
                 egui::Frame::new()
                     .fill(BG)
-                    .inner_margin(egui::Margin::same(28)),
+                    .inner_margin(egui::Margin::same(if self.fullscreen { 8 } else { 28 })),
             )
             .show(ui, |ui| {
                 if self.fullscreen {
+                    ui.spacing_mut().item_spacing = Vec2::new(8.0, 4.0);
                     ui.horizontal(|ui|{
-                        ui.label(RichText::new("Tela em destaque").strong());
-                        if ui.button("Sair da tela cheia · Esc / F11").clicked(){self.set_fullscreen(&ctx,false);}
+                        ui.label(RichText::new("Tela em destaque").size(13.0).color(MUTED));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if exit_fullscreen(ui).clicked(){self.set_fullscreen(&ctx,false);}
+                            let muted = self.sound_muted || self.volume == 0;
+                            if fullscreen_sound(ui, muted).clicked() {
+                                self.sound_muted = !muted;
+                                if muted && self.volume == 0 { self.volume = 80; }
+                                self.send_layout();
+                            }
+                            let volume = ui.scope(|ui| {
+                                ui.spacing_mut().slider_width = 88.0;
+                                ui.spacing_mut().interact_size.y = 20.0;
+                                ui.visuals_mut().selection.bg_fill = if self.sound_muted { MUTED } else { ACCENT };
+                                ui.add(egui::Slider::new(&mut self.volume, 0..=100).show_value(false)
+                                    .trailing_fill(true).handle_shape(egui::style::HandleShape::Circle))
+                            }).inner;
+                            volume.widget_info(|| egui::WidgetInfo::slider(true, self.volume as f64, "Volume da transmissão"));
+                            if volume.changed() { self.sound_muted = false; self.send_layout(); }
+                            volume.on_hover_text(format!("Volume da transmissão · {}%", self.volume));
+                        });
                     });
                 } else {
                 ui.horizontal(|ui| {
@@ -933,6 +1003,8 @@ impl eframe::App for App {
             let mut open=self.updater.open;
             let mut install=false;
             egui::Window::new("Atualização").id(egui::Id::new("update_window"))
+                .frame(egui::Frame::window(ui.style()).fill(PANEL).inner_margin(12).corner_radius(12)
+                    .stroke(egui::Stroke::new(1.0, BORDER)))
                 .open(&mut open).fixed_pos(egui::pos2(16.0,48.0)).default_width(260.0).max_width(260.0)
                 .resizable(false).collapsible(false).show(&ctx,|ui|{
                     ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
@@ -949,14 +1021,14 @@ impl eframe::App for App {
                     if !self.updater.busy {
                         if self.updater.installer.is_some(){
                             ui.label(RichText::new("O HyperCast será fechado para instalar. A sessão atual será encerrada.").size(12.0).color(MUTED));
-                            if ui.button("Instalar e reiniciar").clicked(){install=true;}
+                            if update_action(ui,"Instalar e reiniciar",true).clicked(){install=true;}
                         }else if let Some(release)=self.updater.release.clone(){
                             if matches!(self.updater.installation,crate::updater::Installation::Installed(_)){
-                                if ui.button("Baixar atualização").clicked(){self.updater.download(ctx.clone());}
-                            }else if ui.button("Baixar no navegador").clicked(){ctx.open_url(egui::OpenUrl::new_tab(release.page));}
+                                if update_action(ui,"Baixar atualização",true).clicked(){self.updater.download(ctx.clone());}
+                            }else if update_action(ui,"Baixar no navegador",true).clicked(){ctx.open_url(egui::OpenUrl::new_tab(release.page));}
                         }
-                        if ui.button("Verificar atualização").clicked(){self.updater.check(ctx.clone());}
-                        if ui.small_button("Abrir página de downloads").clicked(){ctx.open_url(egui::OpenUrl::new_tab(crate::updater::RELEASES));}
+                        if update_action(ui,"Verificar atualização",false).clicked(){self.updater.check(ctx.clone());}
+                        if update_action(ui,"Abrir página de downloads",false).clicked(){ctx.open_url(egui::OpenUrl::new_tab(crate::updater::RELEASES));}
                     }
                 });
             self.updater.open=open;
