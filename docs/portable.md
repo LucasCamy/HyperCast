@@ -20,6 +20,9 @@ Não compartilhe API secret com os clientes; distribua apenas tokens de sala.
 
 Para diagnóstico, abra PowerShell na pasta do ZIP e execute
 `./Test-Streaming.ps1 -Role Viewer` ou `./Test-Streaming.ps1 -Role Publisher`.
+Primeiro extraia TODO o ZIP. Para manter a janela aberta em caso de erro,
+use Test-Publisher.cmd ou Test-Viewer.cmd na pasta extraida. Erros de
+preparacao ficam em error.log; erros do aplicativo tambem ficam em stream.log.
 O script pede o token com entrada oculta, conecta ao domínio HyperCast por
 30 segundos e salva hardware/contadores em LocalAppData/HyperCast/diagnostics.
 Publicador compartilha o monitor selecionado; nenhum arquivo de vídeo é gravado.
