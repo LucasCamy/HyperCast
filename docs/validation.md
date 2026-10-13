@@ -1,5 +1,24 @@
 # Validação — 12 e 13/10/2026
 
+## Lateral e área de vídeo — 0.4.1, 13/10/2026
+
+Configuração de monitor/janela e codec saiu do centro; os controles deixaram
+o rodapé global e passaram para a base fixa da lateral. Removido cabeçalho
+global; marca/status ficam na lateral. Formato e som recebido são expansíveis.
+Área central mantém somente telas, foco, Grid e tela cheia. Barra de ações não
+rola junto com participantes/configuração. Títulos longos de janela são
+truncados no seletor; tooltip preserva o texto completo.
+
+Revisão visual em janela inicial, 1320×820 e 960×620, e sala isolada com três
+participantes/publicações sem pixels. Não foram criados novos testes unitários
+para a redisposição visual. Screenshot versionado mostra somente a janela
+inicial sem convite, token ou conteúdo capturado.
+
+Pacote release passou na integração de janela: captura GPU, áudio do aplicativo,
+redimensionamento, troca de origem com o mesmo SID, tela cheia e encerramento
+ao fechar a janela. As últimas alterações de espaçamento foram revisadas
+visualmente no pacote final. ZIP e instalador 0.4.1 gerados com SHA-256.
+
 ## Janelas, origem e reconexão — 0.4.0, 13/10/2026
 
 Captura WGC livre de dispatcher → textura D3D11 → NVENC → SFU → receptor GPU

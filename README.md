@@ -1,5 +1,9 @@
 # HyperCast
 
+Versão 0.4.1: configurações e controles na lateral, com mais espaço para as
+telas da sala. Compartilhar/parar, pausar recepção e sair permanecem fixos;
+formato e som recebido ficam em seções expansíveis.
+
 Versão 0.4.0: seleção de **janelas de aplicativos com áudio do processo**,
 troca de monitor/janela durante o envio, **tela cheia (F11/Esc)** e retomada de
 publicação após reconexão. Veja [uso e limitações](docs/window-sharing.md).

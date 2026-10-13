@@ -1,7 +1,7 @@
 # Janelas, troca de origem e tela cheia — 0.4.0
 
-Na interface, escolha **Monitor** ou **Janela de aplicativo** em **Origem do
-compartilhamento**. A lista contém janelas visíveis de aplicativos; use
+Na interface 0.4.1, escolha **Monitor** ou **Janela de app** na seção
+**Compartilhar** da lateral. A lista contém janelas visíveis de aplicativos; use
 **Atualizar janelas** depois de abrir um programa. Escolha a janela antes de
 compartilhar. O monitor selecionado também define a GPU usada para codificação
 de janelas; publicação continua exigindo NVIDIA NVENC.
@@ -10,7 +10,7 @@ Durante o compartilhamento, selecione outro monitor ou janela. A publicação
 de vídeo permanece na mesma sala e com o mesmo SID; a nova origem começa com
 um keyframe. O formato HEVC/AV1 continua bloqueado durante o envio. Preparação
 de captura/encoder acontece antes da substituição; uma falha é mostrada na
-lateral. A barra inferior identifica a origem efetivamente ao vivo.
+lateral. A base fixa da lateral identifica a origem efetivamente ao vivo.
 
 **Áudio do aplicativo** captura o processo da janela e seus processos filhos,
 em estéreo, sem microfone. Pode incluir outras janelas/abas do mesmo programa;

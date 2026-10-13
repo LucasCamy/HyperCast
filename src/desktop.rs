@@ -183,6 +183,86 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(enabled));
         self.last_presented.clear();
     }
+    fn sharing_settings(&mut self,ui:&mut egui::Ui,publishing:bool){
+        let old_target=self.target();
+        section_title(ui,"COMPARTILHAR",if publishing{"AO VIVO"}else{""});
+        ui.add_space(8.0);
+        ui.horizontal(|ui|{
+            let width=(ui.available_width()-ui.spacing().item_spacing.x)/2.0;
+            for (window,label) in [(false,"Monitor"),(true,"Janela de app")] {
+                let selected=self.window_mode==window;
+                if ui.add(egui::Button::new(RichText::new(label).color(if selected{ACCENT}else{TEXT}))
+                    .min_size(Vec2::new(width,38.0)).corner_radius(8)
+                    .fill(if selected{Color32::from_rgb(40,51,40)}else{SURFACE}).selected(selected)).clicked(){self.window_mode=window;}
+            }
+        });
+        ui.scope(|ui|{
+            ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Truncate);
+            let width=ui.available_width()-8.0;
+            if self.window_mode{
+                let title=self.windows.iter().find(|w|Some(w.hwnd)==self.selected_window)
+                    .map(|w|w.title.as_str()).unwrap_or("Selecionar janela…");
+                egui::ComboBox::from_id_salt("window_picker").width(width).selected_text(title).show_ui(ui,|ui|{
+                    for window in &self.windows{ui.selectable_value(&mut self.selected_window,Some(window.hwnd),&window.title).on_hover_text(&window.title);}
+                });
+            }else{
+                let title=self.displays.get(self.selected_display).map_or("Nenhum monitor".into(),|d|format!("Monitor {} · {} × {}",self.selected_display+1,d.width,d.height));
+                egui::ComboBox::from_id_salt("display_picker").width(width).selected_text(title).show_ui(ui,|ui|{
+                    for (index,display) in self.displays.iter().enumerate(){
+                        if choice_card(ui,&format!("Monitor {}",index+1),&format!("{} × {}",display.width,display.height),index==self.selected_display,true,None)
+                            .on_hover_text(format!("{}\n{}",display.display_name,display.gpu_name)).clicked(){self.selected_display=index;}
+                    }
+                });
+            }
+        });
+        if self.window_mode && ui.small_button("Atualizar janelas").clicked(){self.windows=crate::video_capture::windows();}
+        ui.label(RichText::new(if publishing{"Troque a origem sem parar o envio"}else if self.window_mode{"Apenas a janela escolhida"}else{"Seu monitor inteiro será compartilhado"}).size(11.0).color(MUTED));
+        egui::CollapsingHeader::new(format!("Formato de vídeo · {}",if self.codec==crate::encoder::Codec::H265{"HEVC"}else{"AV1"})).id_salt("video_format").show(ui,|ui|{
+            ui.horizontal(|ui|{
+                let width=(ui.available_width()-ui.spacing().item_spacing.x)/2.0;
+                for (codec,title) in [(crate::encoder::Codec::H265,"HEVC / H.265"),(crate::encoder::Codec::Av1,"AV1")]{
+                    let selected=self.codec==codec;
+                    if ui.add_enabled(!publishing,egui::Button::new(title).selected(selected).min_size(Vec2::new(width,38.0))).clicked(){self.codec=codec;}
+                }
+            });
+            ui.label(RichText::new(if publishing{"Pare o envio para trocar o formato"}else if self.codec==crate::encoder::Codec::Av1{"Requer GPU com codificação AV1"}else{"Compatível com RTX 20, 30 e mais novas"}).size(11.0).color(MUTED));
+        });
+        if publishing && self.target()!=old_target{
+            if let (Some(engine),Some(target))=(&self.engine,self.target()){let _=engine.commands.send(Command::ChangeSource(target));}
+        }
+    }
+    fn sharing_controls(&mut self,ui:&mut egui::Ui,connected:bool,can_publish:bool,publishing:bool,active:Option<crate::video_capture::CaptureTarget>,status:&str){
+        ui.spacing_mut().item_spacing=Vec2::new(8.0,8.0);
+        ui.separator();
+        ui.label(RichText::new(if publishing{if active.is_some_and(|t|t.process().is_some()){"JANELA AO VIVO"}else{"MONITOR AO VIVO"}}else{"SEU COMPARTILHAMENTO"}).size(10.0).strong().color(if publishing{ACCENT}else{MUTED}));
+        ui.scope(|ui|{
+            ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Truncate);
+            ui.label(RichText::new(status).size(11.0).color(MUTED)).on_hover_text(status);
+        });
+        let app_audio=if publishing{active.is_some_and(|t|t.process().is_some())}else{self.window_mode};
+        if ui.add_enabled(!connected||can_publish,egui::Checkbox::new(&mut self.system_audio,if app_audio{"Áudio do aplicativo"}else{"Áudio do sistema"}))
+            .on_hover_text("Som do sistema ou do aplicativo escolhido, sem microfone. Pode incluir outras janelas do mesmo programa.").changed(){
+            if let Some(engine)=&self.engine{let _=engine.commands.send(Command::SystemAudio(self.system_audio));}
+        }
+        let ready=connected&&can_publish&&(publishing||self.target().is_some());
+        if ui.add_enabled(ready,egui::Button::new(RichText::new(if publishing{"Parar compartilhamento"}else{"Compartilhar tela"}).strong().color(if publishing{DANGER}else{BG}))
+            .min_size(Vec2::new(ui.available_width(),46.0)).corner_radius(9)
+            .fill(if publishing{Color32::from_rgb(59,34,34)}else{ACCENT}))
+            .on_hover_text(if can_publish{"Enviar a origem escolhida para a sala"}else{"Entre com um convite que permita compartilhar"}).clicked(){
+            if let Some(engine)=&self.engine{
+                if publishing{let _=engine.commands.send(Command::StopShare);}
+                else if let Some(target)=self.target(){let command=match target{
+                    crate::video_capture::CaptureTarget::Monitor{adapter,output}=>Command::Share{adapter,output,codec:self.codec},
+                    crate::video_capture::CaptureTarget::Window{adapter,hwnd,pid}=>Command::ShareWindow{adapter,hwnd,pid,codec:self.codec},
+                };let _=engine.commands.send(command);}
+            }
+        }
+        ui.horizontal(|ui|{
+            let exit_width=64.0;let pause_width=(ui.available_width()-exit_width-ui.spacing().item_spacing.x).max(100.0);
+            if ui.add_enabled(connected,egui::Button::new(if self.paused{"Retomar recepção"}else{"Pausar recepção"}).min_size(Vec2::new(pause_width,40.0)).corner_radius(8)).clicked(){self.paused=!self.paused;self.send_layout();}
+            if ui.add_enabled(self.engine.is_some(),egui::Button::new(RichText::new("Sair").color(DANGER)).min_size(Vec2::new(exit_width,40.0)).corner_radius(8)).clicked(){self.engine=None;self.presenters.clear();self.last_presented.clear();}
+        });
+    }
     fn send_layout(&self) {
         if let Some(engine) = &self.engine {
             let _ = engine.commands.send(Command::Layout(Layout {
@@ -375,65 +455,8 @@ impl eframe::App for App {
         }
 
         if !self.fullscreen {
-        egui::Panel::top("header")
-            .exact_size(76.0)
-            .frame(
-                egui::Frame::new()
-                    .fill(PANEL)
-                    .inner_margin(egui::Margin::symmetric(28, 16)),
-            )
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("H").size(30.0).strong().color(ACCENT));
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new("HYPERCAST").size(17.0).strong());
-                        ui.label(
-                            RichText::new("Seu espaço, compartilhado.")
-                                .size(12.0)
-                                .color(MUTED),
-                        );
-                    });
-                    ui.add_space(40.0);
-                    ui.label(RichText::new(&room).size(16.0));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            RichText::new(if connected { "CONECTADO" } else { "OFFLINE" })
-                                .size(11.0)
-                                .color(if connected { ACCENT } else { MUTED }),
-                        );
-                    });
-                });
-            });
-        egui::Panel::bottom("controls").exact_size(100.0).frame(egui::Frame::new().fill(PANEL).inner_margin(egui::Margin::symmetric(24,16))).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(RichText::new(if publishing { "SUA TELA ESTÁ AO VIVO" } else { "PRONTO PARA COMPARTILHAR" }).size(10.0).strong().color(if publishing { ACCENT } else { MUTED }));
-                    let monitor = self.displays.get(self.selected_display);
-                    ui.label(RichText::new(if publishing && active_target.is_some_and(|t|t.process().is_some()) {"Janela de aplicativo ao vivo".into()}else if publishing {"Monitor ao vivo".into()}else if self.window_mode {"Janela de aplicativo".into()}else{monitor.map_or("Nenhum monitor".into(), |d| format!("Monitor {} · {} × {}", self.selected_display + 1, d.width, d.height))}).size(13.0).color(TEXT));
-                });
-                ui.add_space(12.0);
-                if ui.add_enabled(connected && can_publish && (publishing || self.target().is_some()), egui::Button::new(RichText::new(if publishing { "Parar de compartilhar" } else { "Compartilhar tela" }).size(14.0).strong().color(if publishing { DANGER } else { BG })).min_size(Vec2::new(180.0, 46.0)).corner_radius(9).fill(if publishing { Color32::from_rgb(59,34,34) } else { ACCENT }).stroke(egui::Stroke::new(1.0, if publishing { DANGER.gamma_multiply(0.4) } else { ACCENT }))).on_hover_text(if can_publish { "Enviar o monitor ou janela escolhido para os amigos" } else { "Seu acesso permite assistir. Um convite de publicador permite compartilhar." }).clicked() {
-                    if let Some(engine) = &self.engine {
-                        if publishing { let _ = engine.commands.send(Command::StopShare); }
-                        else if let Some(target)=self.target(){let command=match target{
-                            crate::video_capture::CaptureTarget::Monitor{adapter,output}=>Command::Share{adapter,output,codec:self.codec},
-                            crate::video_capture::CaptureTarget::Window{adapter,hwnd,pid}=>Command::ShareWindow{adapter,hwnd,pid,codec:self.codec},
-                        };let _=engine.commands.send(command);}
-                    }
-                }
-                if ui.add_enabled(connected, egui::Button::new(if self.paused { "Retomar recepção" } else { "Pausar recepção" }).min_size(Vec2::new(140.0,46.0)).corner_radius(9)).clicked() { self.paused = !self.paused; self.send_layout(); }
-                if ui.add_enabled(!connected || can_publish, egui::Checkbox::new(&mut self.system_audio, if (publishing && active_target.is_some_and(|t|t.process().is_some())) || (!publishing && self.window_mode) {"Áudio do aplicativo"}else{"Áudio do sistema"}))
-                    .on_hover_text("Monitor: som do sistema. Janela: som do aplicativo e processos filhos; pode incluir outras janelas dele. Não captura microfone.").changed() {
-                    if let Some(engine) = &self.engine { let _ = engine.commands.send(Command::SystemAudio(self.system_audio)); }
-                }
-                if self.engine.is_some() && ui.add(egui::Button::new(RichText::new("Sair").color(DANGER)).min_size(Vec2::new(64.0,46.0)).corner_radius(9)).on_hover_text("Sair da sala e interromper compartilhamento e recepção").clicked() { self.engine = None; self.presenters.clear(); self.last_presented.clear(); }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(if publishing { "ENVIANDO" } else if connected { "NA SALA" } else { "AGUARDANDO" }).size(10.0).color(if publishing { ACCENT } else { MUTED })).on_hover_text(format!("{received} quadros recebidos / {sent} codificados"));
-                });
-            });
-        });
         egui::Panel::left("room_sidebar")
-            .exact_size(296.0)
+            .exact_size(312.0)
             .resizable(false)
             .frame(
                 egui::Frame::new()
@@ -441,17 +464,27 @@ impl eframe::App for App {
                     .inner_margin(egui::Margin::same(20)),
             )
             .show(ui, |ui| {
+                egui::Panel::bottom("sharing_actions").exact_size(204.0)
+                    .frame(egui::Frame::new().fill(PANEL).inner_margin(egui::Margin::symmetric(0,12)))
+                    .show(ui,|ui|{self.sharing_controls(ui,connected,can_publish,publishing,active_target,if source_error.is_empty(){&status}else{&source_error});});
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        section_title(ui, if connected { "SALA" } else { "ENTRAR NA SALA" }, if connected { "Conectado" } else { "" });
-                        ui.add_space(12.0);
-                        if connected {
-                            egui::Frame::new().fill(SURFACE).corner_radius(9).inner_margin(12).show(ui, |ui| {
-                                ui.set_min_width(228.0);
-                                ui.label(RichText::new(&room).size(18.0).strong().color(TEXT));
-                                ui.label(RichText::new(if can_publish { "Você pode assistir e compartilhar" } else { "Você está assistindo à sala" }).size(12.0).color(MUTED));
+                        ui.spacing_mut().item_spacing=Vec2::new(8.0,8.0);
+                        ui.spacing_mut().button_padding=Vec2::new(12.0,6.0);
+                        ui.horizontal(|ui|{
+                            ui.label(RichText::new("H").size(24.0).strong().color(ACCENT));
+                            ui.label(RichText::new("HYPERCAST").size(16.0).strong());
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
+                                ui.label(RichText::new(if connected{"ONLINE"}else{"OFFLINE"}).size(10.0).color(if connected{ACCENT}else{MUTED}));
                             });
+                        });
+                        ui.add_space(8.0);
+                        if !connected {section_title(ui,"ENTRAR NA SALA", "");}
+                        ui.add_space(8.0);
+                        if connected {
+                            ui.label(RichText::new(&room).size(15.0).strong());
+                            ui.label(RichText::new(if can_publish { "Você pode assistir e compartilhar" } else { "Você está assistindo à sala" }).size(11.0).color(MUTED));
                         } else {
                         egui::CollapsingHeader::new("Servidor e acesso avançado").default_open(self.token_mode).show(ui, |ui| {
                         ui.label("Servidor");
@@ -491,54 +524,11 @@ impl eframe::App for App {
                             self.engine = Some(self.join_room(ctx.clone()));
                         }
                         }
-                        ui.add_space(20.0);
+                        ui.add_space(8.0);
                         ui.separator();
-                        ui.add_space(12.0);
-                        egui::CollapsingHeader::new("Diagnóstico").default_open(false).show(ui, |ui| {
-                        ui.add_enabled(self.engine.is_none(), egui::Checkbox::new(&mut self.relay_only, "Forçar TURN/TLS (teste)"))
-                            .on_hover_text("Use antes de entrar para testar o relay; desmarcado permite escolher a rota de menor custo");
-                        if ui.button("Copiar diagnóstico").on_hover_text("Copiar o log desta sessão, sem token ou imagens, para enviar ao suporte").clicked() {
-                            match crate::diagnostics::export_text() {
-                                Ok(text) => ctx.copy_text(text),
-                                Err(error) => self.error = format!("Diagnóstico: {error}"),
-                            }
-                        }
-                        if let Some(path) = crate::diagnostics::path() {
-                            ui.label(RichText::new("Log salvo automaticamente").size(11.0).color(MUTED))
-                                .on_hover_text(path.display().to_string());
-                        }
-                        });
-                        ui.add_space(12.0);
-                        section_title(ui, "PARTICIPANTES", &format!("{} na sala", people.len() + usize::from(connected)));
-                        ui.add_space(12.0);
-                        if connected {
-                            let label = if self.name.is_empty() { "Você".to_owned() } else { format!("{} (você)", self.name) };
-                            if choice_card(ui, &label, if publishing { "Compartilhando tela" } else { "Assistindo à sala" }, self.focus.as_ref() == Some(&identity), publishing, Some(self.name.chars().next().unwrap_or('V'))).clicked() {
-                                self.focus = Some(identity.clone()); self.mode = ViewMode::Spotlight; self.send_layout();
-                            }
-                        }
-                        people.sort_by(|a,b| screens.contains(&b.0).cmp(&screens.contains(&a.0)).then_with(|| a.1.cmp(&b.1)).then_with(|| a.0.cmp(&b.0)));
-                        for (identity, name) in &people {
-                            let live = screens.contains(identity);
-                            let focused = self.focus.as_ref() == Some(identity) || (self.focus.is_none() && screens.first() == Some(identity));
-                            if choice_card(ui, if name.is_empty() { "Participante" } else { name }, if live { if focused && self.mode == ViewMode::Spotlight { "Em destaque · compartilhando" } else { "Compartilhando tela" } } else { "Assistindo à sala" }, focused && live, live, Some(name.chars().next().unwrap_or('P'))).clicked()
-                            {
-                                self.focus = Some(identity.clone());
-                                self.mode = ViewMode::Spotlight;
-                                self.send_layout();
-                            }
-                        }
-                        if people.is_empty() {
-                            egui::Frame::new().fill(SURFACE).corner_radius(9).inner_margin(12).show(ui, |ui| {
-                                ui.set_min_width(228.0);
-                                ui.label(RichText::new(if connected { "Aguardando seus amigos" } else { "Seus amigos aparecem aqui" }).size(13.0).color(TEXT));
-                                ui.label(RichText::new(if connected { "Compartilhe o convite da sala com eles." } else { "Entre na sala para acompanhar as telas." }).size(11.0).color(MUTED));
-                            });
-                        }
-                        ui.add_space(16.0);
-                        ui.separator();
-                        ui.add_space(12.0);
-                        section_title(ui, "ÁUDIO RECEBIDO", "");
+                        ui.add_space(8.0);
+                        self.sharing_settings(ui,publishing);
+                        egui::CollapsingHeader::new(if self.sound_muted{"Som recebido · silenciado".into()}else{format!("Som recebido · {}%",self.volume)}).id_salt("received_audio").show(ui,|ui|{
                         if ui.checkbox(&mut self.sound_muted, "Silenciar áudio recebido").changed() { self.send_layout(); }
                         let volume_label = ui.horizontal(|ui| {
                             let label = ui.label(RichText::new("Volume").size(13.0).color(TEXT));
@@ -560,7 +550,55 @@ impl eframe::App for App {
                         }).inner;
                         if changed { self.send_layout(); }
                         ui.label(RichText::new(if self.mode == ViewMode::Grid { "Som das telas visíveis" } else { "Som da tela em destaque" }).size(11.0).color(MUTED));
-                        ui.add_space(16.0);
+
+                        });
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+                        section_title(ui, "PARTICIPANTES", &format!("{} na sala", people.len() + usize::from(connected)));
+                        ui.add_space(8.0);
+                        if connected {
+                            let label = if self.name.is_empty() { "Você".to_owned() } else { format!("{} (você)", self.name) };
+                            if publishing {
+                                if choice_card(ui,&label,"Compartilhando tela",self.focus.as_ref()==Some(&identity),true,Some(self.name.chars().next().unwrap_or('V'))).clicked(){self.focus=Some(identity.clone());self.mode=ViewMode::Spotlight;self.send_layout();}
+                            }else{ui.label(RichText::new(format!("{label} · assistindo")).size(12.0).color(MUTED));}
+                        }
+                        people.sort_by(|a,b| screens.contains(&b.0).cmp(&screens.contains(&a.0)).then_with(|| a.1.cmp(&b.1)).then_with(|| a.0.cmp(&b.0)));
+                        for (identity, name) in &people {
+                            let live = screens.contains(identity);
+                            let focused = self.focus.as_ref() == Some(identity) || (self.focus.is_none() && screens.first() == Some(identity));
+                            if choice_card(ui, if name.is_empty() { "Participante" } else { name }, if live { if focused && self.mode == ViewMode::Spotlight { "Em destaque · compartilhando" } else { "Compartilhando tela" } } else { "Assistindo à sala" }, focused && live, live, Some(name.chars().next().unwrap_or('P'))).clicked()
+                            {
+                                self.focus = Some(identity.clone());
+                                self.mode = ViewMode::Spotlight;
+                                self.send_layout();
+                            }
+                        }
+                        if people.is_empty() {
+                            egui::Frame::new().fill(SURFACE).corner_radius(9).inner_margin(12).show(ui, |ui| {
+                                ui.set_min_width(ui.available_width()-24.0);
+                                ui.label(RichText::new(if connected { "Aguardando seus amigos" } else { "Seus amigos aparecem aqui" }).size(13.0).color(TEXT));
+                                ui.label(RichText::new(if connected { "Compartilhe o convite da sala com eles." } else { "Entre na sala para acompanhar as telas." }).size(11.0).color(MUTED));
+                            });
+                        }
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+                        ui.add_space(8.0);
+                        egui::CollapsingHeader::new("Diagnóstico").default_open(false).show(ui, |ui| {
+                        ui.add_enabled(self.engine.is_none(), egui::Checkbox::new(&mut self.relay_only, "Forçar TURN/TLS (teste)"))
+                            .on_hover_text("Use antes de entrar para testar o relay; desmarcado permite escolher a rota de menor custo");
+                        if ui.button("Copiar diagnóstico").on_hover_text("Copiar o log desta sessão, sem token ou imagens, para enviar ao suporte").clicked() {
+                            match crate::diagnostics::export_text() {
+                                Ok(text) => ctx.copy_text(text),
+                                Err(error) => self.error = format!("Diagnóstico: {error}"),
+                            }
+                        }
+                        if let Some(path) = crate::diagnostics::path() {
+                            ui.label(RichText::new("Log salvo automaticamente").size(11.0).color(MUTED))
+                                .on_hover_text(path.display().to_string());
+                        }
+                        });
                         ui.label(RichText::new(&status).size(12.0).color(MUTED));
                         if !audio_status.is_empty() { ui.label(RichText::new(&audio_status).size(11.0).color(MUTED)); }
                         if !source_error.is_empty(){ui.colored_label(DANGER,&source_error);}
@@ -583,56 +621,6 @@ impl eframe::App for App {
                         if ui.button("Sair da tela cheia · Esc / F11").clicked(){self.set_fullscreen(&ctx,false);}
                     });
                 } else {
-                let old_target=self.target();
-                egui::Frame::new().fill(PANEL).stroke(egui::Stroke::new(1.0,BORDER)).corner_radius(12).inner_margin(16).show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.columns(2, |columns| {
-                        let ui = &mut columns[0];
-                        section_title(ui, "ORIGEM DO COMPARTILHAMENTO", if publishing { "AO VIVO" } else { "" });
-                        ui.horizontal(|ui|{
-                            ui.selectable_value(&mut self.window_mode,false,"Monitor");
-                            ui.selectable_value(&mut self.window_mode,true,"Janela de aplicativo");
-                        });
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            let (symbol,_) = ui.allocate_exact_size(Vec2::new(42.0,42.0),egui::Sense::hover());
-                            monitor_symbol(ui.painter(),symbol.center(),ACCENT,34.0);
-                            ui.vertical(|ui| {
-                                ui.add_enabled_ui(true, |ui| {
-                                    if self.window_mode {
-                                        let title=self.windows.iter().find(|w|Some(w.hwnd)==self.selected_window).map(|w|w.title.as_str()).unwrap_or("Selecionar janela…");
-                                        egui::ComboBox::from_id_salt("window_picker").width(ui.available_width().min(275.0)).selected_text(title).show_ui(ui,|ui|{
-                                            for window in &self.windows {ui.selectable_value(&mut self.selected_window,Some(window.hwnd),&window.title);}
-                                        });
-                                        if ui.small_button("Atualizar janelas").clicked(){self.windows=crate::video_capture::windows();}
-                                    }else{
-                                    let text = self.displays.get(self.selected_display).map_or("Nenhum monitor".into(), |d| format!("Monitor {} · {} × {}", self.selected_display+1,d.width,d.height));
-                                    egui::ComboBox::from_id_salt("display_picker").width(ui.available_width().min(275.0)).selected_text(text).show_ui(ui, |ui| {
-                                        for (index,display) in self.displays.iter().enumerate() {
-                                            if choice_card(ui, &format!("Monitor {}",index+1),&format!("{} × {}",display.width,display.height),index==self.selected_display,true,None).on_hover_text(format!("{}\n{}",display.display_name,display.gpu_name)).clicked() { self.selected_display=index; }
-                                        }
-                                    });
-                                    }
-                                });
-                                ui.label(RichText::new(if self.window_mode {"Apenas a janela escolhida; minimizada pode congelar"}else if publishing { "Troque de monitor sem parar" } else { "Sua tela inteira será compartilhada" }).size(11.0).color(MUTED));
-                            });
-                        });
-                        let ui = &mut columns[1];
-                        section_title(ui,"FORMATO DE VÍDEO", "");
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            for (codec,title) in [(crate::encoder::Codec::H265,"HEVC / H.265"),(crate::encoder::Codec::Av1,"AV1")] {
-                                let selected=self.codec==codec;
-                                if ui.add_enabled(!publishing,egui::Button::new(RichText::new(title).strong().color(if selected { ACCENT } else { TEXT })).min_size(Vec2::new(110.0,42.0)).corner_radius(8).fill(if selected { Color32::from_rgb(40,51,40) } else { SURFACE }).stroke(egui::Stroke::new(1.0,if selected { ACCENT.gamma_multiply(0.65) } else { BORDER })).selected(selected)).clicked() { self.codec=codec; }
-                            }
-                        });
-                        ui.label(RichText::new(if self.codec==crate::encoder::Codec::H265 { "Compatível com RTX 20, 30 e mais novas" } else { "Requer GPU com codificação AV1" }).size(11.0).color(MUTED));
-                    });
-                });
-                if publishing && self.target()!=old_target {
-                    if let (Some(engine),Some(target))=(&self.engine,self.target()){let _=engine.commands.send(Command::ChangeSource(target));}
-                }
-                ui.add_space(20.0);
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
                         ui.label(RichText::new("Telas da sala").size(26.0).strong());

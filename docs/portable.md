@@ -1,5 +1,11 @@
 # HyperCast para Windows
 
+Na versão 0.4.1, seleção de monitor/janela e **Formato de vídeo** ficam na
+lateral. **Som recebido** abre volume e silenciamento. Os controles
+compartilhar/parar, áudio enviado, pausar recepção e sair ficam fixos na base da
+lateral. A região central fica dedicada às telas, com Destaque, Grid e tela cheia.
+A lateral permite rolagem em janelas menores ou salas com muitos participantes.
+
 Versão 0.4.0: escolha **Monitor** ou **Janela de aplicativo**, com áudio do
 aplicativo opcional. Você pode trocar a origem durante o envio; somente o codec
 continua bloqueado. **Tela cheia/F11** amplia a tela em destaque; **Esc/F11** ou
