@@ -1,5 +1,34 @@
 # Validação — 12 e 13/10/2026
 
+## Diagnóstico automático e recuperação — 13/10/2026
+
+Interface passou a persistir logs limitados a 1 MiB, com retenção de até 16
+arquivos GUI e exportação para clipboard. JWT atual e padrões JWT são redigidos;
+não há gravação de vídeo. Falha de escrita não impede entrada na sala.
+HEVC/H.265 é agora o padrão da interface; AV1 permanece selecionável.
+
+Encoder e publicação usam as dimensões da superfície de duplicação DXGI, não
+as coordenadas do desktop. Erros nativos diferenciam device, dimensões e formato.
+O worker reconstrói captura/encoder/publicação após erros recuperáveis, com
+intervalo de um segundo e até três tentativas por ciclo de compartilhamento.
+O contador `sent` continua sendo do encoder/publicação atual, e pode reiniciar
+ao republicar. Formatos incompatíveis não entram em repetição automática.
+
+Seis testes Rust passaram, incluindo redação de token e classificação de erros.
+Publicar/parar/republicar e espectador passaram com 1.155 quadros D3D11.
+Um teste adicional injetou perda de captura somente no build debug: houve uma
+reconstrução e republicação bem-sucedidas, sem token/API secret no arquivo GUI.
+Esse teste exercita o caminho de recuperação com NVENC e SFU reais; não simula
+todos os efeitos de remoção física da GPU, troca real de modo ou bloqueio do Windows.
+Validação dessas condições no PC do colega continua necessária.
+Doze testes Python passaram. Pacote release HEVC entrou pelo WSS público,
+publicou/parou/republicou duas faixas e terminou conectado sem erro. O caminho
+ICE do publicador foi UDP não privado; o subscriber vazio escolheu candidato
+privado. Isso não é medição fim a fim nem teste relay-only.
+
+TURN/TLS recebeu inspeção e guia em turn-tls.md; não foi instalado.
+Convites/emissão automática permanecem na próxima etapa.
+
 Os testes abaixo foram executados localmente no Windows, RTX 5060 de 8 GB, driver 610.88, Rust 1.99.0, MSVC 14.51.36231 e Windows SDK 10.0.26100. Monitores disponíveis: 1920×1080. A configuração de desenvolvimento anuncia 127.0.0.1 e mantém sinalização em loopback. Nenhum recurso remoto do homelab foi alterado.
 
 | Verificação | Evidência |

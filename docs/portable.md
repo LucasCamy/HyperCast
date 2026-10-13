@@ -3,6 +3,7 @@
 Abra hypercast.exe. Informe servidor e token de sala, depois Entrar na sala.
 Um token de espectador permite assistir; um token de publicador permite enviar
 um monitor. Selecione monitor e formato AV1 ou HEVC antes de compartilhar.
+HEVC/H.265 é o padrão da interface; AV1 deve ser selecionado em hardware compatível.
 Sair encerra a conexão. Minimizar pausa a recepção; restaurar retoma sua seleção.
 
 Grid recebe até três telas. Destaque recebe a escolhida e pausa as outras;
@@ -17,6 +18,15 @@ driver 610+; recepção usa D3D11VA com suporte de hardware ao codec negociado.
 Este é um build de desenvolvimento sem assinatura Authenticode. 1440p a
 120 FPS e latência abaixo de 100 ms são metas ainda não comprovadas.
 Não compartilhe API secret com os clientes; distribua apenas tokens de sala.
+
+A interface salva logs automaticamente em `%LOCALAPPDATA%/HyperCast/diagnostics`,
+nos arquivos `gui-*.log`. Cada arquivo tem limite de 1 MiB; são mantidos até
+16 arquivos da interface. Pastas criadas pelos scripts não são removidas.
+O botão **Copiar diagnóstico** copia o log da execução atual para enviar ao
+suporte. Não grava imagens nem tokens. Inclui versão, configuração de captura,
+contadores, rota ICE, RTT de rede e erros. RTT não mede latência fim a fim.
+Falhas de mudança de resolução/device disparam até três tentativas de reconstrução
+do pipeline. Formatos não suportados não são repetidos automaticamente.
 
 Para diagnóstico, abra PowerShell na pasta do ZIP e execute
 `./Test-Streaming.ps1 -Role Viewer` ou `./Test-Streaming.ps1 -Role Publisher`.

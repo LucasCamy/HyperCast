@@ -90,6 +90,7 @@ impl Drop for Engine {
 }
 
 struct Cast {
+    selection: (u32, u32, Codec),
     capture: ScreenCapture,
     encoder: Option<HardwareEncoder>,
     publisher: Option<EncodedPublisher>,
@@ -101,6 +102,9 @@ struct Cast {
 struct Sink {
     owner: String,
     task: tokio::task::JoinHandle<()>,
+}
+fn recoverable_capture_error(message: &str) -> bool {
+    message.contains("rebuild GPU pipeline") || message.contains("duplication recovery failed")
 }
 impl Sink {
     fn abort(&self) {
@@ -119,14 +123,12 @@ impl Cast {
             adapter_index: adapter,
             output_index: output,
         })?;
-        let display = crate::screen_capture::displays()?
-            .into_iter()
-            .find(|display| display.adapter_index == adapter && display.output_index == output)
-            .ok_or_else(|| anyhow::anyhow!("Selected display is no longer attached"))?;
+        let (width, height) = capture.dimensions();
+        crate::diagnostics::write("capture", &format!("{width}x{height} target_fps=120 codec={codec:?}"), "");
         let encoder = HardwareEncoder::new(
             capture.device(),
-            display.width,
-            display.height,
+            width,
+            height,
             120,
             40_000_000,
             codec,
@@ -134,13 +136,14 @@ impl Cast {
         // No Desktop Duplication frame is held while waiting for publication acknowledgment.
         let publisher = runtime.block_on(EncodedPublisher::in_room(
             room.clone(),
-            display.width,
-            display.height,
+            width,
+            height,
             120,
             40_000_000,
             codec == Codec::Av1,
         ))?;
         Ok(Self {
+            selection: (adapter, output, codec),
             capture,
             encoder: Some(encoder),
             publisher: Some(publisher),
@@ -229,6 +232,7 @@ fn update_subscriptions(room: &Room, layout: &Layout) {
 
 impl Engine {
     pub fn connect(address: String, token: String, ctx: egui::Context, parent: usize) -> Self {
+        crate::diagnostics::write("connection", "Starting room connection", "");
         let (tx, commands) = mpsc::channel();
         let shared = Arc::new(Mutex::new(Shared {
             status: "Conectando…".into(),
@@ -242,6 +246,7 @@ impl Engine {
                 livekit::webrtc::enable_zero_playout_delay()?;
                 let (room, mut events) = runtime.block_on(network::connect(&address, &token))?;
                 let room = Arc::new(room);
+                crate::diagnostics::write("connection", "Room connected", "");
                 {
                     let mut state = state.lock().unwrap();
                     state.connected = true;
@@ -265,10 +270,15 @@ impl Engine {
                 let mut manual_layout = layout.clone();
                 let mut window_hidden = false;
                 let mut cast: Option<Cast> = None;
+                let mut recovery: Option<((u32, u32, Codec), Instant)> = None;
+                let mut recovery_attempts = 0u8;
+                #[cfg(debug_assertions)]
+                let mut injected_capture_loss = false;
                 let mut sinks = HashMap::<TrackSid, Sink>::new();
                 let mut pacer = FramePacer::new(120)?;
                 update_subscriptions(&room, &layout);
                 let mut info_tick = Instant::now();
+                let mut diagnostic_tick = Instant::now();
                 'session: loop {
                     // OS state is polled independently of painting: a minimized
                     // eframe window may stop invoking App::ui entirely.
@@ -293,8 +303,12 @@ impl Engine {
                     }
                     while let Ok(command) = commands.try_recv() {
                         match command {
-                            Command::Disconnect => break 'session,
+                            Command::Disconnect => {
+                                crate::diagnostics::write("connection", "User disconnected", "");
+                                break 'session;
+                            }
                             Command::Layout(next) => {
+                                crate::diagnostics::write("layout", &format!("mode={:?} paused={}", next.mode, next.paused), "");
                                 manual_layout = next;
                                 layout = manual_layout.clone();
                                 layout.paused |= window_hidden;
@@ -305,6 +319,9 @@ impl Engine {
                                 output,
                                 codec,
                             } if cast.is_none() => {
+                                recovery = None;
+                                recovery_attempts = 0;
+                                crate::diagnostics::write("publication", &format!("adapter={adapter} output={output} codec={codec:?}"), "");
                                 match Cast::new(adapter, output, codec, &runtime, &room) {
                                     Ok(value) => {
                                         cast = Some(value);
@@ -312,10 +329,15 @@ impl Engine {
                                         state.publishing = true;
                                         state.status = "Preparando compartilhamento…".into();
                                     }
-                                    Err(error) => state.lock().unwrap().status = error.to_string(),
+                                    Err(error) => {
+                                        crate::diagnostics::write("publication_error", &format!("{error:#}"), &token);
+                                        state.lock().unwrap().status = error.to_string().replace(&token, "[token]");
+                                    }
                                 }
                             }
                             Command::StopShare => {
+                                recovery = None;
+                                crate::diagnostics::write("publication", "Stopped", "");
                                 if let Some(value) = cast.take() {
                                     value.stop(&runtime);
                                 }
@@ -413,13 +435,54 @@ impl Engine {
                             | RoomEvent::ParticipantConnected(_) => {
                                 update_subscriptions(&room, &layout)
                             }
-                            RoomEvent::Disconnected { .. } => break 'session,
+                            RoomEvent::Disconnected { .. } => {
+                                crate::diagnostics::write("connection", "SDK disconnected", "");
+                                break 'session;
+                            }
                             _ => {}
                         }
                     }
+                    if recovery.as_ref().is_some_and(|(_, at)| Instant::now() >= *at) {
+                        let (selection, _) = recovery.take().unwrap();
+                        recovery_attempts += 1;
+                        crate::diagnostics::write("recovery", &format!("Rebuilding GPU pipeline, attempt {recovery_attempts}/3"), "");
+                        match Cast::new(selection.0, selection.1, selection.2, &runtime, &room) {
+                            Ok(value) => {
+                                cast = Some(value);
+                                state.lock().unwrap().publishing = true;
+                            }
+                            Err(error) => {
+                                crate::diagnostics::write("recovery_error", &format!("{error:#}"), &token);
+                                if recovery_attempts < 3 {
+                                    recovery = Some((selection, Instant::now() + Duration::from_secs(1)));
+                                } else {
+                                    state.lock().unwrap().status = format!("Recuperação interrompida: {error}").replace(&token, "[token]");
+                                }
+                            }
+                        }
+                    }
                     if let Some(value) = &mut cast {
-                        if let Err(error) = value.tick(&runtime, &room) {
-                            state.lock().unwrap().status = format!("Compartilhamento: {error}");
+                        let tick_result = value.tick(&runtime, &room);
+                        #[cfg(debug_assertions)]
+                        let tick_result = if !injected_capture_loss && value.count > 120
+                            && std::env::var("HYPERCAST_SMOKE_SECONDS").is_ok()
+                            && std::env::var("HYPERCAST_SMOKE_CAPTURE_LOSS").as_deref() == Ok("1")
+                        {
+                            injected_capture_loss = true;
+                            Err(anyhow::anyhow!("Injected capture loss; rebuild GPU pipeline"))
+                        } else { tick_result };
+                        if let Err(error) = tick_result {
+                            let message = format!("{error:#}");
+                            crate::diagnostics::write("capture_error", &message, &token);
+                            let recoverable = recoverable_capture_error(&message);
+                            if recoverable && recovery_attempts < 3 {
+                                recovery = Some((value.selection, Instant::now() + Duration::from_secs(1)));
+                            }
+                            state.lock().unwrap().status = if recovery.is_some() {
+                                "Tela mudou; recuperando compartilhamento…".into()
+                            } else {
+                                format!("Compartilhamento: {error}").replace(&token, "[token]")
+                            };
                             if let Some(value) = cast.take() {
                                 value.stop(&runtime);
                             }
@@ -476,6 +539,19 @@ impl Engine {
                         info_tick = Instant::now();
                         ctx.request_repaint();
                     }
+                    if diagnostic_tick.elapsed() >= Duration::from_secs(5) {
+                        let shared = state.lock().unwrap();
+                        crate::diagnostics::write("media", &format!("sent={} received={} receivers={} publishing={}", shared.sent, shared.received, sinks.len(), shared.publishing), "");
+                        drop(shared);
+                        let diagnostic_room = room.clone();
+                        runtime.spawn(async move {
+                            if let Ok(stats) = diagnostic_room.get_stats().await {
+                                network::print_ice_path("publisher", &stats.publisher_stats);
+                                network::print_ice_path("subscriber", &stats.subscriber_stats);
+                            }
+                        });
+                        diagnostic_tick = Instant::now();
+                    }
                     let fps = cast
                         .as_ref()
                         .filter(|cast| !cast.paused)
@@ -495,6 +571,7 @@ impl Engine {
                 Ok(())
             })();
             let mut state = state.lock().unwrap();
+            crate::diagnostics::write("session_summary", &format!("sent={} received={}", state.sent, state.received), "");
             state.connected = false;
             state.publishing = false;
             state.frames.clear();
@@ -502,6 +579,7 @@ impl Engine {
                 .err()
                 .map(|e| e.to_string().replace(&token, "[token]"))
                 .unwrap_or_else(|| "Desconectado".into());
+            crate::diagnostics::write("session_end", &state.status, &token);
             drop(state);
             ctx.request_repaint();
         });
@@ -510,5 +588,17 @@ impl Engine {
             shared,
             thread: Some(thread),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn rebuilds_changed_surfaces_but_not_unsupported_formats_or_codecs() {
+        assert!(recoverable_capture_error("Capture dimensions changed: expected 1920x1080, received 2560x1440; rebuild GPU pipeline"));
+        assert!(recoverable_capture_error("AcquireNextFrame failed; rebuild GPU pipeline on device loss"));
+        assert!(!recoverable_capture_error("Unsupported capture texture layout: format=10"));
+        assert!(!recoverable_capture_error("NVENC codec AV1 is unsupported"));
     }
 }

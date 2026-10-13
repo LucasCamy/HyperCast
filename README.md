@@ -14,6 +14,8 @@ Abra `hypercast.exe` do ZIP ou instale a versão por usuário. Os pacotes inclue
 
 Informe servidor e token, entre, escolha o monitor e use **Compartilhar minha tela**. Token de espectador habilita apenas recepção. URL/token não são persistidos pela interface. A API secret fica no emissor administrativo.
 
+HEVC/H.265 é o padrão da interface. Logs automáticos ficam em `%LOCALAPPDATA%/HyperCast/diagnostics/gui-*.log`; use **Copiar diagnóstico** para enviar o log da execução atual. São limitados e não gravam imagens ou JWTs. A captura tenta reconstruir o pipeline após mudança de device/resolução; veja [validação](docs/validation.md).
+
 **Grid** recebe até três telas. **Destaque** recebe a escolhida e cancela as outras subscrições. Miniaturas guardam o último quadro visto: são estáticas, sem tráfego ou decode contínuo. Clique no participante/nome da miniatura para trocar o foco. **Pausar recepção** cancela todas as subscrições. Minimizar também pausa; restaurar reaplica a seleção anterior. O SFU não transcodifica nem produz versões reduzidas.
 
 ## Servidor e tokens

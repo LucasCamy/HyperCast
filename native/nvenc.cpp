@@ -192,9 +192,14 @@ struct Encoder {
         if (source) {
         D3D11_TEXTURE2D_DESC desc{}; source->GetDesc(&desc);
         ComPtr<ID3D11Device> owner; source->GetDevice(&owner);
-        if (owner.Get() != device.Get() || desc.Width != width || desc.Height != height ||
-            desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM || desc.SampleDesc.Count != 1 || desc.ArraySize != 1 || desc.MipLevels != 1)
-            throw std::runtime_error("Capture texture/device changed; rebuild the encoder");
+        if (owner.Get() != device.Get())
+            throw std::runtime_error("Capture device changed; rebuild GPU pipeline");
+        if (desc.Width != width || desc.Height != height)
+            throw std::runtime_error("Capture dimensions changed: expected " + std::to_string(width) + "x" + std::to_string(height) +
+                ", received " + std::to_string(desc.Width) + "x" + std::to_string(desc.Height) + "; rebuild GPU pipeline");
+        if (desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM || desc.SampleDesc.Count != 1 || desc.ArraySize != 1 || desc.MipLevels != 1)
+            throw std::runtime_error("Unsupported capture texture layout: format=" + std::to_string(desc.Format) +
+                " samples=" + std::to_string(desc.SampleDesc.Count) + " array=" + std::to_string(desc.ArraySize) + " mips=" + std::to_string(desc.MipLevels));
         context->CopyResource(input.Get(), source);
         context->End(copy_done.Get()); context->Flush();
         const ULONGLONG start = GetTickCount64();

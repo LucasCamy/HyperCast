@@ -154,6 +154,11 @@ impl ScreenCapture {
     pub fn device(&self) -> &ID3D11Device {
         &self.device
     }
+    /// Actual duplication surface dimensions, independent of desktop scaling.
+    pub fn dimensions(&self) -> (u32, u32) {
+        let desc = unsafe { self.duplication.GetDesc() };
+        (desc.ModeDesc.Width, desc.ModeDesc.Height)
+    }
     pub fn context(&self) -> &ID3D11DeviceContext {
         &self.context
     }

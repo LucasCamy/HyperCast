@@ -131,18 +131,13 @@ fn main() -> Result<()> {
     #[cfg(feature = "nvenc")]
     let device = capture.device().clone();
     #[cfg(feature = "nvenc")]
-    let display = hypercast::screen_capture::displays()?
-        .into_iter()
-        .find(|display| {
-            display.adapter_index == args.adapter && display.output_index == args.output
-        })
-        .ok_or_else(|| anyhow::anyhow!("Selected display is no longer attached"))?;
+    let (capture_width, capture_height) = capture.dimensions();
     #[cfg(feature = "nvenc")]
     let mut encoder = if args.encode {
         Some(hypercast::encoder::HardwareEncoder::new(
             &device,
-            display.width,
-            display.height,
+            capture_width,
+            capture_height,
             args.fps,
             args.bitrate,
             args.codec,
@@ -168,8 +163,8 @@ fn main() -> Result<()> {
         Some(runtime.block_on(hypercast::network::EncodedPublisher::open(
             address,
             &hypercast::network::token_from_env()?,
-            display.width,
-            display.height,
+            capture_width,
+            capture_height,
             args.fps,
             args.bitrate,
             matches!(args.codec, hypercast::encoder::Codec::Av1),

@@ -315,6 +315,8 @@ pub fn print_ice_path(label: &str, stats: &[livekit::webrtc::stats::RtcStats]) {
         let rtt = pair.candidate_pair.current_round_trip_time * 1000.0;
         if rtt.is_finite() && rtt >= 0.0 {
             println!("WebRTC ICE {label}: {protocol}, remote {scope}, network RTT {rtt:.2} ms");
+            #[cfg(all(windows, feature = "desktop"))]
+            crate::diagnostics::write("ice", &format!("{label}: {protocol}, remote {scope}, network RTT {rtt:.2} ms"), "");
         }
     }
 }

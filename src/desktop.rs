@@ -81,10 +81,10 @@ impl App {
             paused: false,
             displays: crate::screen_capture::displays().unwrap_or_default(),
             selected_display: 0,
-            codec: if std::env::var("HYPERCAST_CODEC").as_deref() == Ok("h265") {
-                crate::encoder::Codec::H265
-            } else {
+            codec: if std::env::var("HYPERCAST_CODEC").as_deref() == Ok("av1") {
                 crate::encoder::Codec::Av1
+            } else {
+                crate::encoder::Codec::H265
             },
             parent,
             presenters: HashMap::new(),
@@ -339,6 +339,18 @@ impl eframe::App for App {
                         }
                         ui.add_space(20.0);
                         ui.separator();
+                        ui.add_space(12.0);
+                        ui.label(RichText::new("DIAGNÓSTICO").size(11.0).color(MUTED));
+                        if ui.button("Copiar diagnóstico").on_hover_text("Copiar o log desta sessão, sem token ou imagens, para enviar ao suporte").clicked() {
+                            match crate::diagnostics::export_text() {
+                                Ok(text) => ctx.copy_text(text),
+                                Err(error) => self.error = format!("Diagnóstico: {error}"),
+                            }
+                        }
+                        if let Some(path) = crate::diagnostics::path() {
+                            ui.label(RichText::new("Log salvo automaticamente").size(11.0).color(MUTED))
+                                .on_hover_text(path.display().to_string());
+                        }
                         ui.add_space(12.0);
                         ui.label(RichText::new("PARTICIPANTES").size(11.0).color(MUTED));
                         if people.is_empty() {
@@ -704,6 +716,10 @@ impl eframe::App for App {
     }
 }
 pub fn run() -> anyhow::Result<()> {
+    // Diagnostics failure must not prevent joining a room.
+    if let Err(error) = crate::diagnostics::init() {
+        eprintln!("Could not initialize GUI diagnostics: {error}");
+    }
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1320.0, 820.0])
