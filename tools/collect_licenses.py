@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def main():
     metadata=json.loads((ROOT/".tools/package-metadata.json").read_text(encoding="utf-8-sig"))
-    destination=ROOT/"dist/HyperCast-0.7.0-windows-x64/licenses/Rust-dependencies.txt"
+    destination=ROOT/"dist/HyperCast-0.7.1-windows-x64/licenses/Rust-dependencies.txt"
     destination.parent.mkdir(parents=True,exist_ok=True)
     with destination.open("w",encoding="utf-8") as output:
         for package in sorted(metadata["packages"],key=lambda p:(p["name"],p["version"])):

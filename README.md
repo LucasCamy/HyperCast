@@ -1,5 +1,11 @@
 # HyperCast
 
+0.7.1 lembra seu nome, permite recolher o menu e diferencia transmissão ativa
+da tela em destaque. Duplo clique em uma transmissão mostra apenas ela; **Grid**
+restaura as telas. No Windows, desmarque **Mostrar minha prévia** para eliminar
+a cópia GPU e a apresentação local sem interromper o envio.
+[Como usar os controles da sala](docs/room-controls.md).
+
 
 0.7.0 adiciona cliente nativo Linux e pacote AppImage para Bazzite recente.
 Windows mantém o instalador e o pipeline DirectX. As duas versões usam o mesmo

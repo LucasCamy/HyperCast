@@ -107,6 +107,11 @@ fn choice_card(ui: &mut egui::Ui, title: &str, subtitle: &str, selected: bool, e
     if let Some(initial) = avatar {
         ui.painter().circle_filled(center, 18.0, tint.gamma_multiply(0.14));
         ui.painter().text(center, egui::Align2::CENTER_CENTER, initial.to_uppercase().collect::<String>(), egui::FontId::proportional(17.0), tint);
+        if subtitle.contains("compartilhando") || subtitle.contains("Compartilhando") || subtitle.contains("Transmitindo") || subtitle.contains("transmitindo") {
+            let dot=center+Vec2::new(13.0,13.0);
+            ui.painter().circle_filled(dot,5.0,PANEL);
+            ui.painter().circle_filled(dot,3.5,ACCENT);
+        }
     } else { monitor_symbol(ui.painter(), center, tint, 38.0); }
     let painter = ui.painter().with_clip_rect(response.rect.shrink(8.0));
     painter.text(response.rect.left_top() + Vec2::new(60.0, 15.0), egui::Align2::LEFT_TOP,
@@ -150,6 +155,9 @@ struct App {
     token: String,
     invite: String,
     name: String,
+    sidebar_open: bool,
+    self_preview: bool,
+    single_view: bool,
     client_id: String,
     token_mode: bool,
     mode: ViewMode,
@@ -220,7 +228,8 @@ impl App {
                 .unwrap_or_else(|_| "wss://hypercast.cloudlane.com.br".into()),
             token: std::env::var("HYPERCAST_ROOM_TOKEN").unwrap_or_default(),
             invite: std::env::var("HYPERCAST_INVITE").unwrap_or_default(),
-            name: std::env::var("HYPERCAST_NAME").unwrap_or_default(),
+            name: crate::preferences::load_name(),
+            sidebar_open: true, self_preview: true, single_view: false,
             client_id: crate::invitation::client_id(),
             token_mode: std::env::var("HYPERCAST_ROOM_TOKEN").is_ok(),
             mode: if std::env::var("HYPERCAST_VIEW_MODE").as_deref() == Ok("grid") {
@@ -414,6 +423,7 @@ impl App {
     fn send_layout(&self) {
         if let Some(engine) = &self.engine {
             let _ = engine.commands.send(Command::Layout(Layout {
+                self_preview: self.self_preview,
                 volume: if self.sound_muted { 0 } else { self.volume },
                 mode: self.mode,
                 focus: self.focus.clone(),
@@ -422,6 +432,7 @@ impl App {
         }
     }
     fn join_room(&self, ctx: egui::Context) -> Engine {
+        let _ = crate::preferences::save_name(&self.name);
         let engine = if self.token_mode {
             Engine::connect(self.address.trim().to_owned(), self.token.trim().to_owned(), ctx, self.parent, self.relay_only)
         } else {
@@ -429,11 +440,15 @@ impl App {
         };
         let _ = engine.commands.send(Command::SystemAudio(self.system_audio));
         let _ = engine.commands.send(Command::Layout(Layout {
+                self_preview: self.self_preview,
             mode: self.mode, focus: self.focus.clone(), paused: self.paused,
             volume: if self.sound_muted { 0 } else { self.volume },
         }));
         engine
     }
+}
+impl Drop for App {
+    fn drop(&mut self) { let _ = crate::preferences::save_name(&self.name); }
 }
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -540,14 +555,23 @@ impl eframe::App for App {
             videos = state
                 .frames
                 .iter()
+                .filter(|(_, frame)| self.self_preview || !frame.local())
                 .map(|(id, frame)| (id.clone(), Arc::clone(frame)))
                 .collect();
             received = state.received;
             sent = state.sent;
         }
+        if !publishing && !identity.is_empty() && self.focus.as_ref()==Some(&identity) {
+            self.focus=None;self.send_layout();
+        }
         people.sort();
         screens.sort();
         videos.sort_by_key(|(id, _)| id.clone());
+        let watched = if self.paused || self.mode!=ViewMode::Spotlight { None } else {
+            self.focus.as_ref().filter(|id| screens.contains(id)||videos.iter().any(|(owner,_)|owner==*id))
+                .or_else(||screens.first()).or_else(||videos.iter().find(|(_,f)|!f.local()).map(|(id,_)|id))
+                .or_else(||videos.first().map(|(id,_)|id)).cloned()
+        };
         self.last_presented
             .retain(|id, _| videos.iter().any(|(owner, _)| owner == id));
         self.presenters
@@ -606,6 +630,7 @@ impl eframe::App for App {
                 self.rendered, self.error
             );
             println!("GUI publisher: {sent} sent");
+            println!("GUI preview: enabled={} local_surfaces={} rendered={}",self.self_preview,videos.iter().filter(|(_,f)|f.local()).count(),self.rendered);
             println!(
                 "GUI status: connected={connected}, can_publish={can_publish}; {}",
                 if self.token.is_empty() { status.clone() } else { status.replace(&self.token, "[token]") }
@@ -613,7 +638,7 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
-        if !self.fullscreen {
+        if !self.fullscreen && self.sidebar_open {
         egui::Panel::left("room_sidebar")
             .exact_size(312.0)
             .resizable(false)
@@ -666,7 +691,7 @@ impl eframe::App for App {
                             if !self.server_access.status.is_empty(){ui.label(RichText::new(&self.server_access.status).size(12.0).color(MUTED));}
                         } else {
                             ui.label("Seu nome");
-                            text_input(ui,&mut self.name,"Como quer aparecer na sala",false,64,self.engine.is_none() || self.engine.as_ref().is_some_and(|engine|engine.finished()));
+                            if text_input(ui,&mut self.name,"Como quer aparecer na sala",false,64,self.engine.is_none() || self.engine.as_ref().is_some_and(|engine|engine.finished())).lost_focus() { let _ = crate::preferences::save_name(&self.name); }
                             ui.label("Convite da sala");
                             text_input(ui,&mut self.invite,"Cole o convite da sala",true,64,self.engine.is_none() || self.engine.as_ref().is_some_and(|engine|engine.finished()));
                         ui.horizontal(|ui| {
@@ -689,6 +714,10 @@ impl eframe::App for App {
                         ui.separator();
                         ui.add_space(8.0);
                         self.sharing_settings(ui,publishing);
+                        if ui.checkbox(&mut self.self_preview,"Mostrar minha prévia").changed(){
+                            if !self.self_preview && self.focus.as_ref()==Some(&identity){self.focus=None;}
+                            self.send_layout();
+                        }
                         egui::CollapsingHeader::new(if self.sound_muted{"Som recebido · silenciado".into()}else{format!("Som recebido · {}%",self.volume)}).id_salt("received_audio").show(ui,|ui|{
                         if ui.checkbox(&mut self.sound_muted, "Silenciar áudio recebido").changed() { self.send_layout(); }
                         let volume_label = ui.horizontal(|ui| {
@@ -719,15 +748,18 @@ impl eframe::App for App {
                         if connected {
                             let label = if self.name.is_empty() { "Você".to_owned() } else { format!("{} (você)", self.name) };
                             if publishing {
-                                if choice_card(ui,&label,"Compartilhando tela",self.focus.as_ref()==Some(&identity),true,Some(self.name.chars().next().unwrap_or('V'))).clicked(){self.focus=Some(identity.clone());self.mode=ViewMode::Spotlight;self.send_layout();}
+                                let response=choice_card(ui,&label,if !self.self_preview {"Transmitindo · prévia oculta"} else if watched.as_ref()==Some(&identity) {"Em destaque · transmitindo"} else {"Transmitindo · sua tela"},self.self_preview && watched.as_ref()==Some(&identity),self.self_preview,Some(self.name.chars().next().unwrap_or('V')));
+                                if response.clicked(){self.focus=Some(identity.clone());self.mode=ViewMode::Spotlight;self.single_view=response.double_clicked();self.send_layout();}
                             }else{ui.label(RichText::new(format!("{label} · assistindo")).size(12.0).color(MUTED));}
                         }
                         people.sort_by(|a,b| screens.contains(&b.0).cmp(&screens.contains(&a.0)).then_with(|| a.1.cmp(&b.1)).then_with(|| a.0.cmp(&b.0)));
                         for (identity, name) in &people {
                             let live = screens.contains(identity);
-                            let focused = self.focus.as_ref() == Some(identity) || (self.focus.is_none() && screens.first() == Some(identity));
-                            if choice_card(ui, if name.is_empty() { "Participante" } else { name }, if live { if focused && self.mode == ViewMode::Spotlight { "Em destaque · compartilhando" } else { "Compartilhando tela" } } else { "Assistindo à sala" }, focused && live, live, Some(name.chars().next().unwrap_or('P'))).clicked()
+                            let focused = watched.as_ref()==Some(identity);
+                            let response=choice_card(ui, if name.is_empty() { "Participante" } else { name }, if live { if focused && self.mode == ViewMode::Spotlight { "Em destaque · compartilhando" } else { "Compartilhando tela" } } else { "Assistindo à sala" }, focused && live && self.mode==ViewMode::Spotlight, live, Some(name.chars().next().unwrap_or('P')));
+                            if response.clicked()
                             {
+                                self.single_view=response.double_clicked();
                                 self.focus = Some(identity.clone());
                                 self.mode = ViewMode::Spotlight;
                                 self.send_layout();
@@ -783,7 +815,13 @@ impl eframe::App for App {
                 } else {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        ui.label(RichText::new("Telas da sala").size(26.0).strong());
+                        ui.horizontal(|ui| {
+                            if compact_action(ui,if self.sidebar_open {"Recolher menu"} else {"Abrir menu"},true).clicked(){
+                                self.sidebar_open=!self.sidebar_open;
+                                if !self.sidebar_open {self.window_picker_open=false;egui::Popup::close_all(&ctx);}
+                            }
+                            ui.label(RichText::new("Telas da sala").size(26.0).strong());
+                        });
                         ui.label(
                             RichText::new("Escolha uma tela para acompanhar de perto.")
                                 .size(13.0)
@@ -796,14 +834,14 @@ impl eframe::App for App {
                             .selectable_label(self.mode == ViewMode::Grid, "Grid")
                             .clicked()
                         {
-                            self.mode = ViewMode::Grid;
+                            self.mode = ViewMode::Grid; self.single_view=false;
                             self.send_layout();
                         }
                         if ui
                             .selectable_label(self.mode == ViewMode::Spotlight, "Destaque")
                             .clicked()
                         {
-                            self.mode = ViewMode::Spotlight;
+                            self.mode = ViewMode::Spotlight; self.single_view=false;
                             self.send_layout();
                         }
                     });
@@ -877,7 +915,7 @@ impl eframe::App for App {
                         );
                         return;
                     }
-                    if self.mode == ViewMode::Spotlight && !self.fullscreen {
+                    if self.mode == ViewMode::Spotlight && !self.fullscreen && !self.single_view {
                         selected.extend(
                             videos
                                 .iter()
@@ -885,7 +923,7 @@ impl eframe::App for App {
                                 .take(2),
                         );
                     }
-                    let unseen: Vec<_> = if self.mode == ViewMode::Spotlight && !self.fullscreen {
+                    let unseen: Vec<_> = if self.mode == ViewMode::Spotlight && !self.fullscreen && !self.single_view {
                         screens
                             .iter()
                             .filter(|id| {
@@ -946,14 +984,11 @@ impl eframe::App for App {
                             egui::FontId::proportional(13.0),
                             TEXT,
                         );
-                        if ui
-                            .interact(
-                                egui::Rect::from_min_size(card.min, Vec2::new(card.width(), 32.0)),
-                                egui::Id::new(("focus", identity)),
-                                egui::Sense::click(),
-                            )
-                            .clicked()
+                        let response=ui.interact(card, egui::Id::new(("focus",identity)),egui::Sense::click());
+                        response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,true,format!("Transmissão de {}",if frame.local(){"Minha tela"}else{name})));
+                        if response.double_clicked() || (response.clicked() && response.interact_pointer_pos().is_some_and(|p|p.y<card.top()+32.0))
                         {
+                            self.single_view=response.double_clicked();
                             self.focus = Some((*identity).clone());
                             self.mode = ViewMode::Spotlight;
                             self.send_layout();
@@ -1060,11 +1095,10 @@ impl eframe::App for App {
                             egui::FontId::proportional(12.0),
                             MUTED,
                         );
-                        if ui
-                            .interact(card, egui::Id::new(("unseen", id)), egui::Sense::click())
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .clicked()
+                        let response=ui.interact(card,egui::Id::new(("unseen",id)),egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+                        if response.clicked()
                         {
+                            self.single_view=response.double_clicked();
                             self.focus = Some((*id).clone());
                             self.send_layout();
                         }

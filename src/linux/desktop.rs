@@ -49,7 +49,7 @@ fn small(ui: &mut egui::Ui, label: &str) -> egui::Response {
     })
     .inner
 }
-fn input(ui: &mut egui::Ui, value: &mut String, hint: &str, password: bool, limit: usize) {
+fn input(ui: &mut egui::Ui, value: &mut String, hint: &str, password: bool, limit: usize) -> egui::Response {
     ui.add(
         egui::TextEdit::singleline(value)
             .desired_width(f32::INFINITY)
@@ -58,11 +58,12 @@ fn input(ui: &mut egui::Ui, value: &mut String, hint: &str, password: bool, limi
             .margin(egui::Margin::symmetric(12, 10))
             .background_color(SURFACE)
             .hint_text(hint),
-    );
+    )
 }
 struct App {
     address: String,
     name: String,
+    sidebar_open: bool,
     invite: String,
     device: String,
     access: ServerAccess,
@@ -93,7 +94,8 @@ impl App {
         let mut app = Self {
             address: std::env::var("HYPERCAST_URL")
                 .unwrap_or("wss://hypercast.cloudlane.com.br".into()),
-            name: std::env::var("HYPERCAST_NAME").unwrap_or_default(),
+            name: crate::preferences::load_name(),
+            sidebar_open: true,
             invite: std::env::var("HYPERCAST_INVITE").unwrap_or_default(),
             device: crate::invitation::client_id(),
             access: ServerAccess::default(),
@@ -134,6 +136,7 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(enabled));
     }
     fn connect(&mut self, ctx: &egui::Context) {
+        let _ = crate::preferences::save_name(&self.name);
         let (address, invite, name, device, session) = (
             self.address.clone(),
             self.invite.clone(),
@@ -189,7 +192,7 @@ impl App {
                 }
             }
         }
-        egui::Frame::new()
+        let response=egui::Frame::new()
             .fill(PANEL)
             .corner_radius(12)
             .inner_margin(10)
@@ -207,8 +210,16 @@ impl App {
                         ui.label("Aguardando vídeo…");
                     });
                 }
-            });
+            }).response.interact(egui::Sense::click());
+        if response.double_clicked() {
+            self.layout.focus=self.engine.as_ref().and_then(|e|e.state.lock().unwrap().screens.iter().find(|s|s.sid==sid).map(|s|s.owner.clone()));
+            self.layout.mode=ViewMode::Spotlight;
+            self.layout();
+        }
     }
+}
+impl Drop for App {
+    fn drop(&mut self) { let _ = crate::preferences::save_name(&self.name); }
 }
 impl eframe::App for App {
     fn ui(&mut self, root: &mut egui::Ui, _: &mut eframe::Frame) {
@@ -264,7 +275,7 @@ impl eframe::App for App {
         if self.fullscreen && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.fullscreen(ctx, false);
         }
-        if !self.fullscreen {
+        if !self.fullscreen && self.sidebar_open {
             egui::Panel::left("sidebar").exact_size(310.0).frame(egui::Frame::new().fill(PANEL).inner_margin(20)).show(root,|ui|{
                 egui::ScrollArea::vertical().show(ui,|ui|{
                     ui.horizontal(|ui|{ui.label(RichText::new("HYPERCAST").size(16.0));
@@ -279,16 +290,19 @@ impl eframe::App for App {
                         if button(ui,"Entrar no servidor",!self.access.busy,true).clicked(){self.access.start(self.address.clone(),self.device.clone(),ctx.clone());}
                         ui.label(RichText::new(&self.access.status).size(12.0).color(MUTED));
                     }else if !connected{
-                        input(ui,&mut self.name,"Seu nome",false,32);input(ui,&mut self.invite,"Convite da sala",false,128);
+                        if input(ui,&mut self.name,"Seu nome",false,32).lost_focus(){let _=crate::preferences::save_name(&self.name);}
+                        input(ui,&mut self.invite,"Convite da sala",false,128);
                         if button(ui,"Entrar na sala",self.joining.is_none()&&!self.name.trim().is_empty()&&!self.invite.trim().is_empty(),true).clicked(){self.connect(ctx);}
                         if button(ui,"Criar sala",!self.creator.busy,false).clicked(){self.creator.open(&self.address);}
                         if small(ui,"Trocar acesso ao servidor").clicked(){self.access.logout(&self.address);}
                     }else{
                         ui.label(RichText::new("PARTICIPANTES").size(11.0).color(MUTED));
-                        ui.label(format!("{} (você)",if self.name.is_empty(){"Linux"}else{&self.name}));
+                        ui.label(format!("{} (você) · {}",if self.name.is_empty(){"Linux"}else{&self.name},if sharing{"Transmitindo"}else{"Assistindo"}));
                         for(id,name)in participants{
                             let live=screens.iter().any(|s|s.owner==id);let title=if name.is_empty(){id.clone()}else{name};
-                            if button(ui,&format!("{title} · {}",if live{"compartilhando"}else{"assistindo"}),live,self.layout.focus.as_ref()==Some(&id)).clicked(){self.layout.focus=Some(id);self.layout();}
+                            let focused=!self.layout.paused && self.layout.mode==ViewMode::Spotlight && (self.layout.focus.as_ref()==Some(&id) || (self.layout.focus.is_none() && screens.first().is_some_and(|s|s.owner==id)));
+                            let response=button(ui,&format!("{title} · {}",if live {if focused {"Em destaque · transmitindo"}else{"Transmitindo"}}else{"Assistindo"}),live,focused);
+                            if response.clicked(){self.layout.focus=Some(id);if response.double_clicked(){self.layout.mode=ViewMode::Spotlight;}self.layout();}
                         }
                         if !self.invite.is_empty()&&small(ui,"Copiar convite").clicked(){ctx.copy_text(self.invite.clone());}
                     }
@@ -326,6 +340,7 @@ impl eframe::App for App {
             .show(root, |ui| {
                 ui.horizontal(|ui| {
                     if !self.fullscreen {
+                        if small(ui,if self.sidebar_open {"Recolher menu"}else{"Abrir menu"}).clicked(){self.sidebar_open=!self.sidebar_open;}
                         ui.heading("Telas da sala");
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

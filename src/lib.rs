@@ -12,6 +12,8 @@ pub mod desktop_engine;
 pub mod diagnostics;
 #[cfg(feature = "desktop")]
 pub mod invitation;
+#[cfg(feature = "desktop")]
+pub mod preferences;
 #[cfg(all(windows, feature = "nvenc"))]
 pub mod encoder;
 #[cfg(feature = "livekit-network")]

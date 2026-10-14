@@ -67,6 +67,7 @@ pub struct Shared {
 }
 #[derive(Clone)]
 pub struct Layout {
+    pub self_preview: bool,
     pub mode: ViewMode,
     pub focus: Option<String>,
     pub paused: bool,
@@ -259,10 +260,12 @@ fn update_subscriptions(room: &Room, layout: &Layout) {
         }
     }
     screens.sort_by_key(|(id, _)| id.clone());
+    let local_visible=layout.self_preview && room.local_participant().track_publications().into_values()
+        .any(|p|p.source()==TrackSource::Screenshare && p.kind()==TrackKind::Video);
     let focus = layout
         .focus
         .as_deref()
-        .filter(|id|screens.iter().any(|(owner,_)|owner==id))
+        .filter(|id|screens.iter().any(|(owner,_)|owner==id) || (local_visible && *id==room.local_participant().identity().as_str()))
         .or_else(|| screens.first().map(|(id, _)| id.as_str()));
     let mut count = 0;
     for (identity, publication) in &screens {
@@ -352,6 +355,7 @@ impl Engine {
                         .is_some_and(|grant| grant.can_publish);
                 }
                 let mut layout = Layout {
+                    self_preview: true,
                     volume: 80,
                     mode: ViewMode::Spotlight,
                     focus: None,
@@ -408,7 +412,8 @@ impl Engine {
                             }
                             Command::Layout(next) => {
                                 audio_volume.store(next.volume.min(100) as u64, Ordering::Relaxed);
-                                crate::diagnostics::write("layout", &format!("mode={:?} paused={} volume={}", next.mode, next.paused, next.volume), "");
+                                crate::diagnostics::write("layout", &format!("mode={:?} paused={} volume={} self_preview={}", next.mode, next.paused, next.volume, next.self_preview), "");
+                                if !next.self_preview { state.lock().unwrap().frames.remove(&room.local_participant().identity().to_string()); }
                                 manual_layout = next;
                                 layout = manual_layout.clone();
                                 layout.paused |= window_hidden;
@@ -702,7 +707,7 @@ impl Engine {
                             if let Some(texture) = value
                                 .encoder
                                 .as_ref()
-                                .filter(|_| !value.paused && value.count % 8 == 0)
+                                .filter(|_| layout.self_preview && !value.paused && value.count % 8 == 0)
                                 .and_then(|encoder| encoder.preview_texture())
                             {
                                 let mut desc = Default::default();
