@@ -282,11 +282,14 @@ impl RemoteTrackPublication {
 
     pub fn set_enabled(&self, enabled: bool) {
         if self.is_subscribed() && enabled != self.is_enabled() {
-            let track = self.track().unwrap();
-            if self.is_enabled() {
-                track.disable();
-            } else {
+            // Subscription state and track removal are updated asynchronously.
+            // Retain a snapshot if present; an unsubscribe may remove it between
+            // is_subscribed() and this read.
+            let Some(track) = self.track() else { return; };
+            if enabled {
                 track.enable();
+            } else {
+                track.disable();
             }
 
             // Request to send an update to the SFU

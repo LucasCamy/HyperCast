@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$NotesFile)
+﻿param([Parameter(Mandatory=$true)][string]$NotesFile)
 $ErrorActionPreference = 'Stop'
 $hcRoot = Split-Path -Parent $PSScriptRoot
 $hcVersion = (Select-String -LiteralPath "$hcRoot/Cargo.toml" -Pattern '^version = "([0-9]+\.[0-9]+\.[0-9]+)"$' | Select-Object -First 1).Matches.Groups[1].Value
@@ -6,6 +6,24 @@ if (-not $hcVersion) { throw 'Stable package version not found' }
 $hcRepo = 'LucasCamy/HyperCast'
 $hcTag = "v$hcVersion"
 $hcFiles = @("$hcRoot/dist/HyperCast-$hcVersion-windows-x64-setup.exe", "$hcRoot/dist/HyperCast-$hcVersion-windows-x64-portable.zip", "$hcRoot/dist/SHA256SUMS.txt")
+$hcLinuxFile="$hcRoot/dist/HyperCast-$hcVersion-linux-x86_64.AppImage"
+$hcLinuxHashes="$hcRoot/dist/SHA256SUMS-linux.txt"
+if(Test-Path -LiteralPath $hcLinuxFile -PathType Leaf){
+    if(-not(Test-Path -LiteralPath $hcLinuxHashes -PathType Leaf)){throw 'Linux package checksum missing'}
+    $hcLinuxExpected=(Get-FileHash -LiteralPath $hcLinuxFile -Algorithm SHA256).Hash.ToLower()+'  '+(Split-Path -Leaf $hcLinuxFile)
+    if($hcLinuxExpected -notin (Get-Content -LiteralPath $hcLinuxHashes)){throw 'Linux package checksum mismatch'}
+    $hcFiles+=@($hcLinuxFile,$hcLinuxHashes)
+    $hcLinuxSource="$hcRoot/dist/HyperCast-$hcVersion-linux-corresponding-source.tar.gz"
+    if(-not(Test-Path -LiteralPath $hcLinuxSource -PathType Leaf)){throw 'Linux corresponding-source archive missing'}
+    $hcSourceExpected=(Get-FileHash -LiteralPath $hcLinuxSource -Algorithm SHA256).Hash.ToLower()+'  '+(Split-Path -Leaf $hcLinuxSource)
+    if($hcSourceExpected -notin (Get-Content -LiteralPath $hcLinuxHashes)){throw 'Linux source checksum mismatch'}
+    $hcFiles+=$hcLinuxSource
+    $hcMediaSource="$hcRoot/dist/HyperCast-$hcVersion-linux-media-source.tar.gz"
+    if(-not(Test-Path -LiteralPath $hcMediaSource -PathType Leaf)){throw 'Pinned Linux media source missing'}
+    $hcMediaExpected=(Get-FileHash -LiteralPath $hcMediaSource -Algorithm SHA256).Hash.ToLower()+'  '+(Split-Path -Leaf $hcMediaSource)
+    if($hcMediaExpected -notin (Get-Content -LiteralPath $hcLinuxHashes)){throw 'Media source checksum mismatch'}
+    $hcFiles+=$hcMediaSource
+}
 foreach ($hcFile in $hcFiles) { if (-not (Test-Path -LiteralPath $hcFile -PathType Leaf)) { throw "Package missing: $hcFile" } }
 $hcHashes = Get-Content -LiteralPath $hcFiles[2]
 foreach ($hcFile in $hcFiles[0..1]) {

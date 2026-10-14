@@ -13,6 +13,12 @@ struct Args {
     gui: bool,
     #[arg(long)]
     list: bool,
+    #[cfg(all(target_os="linux",feature="desktop"))]
+    #[arg(long)]
+    linux_media_test: bool,
+    #[cfg(all(target_os="linux",feature="desktop"))]
+    #[arg(long)]
+    linux_publish_test_url: Option<String>,
     #[cfg(feature = "livekit-network")]
     #[arg(long)]
     connect_url: Option<String>,
@@ -314,6 +320,23 @@ fn main() -> Result<()> {
 
 #[cfg(not(windows))]
 fn main() -> Result<()> {
-    let _ = Args::parse();
-    anyhow::bail!("DXGI capture requires Windows 10/11 and a hardware D3D11 adapter")
+    let args = Args::parse();
+    #[cfg(all(target_os = "linux", feature = "desktop"))]
+    if let Some(address)=&args.linux_publish_test_url{return tokio::runtime::Runtime::new()?.block_on(hypercast::linux::publish_self_test(address,args.seconds));}
+    #[cfg(all(target_os = "linux", feature = "desktop"))]
+    if args.linux_media_test {return tokio::runtime::Runtime::new()?.block_on(hypercast::linux::media_self_test());}
+    #[cfg(all(target_os = "linux", feature = "desktop"))]
+    if args.gui || std::env::args().len() == 1 {return hypercast::linux::run();}
+    #[cfg(feature = "livekit-network")]
+    {
+        let runtime=tokio::runtime::Runtime::new()?;
+        if let Some(address)=args.connect_url {return runtime.block_on(hypercast::network::diagnostic(&address,&hypercast::network::token_from_env()?,args.seconds));}
+        if let Some(address)=args.receive_url {
+            let frames=runtime.block_on(hypercast::receiver::receive(&address,&hypercast::network::token_from_env()?,hypercast::receiver::ReceiveOptions {
+                mode:args.view_mode,focus_identity:args.focus,pause_after:args.pause_after.map(|n|std::time::Duration::from_secs(n as u64)),duration:std::time::Duration::from_secs(args.seconds as u64)
+            }))?;
+            anyhow::ensure!(frames>0,"No video frames received");return Ok(());
+        }
+    }
+    anyhow::bail!("Use --gui for Linux desktop or --connect-url/--receive-url for diagnostics")
 }

@@ -129,6 +129,13 @@ fn main() {
         builder.include(ffmpeg.join("include"));
         println!("cargo:rustc-link-search=native={}", ffmpeg.join("lib").display());
     }
+    if target_os == "linux" {
+        builder.file("src/hypercast_linux_decoder.cpp");
+        for name in ["libavcodec", "libavutil"] {
+            let lib=pkg_config::Config::new().cargo_metadata(false).probe(name).expect("Install FFmpeg development headers");
+            for path in lib.include_paths {builder.include(path);}
+        }
+    }
     builder.define("WEBRTC_APM_DEBUG_DUMP", "0");
 
     println!("cargo:rustc-link-search=native={}", webrtc_lib.to_str().unwrap());

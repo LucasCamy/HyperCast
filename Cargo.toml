@@ -1,9 +1,9 @@
 [package]
 name = "hypercast"
-version = "0.6.5"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.92"
-description = "Windows GPU screen capture for a centralized LiveKit SFU"
+description = "Native Windows and Linux screen sharing through a centralized LiveKit SFU"
 license = "MIT"
 
 [features]
@@ -11,7 +11,7 @@ default = []
 # Native network/encoder modules may also be built without the desktop UI.
 livekit-network = ["dep:livekit", "dep:tokio", "dep:url", "dep:tokio-stream", "dep:log"]
 nvenc = ["dep:cc"]
-desktop = ["nvenc", "livekit-network", "dep:eframe", "dep:raw-window-handle", "dep:reqwest", "dep:serde_json", "dep:uuid", "dep:sha2", "dep:semver"]
+desktop = ["nvenc", "livekit-network", "dep:eframe", "dep:raw-window-handle", "dep:reqwest", "dep:serde_json", "dep:uuid", "dep:sha2", "dep:semver", "dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video", "dep:ashpd"]
 
 [dependencies]
 sha2 = { version = "=0.10.9", optional = true }
@@ -27,12 +27,20 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"
 url = { version = "2.5", optional = true }
 tokio-stream = { version = "0.1", optional = true }
 
+eframe = { version = "=0.35.0", default-features = false, features = ["glow", "default_fonts", "accesskit", "x11", "wayland"], optional = true }
+raw-window-handle = { version = "0.6", optional = true }
+
+
 [build-dependencies]
 cc = { version = "1", optional = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+gstreamer = { version = "=0.24.3", optional = true }
+gstreamer-app = { version = "=0.24.2", optional = true }
+gstreamer-video = { version = "=0.24.3", optional = true }
+ashpd = { version = "=0.13.13", default-features = false, features = ["tokio", "screencast"], optional = true }
+
 [target.'cfg(windows)'.dependencies]
-eframe = { version = "=0.35.0", default-features = false, features = ["glow", "default_fonts", "accesskit"], optional = true }
-raw-window-handle = { version = "0.6", optional = true }
 windows = { version = "=0.61.3", features = [
   "Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11",
   "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi",

@@ -1,6 +1,40 @@
 # Validação — 12 e 13/10/2026
 
 
+## Cliente Linux e interoperabilidade — 0.7.0, 14/10/2026
+
+Build nativo Linux x86_64 em Ubuntu 24.04/WSL, Rust 1.92 e Clang 21.
+AppImage inclui biblioteca de mídia, enquanto Windows mantém DirectX/instalador.
+Seleção monitor/janela usa ScreenCast/PipeWire; X11 tem captura explícita de tela.
+A origem nova só substitui a anterior depois de produzir um quadro; cancelar
+seleção preserva o envio anterior. Encerramento da captura também para seu áudio.
+
+Teste de mídia gerada: três ciclos de captura/HEVC/decodificação, descarte de
+pacote inválido e contagem nativa de decodificadores retornando a zero.
+Interoperabilidade pelo SFU em salas efêmeras: publicação HEVC Linux, recepção
+Linux (incluindo textura OpenGL e mais de mil frames de áudio Opus), recepção
+D3D11 Windows e AV1 enviado por WGC/NVENC Windows recebido no Linux.
+Decoder Linux reportou hardware CUDA, com transferência para I420/CPU na apresentação.
+
+Corrigidos o unwrap do SDK em corrida com remoção de track e o caminho de
+conversão que falhava no AppImage: cópia/normalização libyuv para YUV420/NV12 e
+10 bits, com formatos e dimensões validados antes de acessar planos.
+
+Runtime GStreamer 1.26.10 e preset NVENC P1/ultra-low-latency evitam os presets
+legados rejeitados pela série RTX 50. Encode sintético HEVC e AV1 por NVENC
+validado na RTX 5060 do ambiente. HEVC Linux a 120 FPS em 640 × 360 atravessou
+o SFU: 1320 quadros enviados em 11 s, 1307 recebidos na interface e 1077 quadros
+de áudio. AV1 por NVENC também enviou 1320 quadros/11 s; GUI Linux recebeu 1308 quadros e
+1078 frames de áudio, enquanto Windows recebeu 1167 frames D3D11. Esses testes
+não substituem a medição em QHD ou de latência fim a fim. Fontes/licenças/hashes acompanham os pacotes.
+
+Windows: testes Rust passaram (11 aprovados, um ignorado) e seletor compacto,
+miniaturas, seleção/rolagem/fechamento passaram no portátil em 960 × 620.
+Bazzite físico, seletor Wayland e NVENC na RTX 5060 Ti ainda dependem de validação
+no PC do colega. Não há medição fim a fim sub-100 ms nem validação QHD 120 FPS
+no Linux; conversão de CPU/apresentação OpenGL ainda impedem afirmar zero-copy.
+
+
 ## Remoção de tooltips sobrepostos — 0.6.5, 14/10/2026
 
 Removidos os dois balões dos cartões de janela (texto genérico e título completo).

@@ -406,8 +406,8 @@ VideoEncoderFactory::InternalFactory::GetSupportedFormats() const {
     }
     for (const auto& format : backend_factory.factory->GetSupportedFormats()) {
       const bool codec_available =
-#ifdef _WIN32
-          // HyperCast supplies NVENC outside this SDK. Its pre-encoded HEVC
+#if defined(_WIN32) || defined(__linux__)
+          // HyperCast supplies native encoders outside this SDK. Its pre-encoded HEVC
           // source is valid even without a linked platform HEVC encoder.
           IsSameCodecName(format.name, "H265") ||
 #endif
@@ -427,7 +427,7 @@ VideoEncoderFactory::InternalFactory::GetSupportedFormats() const {
 std::vector<webrtc::SdpVideoFormat>
 VideoEncoderFactory::InternalFactory::GetImplementations() const {
   std::vector<webrtc::SdpVideoFormat> formats;
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
   for (const auto& backend_factory : factories_) {
     if (backend_factory.backend == VideoEncoderBackend::PreEncoded) {
       for (const auto& format : backend_factory.factory->GetImplementations()) {
@@ -463,7 +463,7 @@ VideoEncoderFactory::InternalFactory::QueryCodecSupport(
     std::optional<std::string> scalability_mode) const {
   auto requested_backend = BackendFromFormat(format);
   auto stripped_format = StripBackendParameter(format);
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
   if ((!requested_backend || *requested_backend == VideoEncoderBackend::Auto) && IsSameCodecName(format.name, "H265")) {
     for (const auto& backend_factory : factories_) {
       if (backend_factory.backend == VideoEncoderBackend::PreEncoded) {
@@ -541,7 +541,7 @@ VideoEncoderFactory::InternalFactory::Create(
   auto requested_backend = BackendFromFormat(format);
   auto stripped_format = StripBackendParameter(format);
   bool requested_backend_unavailable = false;
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
   // Initial untagged HEVC must consume access units too: no SDK HEVC encoder
   // exists to start before the external NVENC selector switches backends.
   if ((!requested_backend || *requested_backend == VideoEncoderBackend::Auto) && IsSameCodecName(format.name, "H265")) {
@@ -726,7 +726,7 @@ std::unique_ptr<webrtc::VideoEncoder> VideoEncoderFactory::Create(
     const webrtc::Environment& env,
     const webrtc::SdpVideoFormat& format) {
   std::unique_ptr<webrtc::VideoEncoder> encoder;
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
   if (IsSameCodecName(format.name, "H265")) {
     if (std::getenv("HYPERCAST_TRACE_CODEC")) fprintf(stderr,"HyperCast: HEVC encoder factory Create\n");
     // External HEVC is a single pre-encoded layer; do not put a real-encoder
@@ -740,7 +740,7 @@ std::unique_ptr<webrtc::VideoEncoder> VideoEncoderFactory::Create(
   }
 
   if (encoder &&
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
       !IsSameCodecName(format.name, "H265") &&
 #endif
       BackendFromFormat(format) != VideoEncoderBackend::PreEncoded) {

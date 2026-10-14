@@ -243,6 +243,9 @@ impl EncodedPublisher {
         self.source.take_keyframe_request() || !self.seen_keyframe
     }
     pub fn restart_keyframe(&mut self){self.seen_keyframe=false;}
+    pub fn set_resolution_if_changed(&mut self,width:u32,height:u32){
+        if self.resolution.width!=width || self.resolution.height!=height {self.set_resolution(width,height);}
+    }
     pub fn set_resolution(&mut self,width:u32,height:u32){
         self.resolution=VideoResolution{width,height};self.restart_keyframe();
     }

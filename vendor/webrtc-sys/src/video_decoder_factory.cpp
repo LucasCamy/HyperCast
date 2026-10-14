@@ -15,6 +15,9 @@
  */
 
 #include "livekit/video_decoder_factory.h"
+#ifdef __linux__
+#include "livekit/hypercast_linux_decoder.h"
+#endif
 #ifdef _WIN32
 #include "livekit/hypercast_d3d11_decoder.h"
 #endif
@@ -76,6 +79,9 @@ VideoDecoderFactory::VideoDecoderFactory()
     : internal_h264_decoder_works_(IsInternalH264DecoderAvailable()) {
 #ifdef _WIN32
   factories_.push_back(CreateHypercastD3D11DecoderFactory());
+#endif
+#ifdef __linux__
+  factories_.push_back(CreateHypercastLinuxDecoderFactory());
 #endif
 #ifdef __APPLE__
   factories_.push_back(livekit_ffi::CreateObjCVideoDecoderFactory());

@@ -1,6 +1,11 @@
 # HyperCast
 
 
+0.7.0 adiciona cliente nativo Linux e pacote AppImage para Bazzite recente.
+Windows mantém o instalador e o pipeline DirectX. As duas versões usam o mesmo
+servidor, chave e convites. [Uso, compatibilidade e limites no Linux](docs/linux.md).
+
+
 0.6.5 remove os tooltips dos cartões de janelas, evitando sobreposição nos nomes
 e nas miniaturas durante a escolha da origem.
 

@@ -33,3 +33,18 @@ https://github.com/GPUOpen-LibrariesAndSDKs/AMF/tree/8c648005e07d4309033282bfd99
 headers em native/vendor/amf. AMF-LICENSE.txt acompanha os pacotes.
 O runtime AMD amfrt64.dll vem do Adrenalin e é carregado somente de System32;
 não é redistribuído. NVIDIA continua usando NVENC no dispositivo da captura.
+
+
+## Linux AppImage
+
+O pacote Linux inclui GStreamer, plugins e bibliotecas FFmpeg da base Ubuntu
+24.04. As licenças e versões exatas estão em `usr/share/hypercast/licenses`
+dentro do AppImage, incluindo componentes LGPL/GPL (por exemplo, x265).
+A versão publicada também fornece os pacotes de fonte correspondentes dessas
+bibliotecas em `HyperCast-0.7.0-linux-corresponding-source.tar.gz`, com manifestos
+e hashes, e os scripts de build/empacotamento permanecem neste repositório.
+Os drivers NVIDIA/Mesa e a glibc são usados do sistema e não são empacotados.
+
+O runtime GStreamer 1.26.10 compilado para NVENC moderno tem suas fontes exatas
+e script em `HyperCast-0.7.0-linux-media-source.tar.gz`, além das fontes das
+bibliotecas Ubuntu. Os hashes dos dois arquivos são publicados junto ao AppImage.

@@ -24,6 +24,38 @@ jobs:
       - name: Native build and tests (no GPU required)
         shell: pwsh
         run: ./tools/cargo-native.ps1 test --locked --features desktop
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config curl clang libssl-dev libglib2.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-pipewire libavcodec-dev libavutil-dev libswscale-dev libx11-dev libxrandr-dev libxfixes-dev libxdamage-dev libxi-dev libxext-dev libxcomposite-dev libasound2-dev libpulse-dev libva-dev libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev xvfb dbus-x11 gnupg
+          if ! command -v clang++-21; then
+            curl --proto '=https' --tlsv1.2 -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o /tmp/hypercast-llvm.asc
+            gpg --show-keys --with-colons /tmp/hypercast-llvm.asc | grep -q '6084F3CF814B57C1CF12EFD515CF4D18AF4F7421'
+            sudo install -m 644 /tmp/hypercast-llvm.asc /usr/share/keyrings/hypercast-llvm.asc
+            echo 'deb [signed-by=/usr/share/keyrings/hypercast-llvm.asc] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main' | sudo tee /etc/apt/sources.list.d/hypercast-llvm.list
+            sudo apt-get update
+            sudo apt-get install -y clang-21
+          fi
+      - name: Select Rust
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          rustup override set 1.92.0
+      - name: Native Linux build and tests
+        env:
+          CC: clang-21
+          CXX: clang++-21
+        run: |
+          cargo build --locked --features desktop
+          cargo test --locked --features desktop
+          ./target/debug/hypercast --linux-media-test
+          HYPERCAST_SMOKE_SECONDS=5 HYPERCAST_AUTO_CONNECT=0 xvfb-run -a ./target/debug/hypercast --gui
   server:
     runs-on: ubuntu-24.04
     timeout-minutes: 30

@@ -1,0 +1,55 @@
+"""Generated HEVC -> SFU -> Linux GUI/FFmpeg and Windows D3D11, no desktop recording.
+Runs on the Windows dev host with an owned Ubuntu WSL installation. Credentials
+remain in environment variables; the unique test room is removed afterwards.
+"""
+import json,os,re,subprocess,time,urllib.request,uuid
+from pathlib import Path
+from tools import room_token as rt
+ROOT=Path(__file__).resolve().parent.parent
+
+def main():
+    key,secret=rt.load_env(ROOT/'.tools/homelab.env');room='linux-'+uuid.uuid4().hex[:12];now=int(time.time())
+    def token(pub):
+        grant={'room':room,'roomJoin':True,'canPublish':pub,'canSubscribe':True,'canPublishData':False}
+        if pub:grant['canPublishSources']=['screen_share','screen_share_audio']
+        return rt.sign({'iss':key,'sub':'hc-member-'+uuid.uuid4().hex,'nbf':now-5,'exp':now+180,'video':grant},secret)
+    base={k:v for k,v in os.environ.items() if not k.startswith(('LIVEKIT_','HYPERCAST_','GH_','GITHUB_'))}
+    children=[];logs=[]
+    binary=os.environ.get('HYPERCAST_LINUX_EXE','/home/lucas/hypercast-target/debug/hypercast')
+    def command(*args):return [binary,*(['--appimage-extract-and-run'] if binary.endswith('.AppImage') else []),*args]
+    def launch_linux(name,args,extra=None):
+        env={**base,'HYPERCAST_ROOM_TOKEN':token(name=='publisher'),'HYPERCAST_URL':'wss://hypercast.cloudlane.com.br',**(extra or {})}
+        names=[n+'/u' for n in env if n.startswith('HYPERCAST_')];env['WSLENV']=':'.join(names)
+        file=(ROOT/'.tools'/f'linux-{name}.log').open('wb');logs.append(file)
+        child=subprocess.Popen(['wsl','-d','Ubuntu','--',*args],env=env,stdout=file,stderr=subprocess.STDOUT);children.append(child);return child
+    try:
+        linux=launch_linux('receiver',command('--receive-url','wss://hypercast.cloudlane.com.br','--seconds','17'))
+        gui=launch_linux('gui',['xvfb-run','-a',*command('--gui')],{'HYPERCAST_AUTO_CONNECT':'1','HYPERCAST_SMOKE_SECONDS':'15','HYPERCAST_AUDIO_TEST_SILENT_OUTPUT':'1'})
+        windows=Path(os.environ.get('HYPERCAST_WINDOWS_EXE',str(ROOT/'dist/HyperCast-0.6.5-windows-x64/hypercast.exe')))
+        file=(ROOT/'.tools/linux-windows.log').open('wb');logs.append(file)
+        child=subprocess.Popen([str(windows),'--receive-url','wss://hypercast.cloudlane.com.br','--seconds','17'],env={**base,'HYPERCAST_ROOM_TOKEN':token(False)},stdout=file,stderr=subprocess.STDOUT);children.append(child)
+        time.sleep(3)
+        pub=launch_linux('publisher',command('--linux-publish-test-url','wss://hypercast.cloudlane.com.br','--seconds','11'),{n:os.environ[n] for n in ('HYPERCAST_LINUX_TEST_GPU','HYPERCAST_LINUX_TEST_CODEC') if n in os.environ})
+        for child in children:
+            code=child.wait(timeout=55);assert code==0,f'A media client failed with exit {code}; inspect local logs without credentials'
+        for file in logs:file.close()
+        read=lambda name:(ROOT/'.tools'/f'linux-{name}.log').read_text(encoding='utf-8',errors='replace')
+        received=int(re.search(r'Receiver total: (\d+) decoded frames',read('receiver'))[1])
+        assert received>100,'Linux did not decode HEVC'
+        result=re.search(r'Linux GUI smoke: (\d+) received, (\d+) textures',read('gui'));assert result and int(result[1])>100 and int(result[2])>0,'Linux did not render received video'
+        assert int(re.search(r'audio=(\d+)',read('gui'))[1])>100,'Linux did not decode audio'
+        windows_log=(ROOT/'.tools/linux-windows.log').read_text(encoding='utf-8',errors='replace')
+        assert int(re.search(r'Receiver GPU: (\d+) D3D11 texture frames',windows_log)[1])>100,'Windows did not receive Linux HEVC in GPU'
+        assert int(re.search(r'Linux synthetic publisher: (\d+) frames',read('publisher'))[1])>100,'Linux publication failed'
+        print('PASS: Linux HEVC publishing, Linux decoded reception/audio and GUI textures, Windows GPU reception through SFU')
+    finally:
+        for child in children:
+            if child.poll() is None:child.terminate();child.wait(timeout=10)
+        for file in logs:file.close()
+        admin=rt.sign({'iss':key,'sub':'operator','nbf':now-5,'exp':now+180,'video':{'room':room,'roomCreate':True,'roomAdmin':True}},secret)
+        request=urllib.request.Request('https://hypercast.cloudlane.com.br/twirp/livekit.RoomService/DeleteRoom',data=json.dumps({'room':room}).encode(),headers={'Content-Type':'application/json','Authorization':'Bearer '+admin,'User-Agent':'HyperCast-Operator/0.7'})
+        try:
+            with urllib.request.urlopen(request,timeout=10):pass
+        except urllib.error.HTTPError as error:
+            if error.code!=404:raise
+if __name__=='__main__':main()

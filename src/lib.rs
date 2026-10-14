@@ -10,7 +10,7 @@ pub mod updater;
 pub mod desktop_engine;
 #[cfg(all(windows, feature = "desktop"))]
 pub mod diagnostics;
-#[cfg(all(windows, feature = "desktop"))]
+#[cfg(feature = "desktop")]
 pub mod invitation;
 #[cfg(all(windows, feature = "nvenc"))]
 pub mod encoder;
@@ -25,5 +25,8 @@ pub mod receiver;
 pub mod screen_capture;
 pub mod subscription;
 
-#[cfg(all(windows, feature = "desktop"))]
+#[cfg(feature = "desktop")]
 pub mod room_creation;
+
+#[cfg(all(target_os = "linux", feature = "desktop"))]
+pub mod linux;

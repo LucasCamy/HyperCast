@@ -4,8 +4,13 @@ use std::io::Read;
 
 pub fn client_id() -> String {
     let fresh = uuid::Uuid::new_v4().simple().to_string();
-    let Some(root) = std::env::var_os("LOCALAPPDATA") else { return fresh; };
-    let root = std::path::PathBuf::from(root).join("HyperCast");
+    #[cfg(windows)]
+    let root=std::env::var_os("LOCALAPPDATA").map(|p|std::path::PathBuf::from(p).join("HyperCast"));
+    #[cfg(not(windows))]
+    let root=std::env::var_os("XDG_STATE_HOME").map(std::path::PathBuf::from)
+        .filter(|p|p.is_absolute()).or_else(||std::env::var_os("HOME").map(|p|std::path::PathBuf::from(p).join(".local/state")))
+        .map(|p|p.join("hypercast"));
+    let Some(root)=root else{return fresh;};
     let path = root.join("client-id");
     if let Ok(file) = std::fs::File::open(&path) {
         let mut text = String::new();
@@ -15,7 +20,9 @@ pub fn client_id() -> String {
     }
     if std::fs::create_dir_all(root).is_ok() {
         use std::io::Write;
-        if let Ok(mut file) = std::fs::OpenOptions::new().write(true).create_new(true).open(path) {
+        let mut options=std::fs::OpenOptions::new();options.write(true).create_new(true);
+        #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
+        if let Ok(mut file) = options.open(path) {
             let _ = file.write_all(fresh.as_bytes());
         }
     }

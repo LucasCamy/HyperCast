@@ -34,7 +34,7 @@ pub struct ServerAccess {
     receiver:Option<mpsc::Receiver<Result<(String,bool)>>>,
 }
 impl Default for ServerAccess {
-    fn default()->Self {Self {code:String::new(),remember:true,busy:false,status:String::new(),token:String::new(),origin:String::new(),loaded:false,refresh:std::time::Instant::now(),receiver:None}}
+    fn default()->Self {Self {code:String::new(),remember:cfg!(windows),busy:false,status:String::new(),token:String::new(),origin:String::new(),loaded:false,refresh:std::time::Instant::now(),receiver:None}}
 }
 impl ServerAccess {
     pub fn token(&self)->String {if self.authenticated(){self.token.clone()}else{String::new()}}
@@ -53,7 +53,7 @@ impl ServerAccess {
         if !self.loaded {self.loaded=true;if let Ok(code)=load_code(address){self.code=code;self.start(address.to_owned(),device.to_owned(),ctx.clone());}}
         if let Some(rx)=&self.receiver {
             match rx.try_recv(){
-                Ok(result)=>{self.receiver=None;self.busy=false;match result {Ok((token,failed))=>{self.token=token;self.refresh=std::time::Instant::now();self.status=if failed{"Acesso liberado; não foi possível atualizar a chave salva neste Windows".into()}else{String::new()};},Err(e)=>{self.token.clear();self.status=e.to_string();}}},
+                Ok(result)=>{self.receiver=None;self.busy=false;match result {Ok((token,failed))=>{self.token=token;self.refresh=std::time::Instant::now();self.status=if failed{"Acesso liberado; não foi possível atualizar a chave salva neste dispositivo".into()}else{String::new()};},Err(e)=>{self.token.clear();self.status=e.to_string();}}},
                 Err(mpsc::TryRecvError::Disconnected)=>{self.receiver=None;self.busy=false;self.token.clear();self.status="Acesso interrompido; tente novamente".into();},
                 Err(mpsc::TryRecvError::Empty)=>{}
             }
@@ -96,6 +96,7 @@ pub fn create(address:&str,code:&str,title:&str,request_id:&str)->Result<Created
     Ok(CreatedRoom{invite:invite.to_owned(),title:title.to_owned()})
 }
 
+#[cfg(windows)]
 fn credential_path(address:&str)->Result<(std::path::PathBuf,Vec<u8>)> {
     use sha2::{Digest,Sha256};
     let origin=crate::invitation::endpoint(address,"/api/rooms")?.origin().ascii_serialization();
@@ -103,6 +104,7 @@ fn credential_path(address:&str)->Result<(std::path::PathBuf,Vec<u8>)> {
     let root=std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or_else(||anyhow::anyhow!("Windows profile unavailable"))?).join("HyperCast");
     Ok((root.join(format!("server-access-{fingerprint}.bin")),origin.into_bytes()))
 }
+#[cfg(windows)]
 fn crypt(data:&[u8],entropy:&[u8],protect:bool)->Result<Vec<u8>> {
     use windows::Win32::{Foundation::{HLOCAL,LocalFree},Security::Cryptography::*};
     ensure!(data.len()<=4096 && entropy.len()<=4096,"Credential size exceeded");
@@ -120,11 +122,13 @@ fn crypt(data:&[u8],entropy:&[u8],protect:bool)->Result<Vec<u8>> {
         LocalFree(Some(HLOCAL(output.pbData as *mut _)));result
     }
 }
+#[cfg(windows)]
 pub fn load_code(address:&str)->Result<String> {
     let(path,entropy)=credential_path(address)?;
     let mut sealed=Vec::new();std::fs::File::open(path)?.take(4097).read_to_end(&mut sealed)?;
     String::from_utf8(crypt(&sealed,&entropy,false)?).map_err(Into::into)
 }
+#[cfg(windows)]
 pub fn save_code(address:&str,code:&str)->Result<()> {
     let(path,entropy)=credential_path(address)?;
     let sealed=crypt(code.as_bytes(),&entropy,true)?;
@@ -138,12 +142,13 @@ pub fn save_code(address:&str,code:&str)->Result<()> {
     })();
     if result.is_err(){let _=std::fs::remove_file(staging);}result
 }
+#[cfg(windows)]
 pub fn forget_code(address:&str)->Result<()> {
     let(path,_)=credential_path(address)?;
     match std::fs::remove_file(path){Ok(())=>Ok(()),Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Ok(()),Err(e)=>Err(e.into())}
 }
 
-#[cfg(test)]
+#[cfg(all(test,windows))]
 mod tests {
     use super::*;
     #[test] fn dpapi_is_bound_to_user_and_origin(){
@@ -153,3 +158,12 @@ mod tests {
         assert!(crypt(&sealed,b"https://server-b",false).is_err());
     }
 }
+
+// Linux access credentials remain in memory until a Secret Service backend is
+// implemented. Never fall back to storing a shared server key in plaintext.
+#[cfg(not(windows))]
+pub fn load_code(_address:&str)->Result<String>{anyhow::bail!("Acesso salvo indisponível nesta plataforma")}
+#[cfg(not(windows))]
+pub fn save_code(_address:&str,_code:&str)->Result<()>{anyhow::bail!("A chave permanece somente nesta sessão")}
+#[cfg(not(windows))]
+pub fn forget_code(_address:&str)->Result<()>{Ok(())}
