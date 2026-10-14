@@ -148,6 +148,7 @@ impl Cast {
             40_000_000,
             codec,
         )?;
+        crate::diagnostics::write("encoder",encoder.backend_name(),"");
         // No Desktop Duplication frame is held while waiting for publication acknowledgment.
         let publisher = runtime.block_on(EncodedPublisher::in_room(
             room.clone(),

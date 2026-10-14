@@ -1,5 +1,9 @@
 # HyperCast
 
+Versão 0.6.1: botões compactos arredondados e padronizados, cartão de participantes
+com largura completa e encoder AMD AMF selecionado automaticamente.
+[Compatibilidade AMD e validação](docs/amd.md).
+
 Versão 0.6.0: autentique-se com a chave compartilhada de acesso ao servidor,
 crie salas pela interface e convide os amigos. A criação pede apenas nome da sala
 e seu apelido. [Como acessar e criar salas](docs/room-creation.md).
@@ -43,7 +47,7 @@ Uma amostra AV1 na RTX 4080 confirmou codificação 2560×1440 a 120,05 FPS méd
 
 ## Usar o aplicativo
 
-Abra `hypercast.exe` do ZIP ou instale a versão por usuário. Os pacotes incluem bibliotecas de mídia: o usuário não precisa instalar Rust, Python, FFmpeg ou Visual C++ Redistributable. Precisam de Windows 10 2004+ x64 e driver gráfico compatível. Publicação usa NVIDIA NVENC, driver 610+; AMF não está implementado.
+Abra `hypercast.exe` do ZIP ou instale a versão por usuário. Os pacotes incluem bibliotecas de mídia: o usuário não precisa instalar Rust, Python, FFmpeg ou Visual C++ Redistributable. Precisam de Windows 10 2004+ x64 e driver gráfico compatível. Publicação seleciona NVIDIA NVENC (driver 610+) ou AMD AMF (runtime do Adrenalin), conforme a GPU da captura. RX 5700 XT deve usar HEVC; não possui AV1 por hardware.
 
 Informe nome e convite, entre, escolha o monitor e use **Compartilhar minha tela**.
 Servidor público já vem preenchido; JWTs são obtidos automaticamente via HTTPS.
@@ -134,4 +138,4 @@ Integrações de mídia exigem GPU e SFU local. Screenshots de QA ficam apenas e
 
 Interface publica AV1 (padrão) ou HEVC, selecionável antes de compartilhar, camada única, P1 ultra-low-latency, CBR, sem B-frames/lookahead e GOP de um segundo. DXGI é não bloqueante; timer de alta resolução descarta ticks perdidos. Desktop estático repete a última imagem: 120 frames codificados/s não significam 120 mudanças distintas de conteúdo.
 
-Capturas HDR em scRGB/FP16 são convertidas na GPU para SDR antes do NVENC; a transmissão não preserva HDR. Não há AMF, composição de cursor separado, miniaturas vivas em camada reduzida ou recuperação automática completa após falha de rede/dispositivo. `ACCESS_LOST` tenta reconstruir DXGI no mesmo dispositivo. Há dois peer connections **para o mesmo SFU** por conflito ICE observado no modo single-PC da combinação fixada. Latência, jitter/perda, alta movimentação e 1440p@120 precisam de medição antes de uso em produção.
+Capturas HDR em scRGB/FP16 são convertidas na GPU para SDR antes do NVENC; a transmissão não preserva HDR. Não há composição de cursor separado, miniaturas vivas em camada reduzida ou recuperação automática completa após falha de rede/dispositivo. `ACCESS_LOST` tenta reconstruir DXGI no mesmo dispositivo. Há dois peer connections **para o mesmo SFU** por conflito ICE observado no modo single-PC da combinação fixada. Latência, jitter/perda, alta movimentação e 1440p@120 precisam de medição antes de uso em produção.

@@ -20,6 +20,16 @@ const ACCENT: Color32 = Color32::from_rgb(191, 239, 121);
 const SURFACE: Color32 = Color32::from_rgb(28, 35, 36);
 const DANGER: Color32 = Color32::from_rgb(235, 127, 119);
 
+fn compact_action(ui:&mut egui::Ui,label:&str,enabled:bool)->egui::Response {
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding=Vec2::new(10.0,4.0);
+        ui.spacing_mut().interact_size.y=26.0;
+        ui.add_enabled(enabled,egui::Button::new(RichText::new(label).size(11.0).color(MUTED))
+            .min_size(Vec2::new(0.0,26.0)).corner_radius(9).fill(SURFACE)
+            .stroke(egui::Stroke::new(1.0,BORDER)))
+    }).inner
+}
+
 fn update_action(ui: &mut egui::Ui, label: &str, primary: bool) -> egui::Response {
     ui.add_sized(
         [ui.available_width(), 40.0],
@@ -287,7 +297,7 @@ impl App {
                 });
             }
         });
-        if self.window_mode && ui.small_button("Atualizar janelas").clicked(){self.windows=crate::video_capture::windows();}
+        if self.window_mode && compact_action(ui,"Atualizar janelas",true).clicked(){self.windows=crate::video_capture::windows();}
         ui.label(RichText::new(if publishing{"Troque a origem sem parar o envio"}else if self.window_mode{"Apenas a janela escolhida"}else{"Seu monitor inteiro será compartilhado"}).size(11.0).color(MUTED));
         egui::CollapsingHeader::new(format!("Formato de vídeo · {}",if self.codec==crate::encoder::Codec::H265{"HEVC"}else{"AV1"})).id_salt("video_format").show(ui,|ui|{
             ui.horizontal(|ui|{
@@ -297,7 +307,7 @@ impl App {
                     if ui.add_enabled(!publishing,egui::Button::new(title).selected(selected).min_size(Vec2::new(width,38.0))).clicked(){self.codec=codec;}
                 }
             });
-            ui.label(RichText::new(if publishing{"Pare o envio para trocar o formato"}else if self.codec==crate::encoder::Codec::Av1{"Requer GPU com codificação AV1"}else{"Compatível com RTX 20, 30 e mais novas"}).size(11.0).color(MUTED));
+            ui.label(RichText::new(if publishing{"Pare o envio para trocar o formato"}else if self.codec==crate::encoder::Codec::Av1{"Envio e recepção exigem GPU compatível com AV1"}else{"NVIDIA e AMD com suporte HEVC por hardware"}).size(11.0).color(MUTED));
         });
         if publishing && self.target()!=old_target{
             if let (Some(engine),Some(target))=(&self.engine,self.target()){let _=engine.commands.send(Command::ChangeSource(target));}
@@ -308,9 +318,7 @@ impl App {
         ui.horizontal(|ui|{
         ui.label(RichText::new(if publishing{if active.is_some_and(|t|t.process().is_some()){"JANELA AO VIVO"}else{"MONITOR AO VIVO"}}else{"SEU COMPARTILHAMENTO" }).size(10.0).strong().color(if publishing{ACCENT}else{MUTED}));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
-            ui.spacing_mut().button_padding=Vec2::new(8.0,3.0);
-            if ui.add(egui::Button::new(RichText::new("Debug").size(11.0).color(MUTED))
-                .min_size(Vec2::new(54.0,24.0)).corner_radius(6).fill(SURFACE).stroke(egui::Stroke::new(1.0,BORDER))).on_hover_text("Diagnóstico e opções de depuração").clicked(){self.debug_open=!self.debug_open;}
+            if compact_action(ui,"Debug",true).on_hover_text("Diagnóstico e opções de depuração").clicked(){self.debug_open=!self.debug_open;}
         });
         });
         ui.scope(|ui|{
@@ -496,7 +504,9 @@ impl eframe::App for App {
                 if let (Some(engine), Some(display)) = (&self.engine, self.displays.first()) {
                     let window=std::env::var("HYPERCAST_SMOKE_WINDOW_PID").ok().and_then(|s|s.parse::<u32>().ok())
                         .and_then(|pid|self.windows.iter().find(|w|w.pid==pid));
-                    let command=if let Some(w)=window{Command::ShareWindow{adapter:display.adapter_index,hwnd:w.hwnd,pid:w.pid,codec:self.codec}}
+                    let window_adapter=std::env::var("HYPERCAST_SMOKE_WINDOW_ADAPTER").ok()
+                        .and_then(|value|value.parse::<u32>().ok()).unwrap_or(display.adapter_index);
+                    let command=if let Some(w)=window{Command::ShareWindow{adapter:window_adapter,hwnd:w.hwnd,pid:w.pid,codec:self.codec}}
                         else {Command::Share{adapter:display.adapter_index,output:display.output_index,codec:self.codec}};
                     let _ = engine.commands.send(command);
                     self.smoke_share_stage += 1;
@@ -564,7 +574,7 @@ impl eframe::App for App {
                             ui.label(RichText::new("HYPERCAST").size(16.0).strong());
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
                                 ui.label(RichText::new(if connected{"ONLINE"}else{"OFFLINE"}).size(10.0).color(if connected{ACCENT}else{MUTED}));
-                                if ui.small_button("Atualizar").on_hover_text("Verificar atualização do HyperCast").clicked(){
+                                if compact_action(ui,"Atualizar",true).on_hover_text("Verificar atualização do HyperCast").clicked(){
                                     self.updater.open=true;self.updater.check(ctx.clone());
                                 }
                             });
@@ -616,7 +626,7 @@ impl eframe::App for App {
                             }
                         });
                         if !self.token_mode && !self.server_access.status.is_empty(){ui.label(RichText::new(&self.server_access.status).size(11.0).color(MUTED));}
-                        if !self.token_mode && ui.add_enabled(!self.server_access.busy,egui::Button::new("Trocar acesso ao servidor").small()).clicked(){self.server_access.logout(&self.address);}
+                        if !self.token_mode && compact_action(ui,"Trocar acesso ao servidor",!self.server_access.busy).clicked(){self.server_access.logout(&self.address);}
                         }
                         }
                         ui.add_space(8.0);
@@ -669,13 +679,14 @@ impl eframe::App for App {
                         }
                         if people.is_empty() {
                             egui::Frame::new().fill(SURFACE).corner_radius(9).inner_margin(12).show(ui, |ui| {
-                                ui.set_min_width(ui.available_width()-24.0);
+                                ui.set_min_width(ui.available_width());
+                                ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
                                 ui.label(RichText::new(if connected { "Aguardando seus amigos" } else { "Seus amigos aparecem aqui" }).size(13.0).color(TEXT));
                                 ui.label(RichText::new(if connected { "Compartilhe o convite da sala com eles." } else { "Entre na sala para acompanhar as telas." }).size(11.0).color(MUTED));
                             });
                         }
                         if audio_status.starts_with("Áudio:") { ui.colored_label(DANGER,&audio_status); }
-                        if !source_error.is_empty(){ui.colored_label(DANGER,&source_error);}
+                        if !source_error.is_empty(){ui.add(egui::Label::new(RichText::new(&source_error).color(DANGER)).wrap());}
                         if !self.error.is_empty() {
                             ui.colored_label(Color32::LIGHT_RED, &self.error);
                         }

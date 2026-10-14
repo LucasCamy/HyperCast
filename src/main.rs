@@ -6,7 +6,7 @@ use anyhow::Result;
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(about = "HyperCast: GPU capture, NVENC publishing and selective receive diagnostics")]
+#[command(about = "HyperCast: GPU capture, hardware publishing and selective receive diagnostics")]
 struct Args {
     #[cfg(feature = "desktop")]
     #[arg(long)]
@@ -293,11 +293,12 @@ fn main() -> Result<()> {
     #[cfg(feature = "nvenc")]
     if encoded_frames > 0 {
         println!(
-            "NVENC measurement excludes encoder/room setup; includes pauses and congestion adaptation."
+            "GPU encode measurement excludes encoder/room setup; includes pauses and congestion adaptation."
         );
         encode_timings.sort_by(f64::total_cmp);
         println!(
-            "NVENC: {} frames, {:.2} FPS, {:.2} Mbps, copy+encode p95 {:.3} ms",
+            "{}: {} frames, {:.2} FPS, {:.2} Mbps, copy+encode p95 {:.3} ms",
+            encoder.as_ref().map_or("GPU",|e|e.backend_name()),
             encoded_frames,
             encoded_frames as f64 / start.elapsed().as_secs_f64(),
             encoded_bytes as f64 * 8.0 / start.elapsed().as_secs_f64() / 1_000_000.0,

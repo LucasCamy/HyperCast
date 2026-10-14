@@ -1,5 +1,7 @@
 fn main() {
     println!("cargo:rerun-if-changed=native/nvenc.cpp");
+    println!("cargo:rerun-if-changed=native/amf.cpp");
+    println!("cargo:rerun-if-changed=native/vendor/amf");
     println!("cargo:rerun-if-changed=native/capture_color.h");
     println!("cargo:rerun-if-changed=native/system_audio.cpp");
     println!("cargo:rerun-if-changed=native/window_capture.cpp");
@@ -26,12 +28,14 @@ fn main() {
             .cpp(true)
             .static_crt(true)
             .file("native/nvenc.cpp")
+            .file("native/amf.cpp")
             .file("native/presenter.cpp")
             .file("native/system_audio.cpp")
             .file("native/window_capture.cpp")
             .include("native/vendor")
             .flag_if_supported("/std:c++20")
             .flag_if_supported("/EHsc")
+            .flag_if_supported("/utf-8")
             .compile("hypercast_nvenc");
         println!("cargo:rustc-link-lib=d3d11");
         println!("cargo:rustc-link-lib=dxgi");

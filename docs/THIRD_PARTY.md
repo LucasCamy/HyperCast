@@ -27,3 +27,9 @@ O driver NVIDIA é fornecido pelo fabricante, não redistribuído pelo instalado
 Outras dependências Rust e respectivas versões/licenças constam do Cargo.lock
 e dos manifests. A biblioteca WebRTC pré-compilada possui componentes BSD/MIT/
 Apache; a NOTICE do fornecedor é incluída junto com o aplicativo.
+
+AMF SDK 1.5.2: headers MIT, copyright AMD preservado. Fonte fixada em
+https://github.com/GPUOpen-LibrariesAndSDKs/AMF/tree/8c648005e07d4309033282bfd9947df2c7e76104;
+headers em native/vendor/amf. AMF-LICENSE.txt acompanha os pacotes.
+O runtime AMD amfrt64.dll vem do Adrenalin e é carregado somente de System32;
+não é redistribuído. NVIDIA continua usando NVENC no dispositivo da captura.

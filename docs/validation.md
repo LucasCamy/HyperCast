@@ -1,5 +1,23 @@
 # Validação — 12 e 13/10/2026
 
+## Botões compactos e AMD AMF — 0.6.1, 14/10/2026
+
+Atualizar, Trocar acesso ao servidor, Atualizar janelas e Debug usam o mesmo
+controle de 26 px, texto de 11 px, borda e raio de 9 px. O cartão vazio dos
+participantes usa toda a largura interna, sem descontar o padding duas vezes.
+
+AMF testado na Radeon integrada do Ryzen 7 9700X (driver 32.0.21030.2001):
+120 quadros HEVC sintéticos 1280x720, quatro keyframes, BGRA e FP16 para SDR,
+reconfiguração, repetição, prévia GPU e decodificação D3D11VA. Integração WGC
+na AMD → seleção AMF no Rust → SFU → apresentação GPU no desktop passou.
+O teste do encoder síncrono ficou em cerca de 31 ms/quadro; não prova 120 FPS.
+A RX 5700 XT e QHD/120 precisam de teste no equipamento do usuário.
+AV1 não existe por hardware na RX 5700 XT; amigos devem transmitir HEVC para ela.
+NVIDIA HEVC → SFU → D3D11VA passou na RTX 5060 após a mudança de seleção.
+Veja [AMD](amd.md) para requisitos e limites, incluindo AV1 AMD ainda não validado.
+O pacote final repetiu a transmissão AMD pela janela; instalação por usuário,
+AV1 NVIDIA com recepção GPU e desinstalação limpa também passaram.
+
 ## Acesso compartilhado e criação de salas — 0.6.0, 14/10/2026
 
 22 testes Python passaram: autorização, escopo, assinatura, prazo, revogação,
