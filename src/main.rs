@@ -179,8 +179,8 @@ fn main() -> Result<()> {
         Some(runtime.block_on(hypercast::network::EncodedPublisher::open(
             address,
             &hypercast::network::token_from_env()?,
-            capture_width,
-            capture_height,
+            encoder.as_ref().map(|e|e.dimensions().0).unwrap_or(capture_width),
+            encoder.as_ref().map(|e|e.dimensions().1).unwrap_or(capture_height),
             args.fps,
             args.bitrate,
             matches!(args.codec, hypercast::encoder::Codec::Av1),

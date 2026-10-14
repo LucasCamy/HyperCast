@@ -15,9 +15,13 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <atomic>
+static std::atomic<unsigned> live_encoders{0};
 #include <stdexcept>
 #include <string>
 #include "capture_color.h"
+#include "capture_size.h"
+#include <amf/components/ComponentCaps.h>
 using Microsoft::WRL::ComPtr;
 namespace {
 void report(char* error,size_t capacity,const char* message) noexcept {
@@ -28,6 +32,7 @@ void check(AMF_RESULT result,const char* operation) {
 }
 void hr(HRESULT result,const char* operation){if(FAILED(result))throw std::runtime_error(std::string(operation)+": HRESULT "+std::to_string(result));}
 struct Encoder {
+    Encoder(){++live_encoders;}
     HMODULE dll=nullptr;
     amf::AMFContextPtr amf_context;
     amf::AMFComponentPtr converter,encoder;
@@ -36,9 +41,10 @@ struct Encoder {
     ComPtr<ID3D11Texture2D> input;
     ComPtr<ID3D11Query> fence;
     CaptureColor color;
-    uint32_t width=0,height=0,fps=0;
+    uint32_t width=0,height=0,fps=0,source_width=0,source_height=0;
     bool av1=false,ready=false;
     ~Encoder() noexcept {
+        --live_encoders;
         if(encoder){encoder->Terminate();encoder=nullptr;}
         if(converter){converter->Terminate();converter=nullptr;}
         if(amf_context){amf_context->Terminate();amf_context=nullptr;}
@@ -46,9 +52,9 @@ struct Encoder {
     }
     template<class T> void property(const wchar_t* name,T value,const char* operation){check(encoder->SetProperty(name,value),operation);}
     void open(ID3D11Device* d,uint32_t w,uint32_t h,uint32_t f,uint32_t bitrate,bool use_av1){
-        if(!d || !w || !h || w>3840 || h>2160 || w%2 || h%2 || f<1 || f>240 || bitrate<1000000 || bitrate>45000000)
-            throw std::runtime_error("Invalid AMF configuration (even dimensions <=3840x2160, 1-240 FPS, 1-45 Mbps)");
-        width=w;height=h;fps=f;av1=use_av1;device=d;
+        if(!d || !hc_capture_size(w,h) || f<1 || f>240 || bitrate<1000000 || bitrate>45000000)
+            throw std::runtime_error("Invalid AMF configuration (maximum 8192 per axis and 32 megapixels, 1-240 FPS, 1-45 Mbps)");
+        source_width=w;source_height=h;fps=f;av1=use_av1;device=d;
         ComPtr<IDXGIDevice> dxgi;ComPtr<IDXGIAdapter> adapter;DXGI_ADAPTER_DESC desc{};
         hr(device.As(&dxgi),"Query AMF adapter");hr(dxgi->GetAdapter(&adapter),"Get AMF adapter");hr(adapter->GetDesc(&desc),"Describe AMF adapter");
         if(desc.VendorId!=0x1002)throw std::runtime_error("AMF requires a capture device on an AMD GPU");
@@ -67,6 +73,15 @@ struct Encoder {
         check(amf_context->InitDX11(device.Get()),"Initialize AMF D3D11 interop");
         AMF_RESULT result=factory->CreateComponent(amf_context,av1?AMFVideoEncoder_AV1:AMFVideoEncoder_HEVC,&encoder);
         if(result!=AMF_OK || !encoder)throw std::runtime_error(av1?"Esta GPU AMD não oferece codificação AV1 por hardware. Selecione HEVC (H.265).":"HEVC por hardware indisponível nesta GPU/driver AMD.");
+        amf::AMFCapsPtr caps;check(encoder->GetCaps(&caps),"Query AMF encoder capabilities");
+        if(!caps)throw std::runtime_error("Invalid AMF encoder capabilities");
+        amf::AMFIOCapsPtr input_caps;check(caps->GetInputCaps(&input_caps),"Query AMF input capabilities");
+        if(!input_caps)throw std::runtime_error("Invalid AMF input capabilities");
+        amf_int32 min_w=0,max_w=0,min_h=0,max_h=0;
+        input_caps->GetWidthRange(&min_w,&max_w);input_caps->GetHeightRange(&min_h,&max_h);
+        if(max_w<2 || max_h<2)throw std::runtime_error("Invalid AMF resolution capabilities");
+        hc_fit_size(w,h,uint32_t(max_w),uint32_t(max_h));width=w;height=h;
+        if(w<uint32_t(std::max(2,min_w)) || h<uint32_t(std::max(2,min_h)))throw std::runtime_error("Source smaller than AMF minimum resolution");
         if(av1){
             property(AMF_VIDEO_ENCODER_AV1_USAGE,amf_int64(AMF_VIDEO_ENCODER_AV1_USAGE_ULTRA_LOW_LATENCY),"Set AMF AV1 low latency");
             property(AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET,amf_int64(AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_SPEED),"Set AMF AV1 speed");
@@ -125,9 +140,9 @@ struct Encoder {
         if(source){
             D3D11_TEXTURE2D_DESC desc{};source->GetDesc(&desc);ComPtr<ID3D11Device> owner;source->GetDevice(&owner);
             if(owner.Get()!=device.Get())throw std::runtime_error("Capture device changed; rebuild GPU pipeline");
-            if(desc.Width!=width || desc.Height!=height)throw std::runtime_error("Capture dimensions changed; rebuild GPU pipeline");
+            if(desc.Width!=source_width || desc.Height!=source_height)throw std::runtime_error("Capture dimensions changed; rebuild GPU pipeline");
             if(desc.SampleDesc.Count!=1 || desc.ArraySize!=1 || desc.MipLevels!=1 || (desc.Format!=DXGI_FORMAT_B8G8R8A8_UNORM && desc.Format!=DXGI_FORMAT_R16G16B16A16_FLOAT))throw std::runtime_error("Unsupported capture texture layout for AMD AMF");
-            if(desc.Format==DXGI_FORMAT_R16G16B16A16_FLOAT)color.convert(device.Get(),context.Get(),source,input.Get());
+            if(desc.Format==DXGI_FORMAT_R16G16B16A16_FLOAT || desc.Width!=width || desc.Height!=height)color.convert(device.Get(),context.Get(),source,input.Get());
             else context->CopyResource(input.Get(),source);
             wait_copy();ready=true;
         }
@@ -155,6 +170,8 @@ struct Encoder {
 };
 }
 extern "C" {
+unsigned hc_amf_live_encoders() noexcept {return live_encoders.load();}
+void hc_amf_size(void* handle,uint32_t* w,uint32_t* h) noexcept {if(handle && w && h){auto* e=static_cast<Encoder*>(handle);*w=e->width;*h=e->height;}}
 void* hc_amf_open(void* device,uint32_t w,uint32_t h,uint32_t fps,uint32_t bitrate,uint32_t av1,char* error,size_t capacity) noexcept {
     try{auto value=std::make_unique<Encoder>();value->open(static_cast<ID3D11Device*>(device),w,h,fps,bitrate,av1!=0);return value.release();}
     catch(const std::exception& e){report(error,capacity,e.what());}catch(...){report(error,capacity,"Unknown AMF initialization error");}return nullptr;

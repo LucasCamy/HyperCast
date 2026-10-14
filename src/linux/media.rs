@@ -154,7 +154,13 @@ impl Capture {
                     None,
                 )
             }
-            Source::Test => ("videotestsrc is-live=true pattern=ball".into(), None, None),
+            Source::Test => {
+                let size=std::env::var("HYPERCAST_LINUX_TEST_SIZE").unwrap_or_else(|_|"640x360".into());
+                let (w,h)=size.split_once('x').context("Invalid synthetic size")?;
+                let (w,h)=(w.parse::<u32>()?,h.parse::<u32>()?);
+                ensure!(crate::resolution::valid(w,h),"Invalid synthetic size");
+                (format!("videotestsrc is-live=true pattern=ball ! video/x-raw,width={w},height={h}"),None,None)
+            },
         };
         let fps = if encoder == Encoder::Software {
             30
@@ -180,11 +186,7 @@ impl Capture {
         } else {
             "NV12"
         };
-        let raw = if source == Source::Test {
-            "video/x-raw,width=640,height=360"
-        } else {
-            "video/x-raw"
-        };
+        let raw="video/x-raw";
         let parser = if codec == Codec::Av1 {
             "av1parse ! video/x-av1,stream-format=obu-stream,alignment=tu"
         } else {
@@ -192,7 +194,7 @@ impl Capture {
         };
         // Only encoded access units enter Rust RAM. The initial portable source
         // conversion can negotiate CPU buffers; DMA-BUF zero-copy is not guaranteed.
-        let pipeline=gst::parse::launch(&format!("{description} ! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! videorate drop-only=true max-rate={fps} ! videoconvert ! {raw},format={raw_format},framerate={fps}/1 ! {chain} ! {parser} ! appsink name=encoded sync=false max-buffers=2 drop=true"))?
+        let pipeline=gst::parse::launch(&format!("{description} ! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! identity name=source_bounds ! videorate drop-only=true max-rate={fps} ! videoconvertscale ! capsfilter name=scaled ! {raw},format={raw_format},framerate={fps}/1 ! {chain} ! {parser} ! appsink name=encoded sync=false max-buffers=2 drop=true"))?
             .downcast::<gst::Pipeline>().map_err(|_|anyhow::anyhow!("Invalid capture pipeline"))?;
         let sink = pipeline
             .by_name("encoded")
@@ -200,6 +202,27 @@ impl Capture {
             .downcast::<AppSink>()
             .unwrap();
         let encoder_element = pipeline.by_name("encoder").unwrap();
+        let supported=encoder_element.static_pad("sink").context("Encoder input missing")?.query_caps(None);
+        let scaled=pipeline.by_name("scaled").unwrap().downgrade();
+        pipeline.by_name("source_bounds").unwrap().static_pad("src").unwrap().add_probe(gst::PadProbeType::EVENT_DOWNSTREAM,move |pad,info| {
+            let Some(gst::PadProbeData::Event(event))=&info.data else{return gst::PadProbeReturn::Ok;};
+            let gst::EventView::Caps(event)=event.view() else{return gst::PadProbeReturn::Ok;};
+            let size=event.caps().structure(0).and_then(|s|Some((s.get::<i32>("width").ok()?,s.get::<i32>("height").ok()?)));
+            let Some((w,h))=size.filter(|(w,h)|*w>=2 && *h>=2 && crate::resolution::valid(*w as u32,*h as u32)) else {
+                if let Some(element)=pad.parent_element(){gst::element_error!(element,gst::StreamError::Format,["Capture exceeds 8192 per axis or 32 megapixels"]);}
+                return gst::PadProbeReturn::Drop;
+            };
+            for (max_w,max_h) in [(8192,8192),(4096,4096),(3840,2160),(3440,1440),(2560,1440),(1920,1080)] {
+                let (w,h)=crate::resolution::fit(w as u32,h as u32,max_w,max_h).unwrap();
+                let caps=gst::Caps::builder("video/x-raw").field("format",raw_format).field("width",w as i32).field("height",h as i32).field("pixel-aspect-ratio",gst::Fraction::new(1,1)).build();
+                if caps.can_intersect(&supported) {
+                    if let Some(scaled)=scaled.upgrade(){scaled.set_property("caps",caps);}
+                    return gst::PadProbeReturn::Ok;
+                }
+            }
+            if let Some(element)=pad.parent_element(){gst::element_error!(element,gst::StreamError::Format,["No compatible encoder resolution"]);}
+            gst::PadProbeReturn::Drop
+        });
         if chain.starts_with("nv") {
             ensure!(
                 enum_property(&encoder_element, "preset", "p1"),
@@ -277,8 +300,8 @@ impl Capture {
         let width = structure.get::<i32>("width")?;
         let height = structure.get::<i32>("height")?;
         ensure!(
-            (1..=3840).contains(&width) && (1..=2160).contains(&height),
-            "Origem maior que 3840 × 2160; reduza a resolução"
+            (2..=8192).contains(&width) && (2..=8192).contains(&height) && i64::from(width)*i64::from(height)<=33_554_432,
+            "Origem excede 8192 pixels por eixo ou 32 megapixels"
         );
         let data = buffer.map_readable()?;
         ensure!(data.len() <= 16 * 1024 * 1024, "Encoded frame too large");
@@ -463,10 +486,7 @@ pub async fn media_self_test() -> Result<()> {
                 }
                 key |= packet.keyframe;
                 frames += 1;
-                ensure!(
-                    packet.width == 640 && packet.height == 360,
-                    "Invalid capture dimensions"
-                );
+                ensure!(crate::resolution::valid(packet.width,packet.height),"Invalid capture dimensions");
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -562,6 +582,7 @@ pub async fn publish_self_test(address: &str, seconds: u32) -> Result<()> {
                             continue;
                         }
                     }
+                    publisher.set_resolution_if_changed(packet.width,packet.height);
                     if publisher.push(&packet.bytes, packet.timestamp_us, packet.keyframe)? {
                         frames += 1;
                     }

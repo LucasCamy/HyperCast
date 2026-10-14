@@ -80,7 +80,7 @@ class LinuxDecoder final:public webrtc::VideoDecoder {
       context_=f.avcodec_alloc_context3_fn(codec);if(!context_){Release();return false;}
       context_->opaque=this;context_->get_format=&format;
       if(device_)context_->hw_device_ctx=f.av_buffer_ref_fn(device_);
-      context_->max_pixels=3840LL*2160;context_->thread_count=2;context_->flags|=AV_CODEC_FLAG_LOW_DELAY;
+      context_->max_pixels=33554432LL;context_->thread_count=2;context_->flags|=AV_CODEC_FLAG_LOW_DELAY;
       context_->pkt_timebase=AVRational{1,90000};
       if(f.avcodec_open2_fn(context_,codec,nullptr)<0){Release();return false;}
       return true;
@@ -108,7 +108,7 @@ class LinuxDecoder final:public webrtc::VideoDecoder {
       if(decoded->hw_frames_ctx){
         if(f.av_hwframe_transfer_data_fn(cpu,decoded,0)<0){result=-1;break;}source=cpu;
       }
-      if(source->width<=0||source->height<=0||source->width>3840||source->height>2160){result=-1;break;}
+      if(source->width<=0||source->height<=0||source->width>8192||source->height>8192||int64_t(source->width)*source->height>33554432LL){result=-1;break;}
       auto buffer=webrtc::I420Buffer::Create(source->width,source->height);
       int converted=-1;
       const int w=source->width,h=source->height,cw=(w+1)/2;
@@ -164,7 +164,7 @@ class LinuxDecoder final:public webrtc::VideoDecoder {
     Release();using_av1_hw_=false;hardware_used_=false;
     auto& f=ff();auto codec=f.avcodec_find_decoder_by_name_fn("libdav1d");if(!codec)return false;
     context_=f.avcodec_alloc_context3_fn(codec);if(!context_)return false;
-    context_->max_pixels=3840LL*2160;context_->thread_count=2;context_->flags|=AV_CODEC_FLAG_LOW_DELAY;context_->pkt_timebase=AVRational{1,90000};
+    context_->max_pixels=33554432LL;context_->thread_count=2;context_->flags|=AV_CODEC_FLAG_LOW_DELAY;context_->pkt_timebase=AVRational{1,90000};
     if(f.avcodec_open2_fn(context_,codec,nullptr)<0){Release();return false;}return true;
   }
   bool using_av1_hw_=false;

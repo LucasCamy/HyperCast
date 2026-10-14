@@ -363,7 +363,7 @@ async fn session(
                             let mut stream=NativeVideoStream::with_options(track.rtc_track(),NativeVideoStreamOptions{queue_size_frames:Some(1)});
                             let state=shared.clone();let repaint=ctx.clone();let key=sid.clone();let mut sequence=0;
                             video_sinks.insert(sid,Sink(tokio::spawn(async move{
-                                while let Some(frame)=stream.next().await {let w=frame.buffer.width();let h=frame.buffer.height();if w==0||h==0||w>3840||h>2160{continue;}
+                                while let Some(frame)=stream.next().await {let w=frame.buffer.width();let h=frame.buffer.height();if !crate::resolution::valid(w,h){continue;}
                                     sequence+=1;let mut s=state.lock().unwrap();s.received+=1;s.frames.insert(key.clone(),(sequence,Arc::new(frame)));drop(s);repaint.request_repaint();}
                             })));
                         }

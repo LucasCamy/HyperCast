@@ -1,6 +1,7 @@
 // Free-threaded Windows Graphics Capture. Pixels stay on the selected GPU.
 #define NOMINMAX
 #include <windows.h>
+#include "capture_size.h"
 #include <dwmapi.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
@@ -64,8 +65,8 @@ struct WindowCapture {
     void validate(){ DWORD current=0; GetWindowThreadProcessId(window,&current);
         if(!IsWindow(window)||!pid||current!=pid||pid==GetCurrentProcessId()||closed->load())
             throw std::runtime_error("A janela selecionada foi fechada ou mudou de processo"); }
-    static void validate_size(SizeInt32 s){ if(s.Width<2||s.Height<2||s.Width>3840||s.Height>2160)
-        throw std::runtime_error("Janela deve ter entre 2x2 e 3840x2160 pixels"); }
+    static void validate_size(SizeInt32 s){ if(!hc_capture_size(s.Width,s.Height))
+        throw std::runtime_error("Janela excede 8192 pixels por eixo ou 32 megapixels"); }
     com_ptr<ID3D11Texture2D> acquire(){
         validate(); if(IsIconic(window)) return nullptr;
         auto frame=pool.TryGetNextFrame(); if(!frame) return nullptr;
@@ -73,8 +74,8 @@ struct WindowCapture {
         auto access=frame.Surface().as<::Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
         com_ptr<ID3D11Texture2D> source; check_hresult(access->GetInterface(__uuidof(ID3D11Texture2D),source.put_void()));
         D3D11_TEXTURE2D_DESC desc{}; source->GetDesc(&desc);
-        UINT width=std::min(desc.Width,static_cast<UINT>(content.Width))&~1u;
-        UINT height=std::min(desc.Height,static_cast<UINT>(content.Height))&~1u;
+        UINT width=std::min(desc.Width,static_cast<UINT>(content.Width));
+        UINT height=std::min(desc.Height,static_cast<UINT>(content.Height));
         if(!width||!height) return nullptr;
         desc.Width=width;desc.Height=height;desc.MipLevels=1;desc.ArraySize=1;desc.Usage=D3D11_USAGE_DEFAULT;
         desc.BindFlags=D3D11_BIND_SHADER_RESOURCE;desc.CPUAccessFlags=0;desc.MiscFlags=0;
@@ -95,7 +96,7 @@ void* hc_window_open(size_t hwnd, unsigned pid, unsigned adapter, char* error,si
     try{return new WindowCapture(reinterpret_cast<HWND>(hwnd),pid,adapter);}catch(hresult_error const& e){report(error,capacity,to_string(e.message()).c_str());}catch(std::exception const& e){report(error,capacity,e.what());}catch(...){report(error,capacity,"Window capture failed");}return nullptr;
 }
 void* hc_window_device(void* handle) noexcept {auto* c=static_cast<WindowCapture*>(handle);c->device->AddRef();return c->device.get();}
-void hc_window_size(void* handle,unsigned* w,unsigned* h) noexcept {auto* c=static_cast<WindowCapture*>(handle);*w=c->size.Width&~1u;*h=c->size.Height&~1u;}
+void hc_window_size(void* handle,unsigned* w,unsigned* h) noexcept {auto* c=static_cast<WindowCapture*>(handle);*w=c->size.Width;*h=c->size.Height;}
 int hc_window_frame(void* handle,void** texture,char* error,size_t capacity) noexcept {
     *texture=nullptr;try{auto frame=static_cast<WindowCapture*>(handle)->acquire();*texture=frame.detach();return 0;}
     catch(hresult_error const& e){report(error,capacity,to_string(e.message()).c_str());}catch(std::exception const& e){report(error,capacity,e.what());}catch(...){report(error,capacity,"Window capture failed");}return -1;

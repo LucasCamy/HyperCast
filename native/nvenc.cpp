@@ -11,10 +11,13 @@
 #include <algorithm>
 #include <cstring>
 #include <memory>
+#include <atomic>
+static std::atomic<unsigned> live_encoders{0};
 #include <stdexcept>
 #include <string>
 #include <vector>
 #include "capture_color.h"
+#include "capture_size.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -27,6 +30,7 @@ static void report(char* error, size_t capacity, const char* message) noexcept {
 }
 
 struct Encoder {
+    Encoder(){++live_encoders;}
     HMODULE dll = nullptr;
     NV_ENCODE_API_FUNCTION_LIST api{};
     void* session = nullptr;
@@ -40,11 +44,12 @@ struct Encoder {
     ComPtr<ID3D11Query> copy_done;
     NV_ENC_CONFIG config{};
     NV_ENC_INITIALIZE_PARAMS init{};
-    uint32_t width = 0, height = 0, fps = 0;
+    uint32_t width = 0, height = 0, fps = 0, source_width = 0, source_height = 0;
     bool input_ready = false;
     CaptureColor capture_color;
 
     ~Encoder() noexcept {
+        --live_encoders;
         if (session) {
             if (output_locked) api.nvEncUnlockBitstream(session, output);
             if (mapped) api.nvEncUnmapInputResource(session, mapped);
@@ -70,9 +75,9 @@ struct Encoder {
     }
 
     void open(ID3D11Device* d, uint32_t w, uint32_t h, uint32_t f, uint32_t bitrate, bool av1) {
-        if (!d || !w || !h || w > 3840 || h > 2160 || w % 2 || h % 2 || f < 1 || f > 240 || bitrate < 1000000 || bitrate > 45000000)
-            throw std::runtime_error("Invalid NVENC configuration (max 3840x2160, even dimensions, 1-240 FPS, 1-45 Mbps)");
-        width = w; height = h; fps = f; device = d;
+        if (!d || !hc_capture_size(w,h) || f < 1 || f > 240 || bitrate < 1000000 || bitrate > 45000000)
+            throw std::runtime_error("Invalid NVENC configuration (max 8192 per axis and 32 megapixels, 1-240 FPS, 1-45 Mbps)");
+        source_width=w;source_height=h;fps=f;device=d;
         ComPtr<IDXGIDevice> dxgi_device;
         ComPtr<IDXGIAdapter> adapter;
         DXGI_ADAPTER_DESC adapter_desc{};
@@ -116,6 +121,12 @@ struct Encoder {
             throw std::runtime_error(av1
                 ? "AV1 hardware encoding is not supported by this GPU. Select HEVC/H.265 (Test-Streaming.ps1 -Role Publisher -Codec h265)."
                 : "HEVC/H.265 hardware encoding is not supported by this GPU.");
+        NV_ENC_CAPS_PARAM caps{};caps.version=NV_ENC_CAPS_PARAM_VER;
+        int max_w=0,max_h=0;
+        caps.capsToQuery=NV_ENC_CAPS_WIDTH_MAX;check(api.nvEncGetEncodeCaps(session,codec,&caps,&max_w),"Query NVENC maximum width");
+        caps.capsToQuery=NV_ENC_CAPS_HEIGHT_MAX;check(api.nvEncGetEncodeCaps(session,codec,&caps,&max_h),"Query NVENC maximum height");
+        if(max_w<2 || max_h<2)throw std::runtime_error("Invalid NVENC resolution capabilities");
+        hc_fit_size(w,h,uint32_t(max_w),uint32_t(max_h));width=w;height=h;
         NV_ENC_PRESET_CONFIG preset{};
         preset.version = NV_ENC_PRESET_CONFIG_VER;
         preset.presetCfg.version = NV_ENC_CONFIG_VER;
@@ -196,13 +207,13 @@ struct Encoder {
         ComPtr<ID3D11Device> owner; source->GetDevice(&owner);
         if (owner.Get() != device.Get())
             throw std::runtime_error("Capture device changed; rebuild GPU pipeline");
-        if (desc.Width != width || desc.Height != height)
+        if (desc.Width != source_width || desc.Height != source_height)
             throw std::runtime_error("Capture dimensions changed: expected " + std::to_string(width) + "x" + std::to_string(height) +
                 ", received " + std::to_string(desc.Width) + "x" + std::to_string(desc.Height) + "; rebuild GPU pipeline");
         if ((desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM && desc.Format != DXGI_FORMAT_R16G16B16A16_FLOAT) || desc.SampleDesc.Count != 1 || desc.ArraySize != 1 || desc.MipLevels != 1)
             throw std::runtime_error("Unsupported capture texture layout: format=" + std::to_string(desc.Format) +
                 " samples=" + std::to_string(desc.SampleDesc.Count) + " array=" + std::to_string(desc.ArraySize) + " mips=" + std::to_string(desc.MipLevels));
-        if (desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT)
+        if (desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT || desc.Width!=width || desc.Height!=height)
             capture_color.convert(device.Get(), context.Get(), source, input.Get());
         else
             context->CopyResource(input.Get(), source);
@@ -246,6 +257,8 @@ struct Encoder {
 };
 
 extern "C" {
+unsigned hc_nvenc_live_encoders() noexcept {return live_encoders.load();}
+void hc_nvenc_size(void* handle,uint32_t* w,uint32_t* h) noexcept {if(handle && w && h){auto* e=static_cast<Encoder*>(handle);*w=e->width;*h=e->height;}}
 void* hc_nvenc_open(void* device, uint32_t w, uint32_t h, uint32_t fps, uint32_t bitrate,
                     uint32_t av1, char* error, size_t capacity) noexcept {
     try {

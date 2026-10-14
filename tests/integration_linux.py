@@ -28,8 +28,11 @@ def main():
         windows=Path(os.environ.get('HYPERCAST_WINDOWS_EXE',str(ROOT/'dist/HyperCast-0.6.5-windows-x64/hypercast.exe')))
         file=(ROOT/'.tools/linux-windows.log').open('wb');logs.append(file)
         child=subprocess.Popen([str(windows),'--receive-url','wss://hypercast.cloudlane.com.br','--seconds','17'],env={**base,'HYPERCAST_ROOM_TOKEN':token(False)},stdout=file,stderr=subprocess.STDOUT);children.append(child)
+        if os.environ.get('HYPERCAST_LINUX_TEST_SIZE'):
+            file=(ROOT/'.tools/linux-windows-gui.log').open('wb');logs.append(file)
+            viewer=subprocess.Popen([str(windows),'--gui'],env={**base,'HYPERCAST_ROOM_TOKEN':token(False),'HYPERCAST_URL':'wss://hypercast.cloudlane.com.br','HYPERCAST_AUTO_CONNECT':'1','HYPERCAST_SMOKE_SECONDS':'15','HYPERCAST_SMOKE_RECONNECT':'1','HYPERCAST_NAME':'SyntheticViewer'},stdout=file,stderr=subprocess.STDOUT);children.append(viewer)
         time.sleep(3)
-        pub=launch_linux('publisher',command('--linux-publish-test-url','wss://hypercast.cloudlane.com.br','--seconds','11'),{n:os.environ[n] for n in ('HYPERCAST_LINUX_TEST_GPU','HYPERCAST_LINUX_TEST_CODEC') if n in os.environ})
+        pub=launch_linux('publisher',command('--linux-publish-test-url','wss://hypercast.cloudlane.com.br','--seconds','11'),{n:os.environ[n] for n in ('HYPERCAST_LINUX_TEST_GPU','HYPERCAST_LINUX_TEST_CODEC','HYPERCAST_LINUX_TEST_SIZE') if n in os.environ})
         for child in children:
             code=child.wait(timeout=55);assert code==0,f'A media client failed with exit {code}; inspect local logs without credentials'
         for file in logs:file.close()
@@ -41,7 +44,15 @@ def main():
         windows_log=(ROOT/'.tools/linux-windows.log').read_text(encoding='utf-8',errors='replace')
         assert int(re.search(r'Receiver GPU: (\d+) D3D11 texture frames',windows_log)[1])>100,'Windows did not receive Linux HEVC in GPU'
         assert int(re.search(r'Linux synthetic publisher: (\d+) frames',read('publisher'))[1])>100,'Linux publication failed'
-        print('PASS: Linux HEVC publishing, Linux decoded reception/audio and GUI textures, Windows GPU reception through SFU')
+        if os.environ.get('HYPERCAST_LINUX_TEST_SIZE'):
+            output=(ROOT/'.tools/linux-windows-gui.log').read_text(encoding='utf-8',errors='replace')
+            match=re.search(r'GUI smoke: (\d+) received, (\d+) GPU presentations',output)
+            assert match and int(match[2])>50,'Windows did not present ultrawide D3D11 frames'
+            assert 'GUI lifecycle: 0 retained GPU decoder surfaces after disconnect' in output,'Windows decoder surfaces survived teardown'
+        if os.environ.get('HYPERCAST_LINUX_TEST_SIZE')=='4587x1920':
+            assert '4588x1920' in windows_log,'Windows did not decode the native ultrawide size'
+            assert '4588x1920' in (read('receiver')+read('gui')),'Linux did not decode the native ultrawide size'
+        print(f'PASS: Linux {os.environ.get("HYPERCAST_LINUX_TEST_CODEC","hevc").upper()} publishing, Linux decoded reception/audio and GUI textures, Windows GPU reception through SFU')
     finally:
         for child in children:
             if child.poll() is None:child.terminate();child.wait(timeout=10)

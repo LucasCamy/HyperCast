@@ -151,10 +151,12 @@ impl Cast {
         )?;
         crate::diagnostics::write("encoder",encoder.backend_name(),"");
         // No Desktop Duplication frame is held while waiting for publication acknowledgment.
+        let (send_width,send_height)=encoder.dimensions();
+        crate::diagnostics::write("resolution",&format!("source={width}x{height} output={send_width}x{send_height}"),"");
         let publisher = runtime.block_on(EncodedPublisher::in_room(
             room.clone(),
-            width,
-            height,
+            send_width,
+            send_height,
             120,
             40_000_000,
             codec == Codec::Av1,
@@ -183,7 +185,7 @@ impl Cast {
             if (desc.Width,desc.Height)!=self.dimensions {
                 self.encoder=Some(HardwareEncoder::new(&self.device,desc.Width,desc.Height,120,40_000_000,self.selection.1)?);
                 self.dimensions=(desc.Width,desc.Height);
-                if let Some(p)=&mut self.publisher {p.set_resolution(desc.Width,desc.Height);}
+                if let Some(p)=&mut self.publisher {let (w,h)=self.encoder.as_ref().unwrap().dimensions();p.set_resolution(w,h);}
             }
         }
         if !self.has_frame && frame.is_none() {
@@ -227,10 +229,11 @@ impl Cast {
         let capture=VideoCapture::new(target)?;
         let dimensions=capture.dimensions();let device=capture.device().clone();
         let encoder=HardwareEncoder::new(&device,dimensions.0,dimensions.1,120,40_000_000,self.selection.1)?;
+        let send_size=encoder.dimensions();
         let change_audio=self.selection.0.process()!=target.process();
         if change_audio {if let Some(audio)=&self.audio{audio.set_process(target.process())?;}}
         self.capture=capture;self.device=device;self.encoder=Some(encoder);self.dimensions=dimensions;self.selection.0=target;self.has_frame=false;
-        if let Some(p)=&mut self.publisher {p.set_resolution(dimensions.0,dimensions.1);}
+        if let Some(p)=&mut self.publisher {p.set_resolution(send_size.0,send_size.1);}
         crate::diagnostics::write("source_switch",&format!("{}x{} application={}",dimensions.0,dimensions.1,target.process().is_some()),"");
         if change_audio && self.audio.is_none() {self.set_audio(audio_requested,runtime,room)?;}
         Ok(())
@@ -700,7 +703,8 @@ impl Engine {
                                 } else if value.paused {
                                     "Compartilhamento ativo • envio pausado".into()
                                 } else {
-                                    if value.selection.0.process().is_some(){"Compartilhando janela do aplicativo".into()}else{"Compartilhando sua tela".into()}
+                                    let (w,h)=value.encoder.as_ref().map(|e|e.dimensions()).unwrap_or(value.dimensions);
+                                    format!("{} · {w}×{h}",if value.selection.0.process().is_some(){"Compartilhando janela do aplicativo"}else{"Compartilhando sua tela"})
                                 }
                                 .into();
                             }

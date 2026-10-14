@@ -15,7 +15,7 @@ def main():
     def token(identity,name):
         return rt.sign({'iss':key,'sub':{'control-a':'hc-screen-1','control-b':'hc-screen-2','control-viewer':'hc-screen-3'}[identity],'name':name,'nbf':now-5,'exp':now+180,'video':{'room':room,'roomJoin':True,'canPublish':True,'canSubscribe':True,'canPublishData':False,'canPublishSources':['screen_share','screen_share_audio']}},secret)
     base={k:v for k,v in os.environ.items() if not k.startswith(('HYPERCAST_','LIVEKIT_','GH_','GITHUB_'))}
-    exe=Path(os.environ.get('HYPERCAST_WINDOWS_EXE',str(ROOT/'dist/HyperCast-0.7.1-windows-x64/hypercast.exe')))
+    exe=Path(os.environ.get('HYPERCAST_WINDOWS_EXE',str(ROOT/'dist/HyperCast-0.7.2-windows-x64/hypercast.exe')))
     linux=os.environ.get('HYPERCAST_LINUX_EXE','/home/lucas/hypercast-target/release/hypercast')
     children=[];logs=[]
     def control(name='',*flags):

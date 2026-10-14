@@ -126,7 +126,7 @@ class GPUDecoder : public webrtc::VideoDecoder {
       return AV_PIX_FMT_NONE;
     };
     context_->thread_count = 1;
-    context_->max_pixels = 3840LL * 2160; // Bound allocation before receiving a surface.
+    context_->max_pixels = 33554432LL; // Bound allocation before receiving a surface.
     context_->flags |= AV_CODEC_FLAG_LOW_DELAY;
     context_->extra_hw_frames = 4;
     int opened = avcodec_open2(context_, decoder, nullptr);
@@ -148,7 +148,7 @@ class GPUDecoder : public webrtc::VideoDecoder {
     AVFrame* decoded = av_frame_alloc();
     if (!decoded) return -1;
     while (avcodec_receive_frame(context_, decoded) == 0) {
-      if (decoded->format != AV_PIX_FMT_D3D11 || !decoded->data[0] || decoded->width <= 0 || decoded->height <= 0 || decoded->width > 3840 || decoded->height > 2160) {
+      if (decoded->format != AV_PIX_FMT_D3D11 || !decoded->data[0] || decoded->width <= 0 || decoded->height <= 0 || decoded->width > 8192 || decoded->height > 8192 || int64_t(decoded->width)*decoded->height > 33554432LL) {
         av_frame_free(&decoded); return -1;
       }
       try {

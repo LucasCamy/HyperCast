@@ -1,5 +1,9 @@
 # HyperCast
 
+0.7.2 aceita telas e janelas ultrawide maiores que 3840 pixels. Prioriza a
+resolução nativa conforme a capacidade do encoder; dimensões ímpares são
+alinhadas sem cortar a imagem. [Limites e compatibilidade](docs/ultrawide.md).
+
 0.7.1 lembra seu nome, permite recolher o menu e diferencia transmissão ativa
 da tela em destaque. Duplo clique em uma transmissão mostra apenas ela; **Grid**
 restaura as telas. No Windows, desmarque **Mostrar minha prévia** para eliminar
