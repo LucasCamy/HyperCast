@@ -1,5 +1,10 @@
 # HyperCast para Windows
 
+0.6.2 mantém token manual somente em **Debug → Token manual (avançado)**.
+Para testes, cole o JWT temporário e use **Entrar com token** nessa janela.
+No uso normal, continue com a chave compartilhada e o convite da sala.
+Debug e Atualização agora usam a mesma moldura e botões de ação.
+
 0.6.1 padroniza os botões pequenos e adiciona AMF para GPUs AMD. Na RX 5700 XT,
 selecione **HEVC / H.265**; quem compartilhar para ela também deve usar HEVC.
 Ela não oferece codificação nem decodificação AV1 por hardware.

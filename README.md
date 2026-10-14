@@ -1,5 +1,8 @@
 # HyperCast
 
+Versão 0.6.2: token manual fica somente no **Debug**, cuja janela segue o
+mesmo visual da atualização. O acesso normal usa chave do servidor e convite.
+
 Versão 0.6.1: botões compactos arredondados e padronizados, cartão de participantes
 com largura completa e encoder AMD AMF selecionado automaticamente.
 [Compatibilidade AMD e validação](docs/amd.md).

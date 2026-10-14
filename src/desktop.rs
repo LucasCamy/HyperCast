@@ -30,6 +30,11 @@ fn compact_action(ui:&mut egui::Ui,label:&str,enabled:bool)->egui::Response {
     }).inner
 }
 
+fn utility_window_frame(style:&egui::Style)->egui::Frame {
+    egui::Frame::window(style).fill(PANEL).inner_margin(12).corner_radius(12)
+        .stroke(egui::Stroke::new(1.0,BORDER))
+}
+
 fn update_action(ui: &mut egui::Ui, label: &str, primary: bool) -> egui::Response {
     ui.add_sized(
         [ui.available_width(), 40.0],
@@ -318,7 +323,7 @@ impl App {
         ui.horizontal(|ui|{
         ui.label(RichText::new(if publishing{if active.is_some_and(|t|t.process().is_some()){"JANELA AO VIVO"}else{"MONITOR AO VIVO"}}else{"SEU COMPARTILHAMENTO" }).size(10.0).strong().color(if publishing{ACCENT}else{MUTED}));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
-            if compact_action(ui,"Debug",true).on_hover_text("Diagnóstico e opções de depuração").clicked(){self.debug_open=!self.debug_open;}
+            if compact_action(ui,"Debug",true).on_hover_text("Diagnóstico e opções de depuração").clicked(){self.debug_open=!self.debug_open;if self.debug_open{self.updater.open=false;if !self.creator.busy{self.creator.open=false;}}}
         });
         });
         ui.scope(|ui|{
@@ -575,12 +580,12 @@ impl eframe::App for App {
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
                                 ui.label(RichText::new(if connected{"ONLINE"}else{"OFFLINE"}).size(10.0).color(if connected{ACCENT}else{MUTED}));
                                 if compact_action(ui,"Atualizar",true).on_hover_text("Verificar atualização do HyperCast").clicked(){
-                                    self.updater.open=true;self.updater.check(ctx.clone());
+                                    self.debug_open=false;if !self.creator.busy{self.creator.open=false;}self.updater.open=true;self.updater.check(ctx.clone());
                                 }
                             });
                         });
                         ui.add_space(8.0);
-                        if !connected {section_title(ui,if !self.token_mode && !self.server_access.authenticated(){"ACESSO AO SERVIDOR"}else{"ENTRAR NA SALA"}, "");}
+                        if !connected {section_title(ui,if !self.server_access.authenticated(){"ACESSO AO SERVIDOR"}else{"ENTRAR NA SALA"}, "");}
                         ui.add_space(8.0);
                         if connected {
                             ui.label(RichText::new(&room).size(15.0).strong());
@@ -589,12 +594,11 @@ impl eframe::App for App {
 
                             ui.label(RichText::new(if can_publish { "Você pode assistir e compartilhar" } else { "Você está assistindo à sala" }).size(11.0).color(MUTED));
                         } else {
-                        egui::CollapsingHeader::new("Servidor e acesso avançado").default_open(self.token_mode).show(ui, |ui| {
+                        egui::CollapsingHeader::new("Servidor").show(ui, |ui| {
                         ui.label("Servidor");
                         text_input(ui,&mut self.address,"wss://seu-servidor",false,2048,!self.server_access.busy && (self.engine.is_none() || self.engine.as_ref().is_some_and(|engine|engine.finished())));
-                        ui.add_enabled(self.engine.is_none(), egui::Checkbox::new(&mut self.token_mode, "Token manual (avançado)"));
                         });
-                        if !self.token_mode && !self.server_access.authenticated() {
+                        if !self.server_access.authenticated() {
                             let label=ui.label("Chave de acesso").id;
                             text_input(ui,&mut self.server_access.code,"Chave compartilhada do servidor",true,64,!self.server_access.busy).labelled_by(label);
                             ui.checkbox(&mut self.server_access.remember,"Lembrar neste Windows");
@@ -604,29 +608,24 @@ impl eframe::App for App {
                             if self.server_access.busy {ui.spinner();}
                             if !self.server_access.status.is_empty(){ui.label(RichText::new(&self.server_access.status).size(12.0).color(MUTED));}
                         } else {
-                        if !self.token_mode {
                             ui.label("Seu nome");
                             text_input(ui,&mut self.name,"Como quer aparecer na sala",false,64,self.engine.is_none() || self.engine.as_ref().is_some_and(|engine|engine.finished()));
                             ui.label("Convite da sala");
                             text_input(ui,&mut self.invite,"Cole o convite da sala",true,64,self.engine.is_none() || self.engine.as_ref().is_some_and(|engine|engine.finished()));
-                        } else {
-                        ui.label("Token da sala");
-                        text_input(ui,&mut self.token,"Cole seu token de acesso",true,8192,self.engine.is_none() || self.engine.as_ref().is_some_and(|engine|engine.finished()));
-                        }
                         ui.horizontal(|ui| {
                             let width=(ui.available_width()-ui.spacing().item_spacing.x)/2.0;
                             let ready=(self.engine.is_none() || self.engine.as_ref().is_some_and(|engine|engine.finished())) && !self.creator.busy;
-                            if ui.add_enabled(ready && if self.token_mode { !self.token.trim().is_empty() } else { !self.invite.trim().is_empty() && !self.name.trim().is_empty() },
+                            if ui.add_enabled(ready && !self.invite.trim().is_empty() && !self.name.trim().is_empty(),
                                 egui::Button::new("Entrar na sala").min_size(Vec2::new(width,44.0)).corner_radius(9)).clicked() {
-                                self.error.clear();self.engine=Some(self.join_room(ctx.clone()));
+                                self.token_mode=false;self.error.clear();self.engine=Some(self.join_room(ctx.clone()));
                             }
                             if ui.add_enabled(self.server_access.authenticated() && !self.creator.busy && (self.engine.is_none() || !status.starts_with("Conectando")),
                                 egui::Button::new("Criar sala").min_size(Vec2::new(width,44.0)).corner_radius(9)).clicked() {
                                 self.creator.open(&self.address);self.debug_open=false;self.updater.open=false;
                             }
                         });
-                        if !self.token_mode && !self.server_access.status.is_empty(){ui.label(RichText::new(&self.server_access.status).size(11.0).color(MUTED));}
-                        if !self.token_mode && compact_action(ui,"Trocar acesso ao servidor",!self.server_access.busy).clicked(){self.server_access.logout(&self.address);}
+                        if !self.server_access.status.is_empty(){ui.label(RichText::new(&self.server_access.status).size(11.0).color(MUTED));}
+                        if compact_action(ui,"Trocar acesso ao servidor",!self.server_access.busy).clicked(){self.server_access.logout(&self.address);}
                         }
                         }
                         ui.add_space(8.0);
@@ -1018,8 +1017,7 @@ impl eframe::App for App {
         if !self.fullscreen && self.creator.open {
             let mut open=true;
             egui::Window::new("Criar sala").id(egui::Id::new("create_room_window"))
-                .frame(egui::Frame::window(ui.style()).fill(PANEL).inner_margin(12).corner_radius(12)
-                    .stroke(egui::Stroke::new(1.0,BORDER)))
+                .frame(utility_window_frame(ui.style()))
                 .open(&mut open).fixed_pos(egui::pos2(16.0,48.0)).default_width(260.0).max_width(260.0)
                 .resizable(false).collapsible(false).show(&ctx,|ui| {
                     ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
@@ -1040,16 +1038,31 @@ Convite válido por 24 horas").size(11.0).color(MUTED));
             self.creator.open=open || self.creator.busy;
         }
         if !self.fullscreen && self.debug_open {
+            let mut open=self.debug_open;
             egui::Window::new("Diagnóstico").id(egui::Id::new("debug_window"))
-                .open(&mut self.debug_open).fixed_pos(egui::pos2(16.0,48.0))
+                .frame(utility_window_frame(ui.style()))
+                .open(&mut open).fixed_pos(egui::pos2(16.0,48.0))
                 .default_width(260.0).max_width(260.0).resizable(false).collapsible(false)
                 .show(&ctx,|ui|{
                     ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
                     ui.label(RichText::new(&status).size(12.0));
                     if !audio_status.is_empty(){ui.label(RichText::new(&audio_status).size(11.0).color(MUTED));}
-                    ui.add_enabled(self.engine.is_none(),egui::Checkbox::new(&mut self.relay_only,"Forçar TURN/TLS (teste)"))
+                    let idle=self.engine.is_none() || self.engine.as_ref().is_some_and(|engine|engine.finished());
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("CONEXÃO AVANÇADA").size(10.0).color(MUTED));
+                    ui.add_enabled(idle && !self.creator.busy,egui::Checkbox::new(&mut self.token_mode,"Token manual (avançado)"));
+                    if self.token_mode {
+                        ui.label(RichText::new("JWT temporário de sala, fornecido pelo administrador para testes.").size(11.0).color(MUTED));
+                        let label=ui.label("Token de diagnóstico").id;
+                        text_input(ui,&mut self.token,"Cole o JWT da sala",true,8192,idle).labelled_by(label);
+                        ui.add_enabled_ui(idle && !self.creator.busy && !self.token.trim().is_empty(),|ui|{
+                            if update_action(ui,"Entrar com token",true).clicked(){self.error.clear();self.engine=Some(self.join_room(ctx.clone()));}
+                        });
+                        if !idle {ui.label(RichText::new("Saia da sala para alterar o acesso de diagnóstico.").size(11.0).color(MUTED));}
+                    }
+                    ui.add_enabled(idle,egui::Checkbox::new(&mut self.relay_only,"Forçar TURN/TLS (teste)"))
                         .on_hover_text("Ative antes de entrar para testar o relay; desativado escolhe a rota de menor custo");
-                    if ui.button("Copiar diagnóstico").on_hover_text("Copiar o log da sessão, sem token ou imagens").clicked(){
+                    if update_action(ui,"Copiar diagnóstico",false).on_hover_text("Copiar o log da sessão, sem token ou imagens").clicked(){
                         match crate::diagnostics::export_text(){Ok(text)=>ctx.copy_text(text),Err(error)=>self.error=format!("Diagnóstico: {error}")}
                     }
                     if let Some(path)=crate::diagnostics::path(){
@@ -1057,13 +1070,13 @@ Convite válido por 24 horas").size(11.0).color(MUTED));
                     }
                     if !self.error.is_empty(){ui.colored_label(DANGER,&self.error);}
                 });
+            self.debug_open=open;
         }
         if !self.fullscreen && self.updater.open {
             let mut open=self.updater.open;
             let mut install=false;
             egui::Window::new("Atualização").id(egui::Id::new("update_window"))
-                .frame(egui::Frame::window(ui.style()).fill(PANEL).inner_margin(12).corner_radius(12)
-                    .stroke(egui::Stroke::new(1.0, BORDER)))
+                .frame(utility_window_frame(ui.style()))
                 .open(&mut open).fixed_pos(egui::pos2(16.0,48.0)).default_width(260.0).max_width(260.0)
                 .resizable(false).collapsible(false).show(&ctx,|ui|{
                     ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);

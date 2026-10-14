@@ -1,5 +1,21 @@
 # Validação — 12 e 13/10/2026
 
+## Debug e acesso manual — 0.6.2, 14/10/2026
+
+Token manual saiu da lateral e aparece somente em Debug. O JWT fica em campo
+oculto e a conexão manual é iniciada por Entrar com token nessa janela.
+O botão normal Entrar na sala sempre escolhe a autenticação por convite.
+
+Diagnóstico, Atualização e Criar sala compartilham a mesma moldura: margem 12,
+raio 12, borda 1, fundo e largura consistentes. Copiar diagnóstico usa o mesmo
+controle de 40 px das ações de atualização. Debug e Atualização se fecham
+mutuamente ao abrir, sem empilhar janelas na mesma posição.
+
+Conferência pela interface: controles avançados ausentes na lateral, token
+presente somente no Debug, conexão manual real ao SFU e comparação visual com
+Atualização. Entrada normal, criação, convite, segundo cliente, chave lembrada
+no Windows e troca de acesso passaram novamente. Sem mudanças no servidor.
+
 ## Botões compactos e AMD AMF — 0.6.1, 14/10/2026
 
 Atualizar, Trocar acesso ao servidor, Atualizar janelas e Debug usam o mesmo
