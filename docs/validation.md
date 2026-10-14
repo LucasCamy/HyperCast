@@ -1,5 +1,24 @@
 # Validação — 12 e 13/10/2026
 
+
+## Miniaturas no monitorzinho — 0.6.4, 14/10/2026
+
+Prévia DWM dentro da moldura de monitor de cada cartão de janela, preservando
+proporção. Removidos a prévia grande e o botão separado de confirmação: clicar
+no cartão escolhe a origem, seguindo o seletor de monitores. Durante o envio,
+o caminho existente de ChangeSource continua aplicando a troca.
+
+Até quatro miniaturas visíveis, com descarte das fontes fora da área de rolagem
+e liberação ao fechar o seletor ou abrir outras janelas da interface. Fontes
+indisponíveis mantêm o ícone. A composição permanece local, sem leitura de pixels
+na CPU, gravação de arquivos ou envio de prévias para a sala.
+
+Build desktop e empacotamento release aprovados. Conferência visual com janela
+sintética de título longo em 1320 × 820 e 960 × 620: miniatura no ícone, escolha
+direta, campo com largura/altura do seletor de monitor e fechamento sem sobreposição.
+O executável portátil 0.6.4 também passou seleção, rolagem real até outros cartões
+e fechamento: miniaturas permanecem dentro da lista e desaparecem ao fechá-la.
+
 ## Seletores padronizados e prévia local — 0.6.3, 14/10/2026
 
 Monitor e janela usam ComboBox, mesma largura/altura/seta e os mesmos cartões.

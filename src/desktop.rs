@@ -107,7 +107,7 @@ fn choice_card(ui: &mut egui::Ui, title: &str, subtitle: &str, selected: bool, e
     if let Some(initial) = avatar {
         ui.painter().circle_filled(center, 18.0, tint.gamma_multiply(0.14));
         ui.painter().text(center, egui::Align2::CENTER_CENTER, initial.to_uppercase().collect::<String>(), egui::FontId::proportional(17.0), tint);
-    } else { monitor_symbol(ui.painter(), center, tint, 27.0); }
+    } else { monitor_symbol(ui.painter(), center, tint, 38.0); }
     let painter = ui.painter().with_clip_rect(response.rect.shrink(8.0));
     painter.text(response.rect.left_top() + Vec2::new(60.0, 15.0), egui::Align2::LEFT_TOP,
         title, egui::FontId::proportional(14.0), TEXT);
@@ -164,8 +164,7 @@ struct App {
     windows:Vec<crate::video_capture::ApplicationWindow>,
     selected_window:Option<usize>,
     window_picker_open:bool,
-    window_candidate:Option<usize>,
-    window_preview:Option<crate::video_capture::WindowPreview>,
+    window_previews:HashMap<usize,crate::video_capture::WindowPreview>,
     fullscreen:bool,
     debug_open:bool,
     updater:crate::updater::Updater,
@@ -236,7 +235,7 @@ impl App {
             sound_muted: false,
             displays: crate::screen_capture::displays().unwrap_or_default(),
             selected_display: 0,
-            window_mode:false,windows:crate::video_capture::windows(),selected_window:None,window_picker_open:false,window_candidate:None,window_preview:None,fullscreen:false,debug_open:false,updater:crate::updater::Updater::default(),creator:crate::room_creation::Creator::default(),server_access:crate::room_creation::ServerAccess::default(),before_fullscreen_mode:ViewMode::Spotlight,
+            window_mode:false,windows:crate::video_capture::windows(),selected_window:None,window_picker_open:false,window_previews:HashMap::new(),fullscreen:false,debug_open:false,updater:crate::updater::Updater::default(),creator:crate::room_creation::Creator::default(),server_access:crate::room_creation::ServerAccess::default(),before_fullscreen_mode:ViewMode::Spotlight,
             codec: if std::env::var("HYPERCAST_CODEC").as_deref() == Ok("av1") {
                 crate::encoder::Codec::Av1
             } else {
@@ -276,44 +275,41 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(enabled));
         self.last_presented.clear();
     }
-    fn window_selection(&mut self,ui:&mut egui::Ui,publishing:bool,space:f32)->bool {
-        let mut confirmed=false;
-                    ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Truncate);
-                    ui.label(RichText::new("Escolha uma janela para conferir a prévia.").size(11.0).color(MUTED));
-                    let preview_height=(space-200.0).clamp(64.0,126.0);
-                    let height=(space-preview_height-120.0).clamp(60.0,150.0);
-                    egui::ScrollArea::vertical().max_height(height).auto_shrink([false,true]).show(ui,|ui|{
-                        for (index,window) in self.windows.iter().enumerate(){
-                            let title=format!("Janela {}",index+1);
-                            if choice_card(ui,&title,&compact_window_title(&window.title),self.window_candidate==Some(window.hwnd),true,None)
-                                .on_hover_text(&window.title).clicked(){self.window_candidate=Some(window.hwnd);}
+    fn window_selection(&mut self,ui:&mut egui::Ui,space:f32)->bool {
+        let mut selected=false;
+        let mut visible=Vec::with_capacity(4);
+        ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Truncate);
+        egui::ScrollArea::vertical().max_height(space.clamp(78.0,320.0))
+            .auto_shrink([false,true]).show(ui,|ui|{
+                for (index,window) in self.windows.iter().enumerate(){
+                    let response=choice_card(ui,&format!("Janela {}",index+1),
+                        &compact_window_title(&window.title),self.selected_window==Some(window.hwnd),true,None)
+                        .on_hover_text(&window.title);
+                    // DWM draws into the native viewport, so only register fully visible
+                    // screens. Keep compositor work bounded and release offscreen sources.
+                    let center=response.rect.left_center()+Vec2::new(30.0,-38.0*0.08);
+                    let screen=egui::Rect::from_center_size(center,Vec2::new(38.0,38.0*0.62)).shrink(2.0);
+                    if visible.len()<4 && ui.clip_rect().contains_rect(screen) && window.available(){
+                        visible.push(window.hwnd);
+                        if !self.window_previews.contains_key(&window.hwnd){
+                            if let Some(preview)=crate::video_capture::WindowPreview::new(self.parent,window){
+                                self.window_previews.insert(window.hwnd,preview);
+                            }
                         }
-                        if self.windows.is_empty(){ui.label("Nenhuma janela disponível");}
-                    });
-                    let candidate=self.windows.iter().find(|w|Some(w.hwnd)==self.window_candidate).cloned().filter(|w|w.available());
-                    if self.window_preview.as_ref().map(|p|p.hwnd)!=self.window_candidate {
-                        self.window_preview=None;
-                        if let Some(window)=candidate.as_ref(){self.window_preview=crate::video_capture::WindowPreview::new(self.parent,window);}
+                        let scale=ui.ctx().pixels_per_point();
+                        let shown=self.window_previews.get_mut(&window.hwnd).is_some_and(|preview|preview.present(
+                            (screen.left()*scale).round() as i32,(screen.top()*scale).round() as i32,
+                            (screen.width()*scale).round() as i32,(screen.height()*scale).round() as i32));
+                        if !shown {self.window_previews.remove(&window.hwnd);}
                     }
-                    let (rect,_)=ui.allocate_exact_size(Vec2::new(ui.available_width(),preview_height),egui::Sense::hover());
-                    ui.painter().rect_filled(rect,8.0,BG);
-                    let scale=ui.ctx().pixels_per_point();let inner=rect.shrink(4.0);
-                    let shown=ui.clip_rect().contains_rect(rect) && self.window_preview.as_mut().is_some_and(|preview|preview.present(
-                        (inner.left()*scale) as i32,(inner.top()*scale) as i32,
-                        (inner.width()*scale) as i32,(inner.height()*scale) as i32));
-                    if !shown {
-                        self.window_preview=None;
-                        ui.painter().text(rect.center(),egui::Align2::CENTER_CENTER,
-                            if candidate.is_some(){"Prévia indisponível · restaure a janela"}else{"Selecione uma janela"},egui::FontId::proportional(11.0),MUTED);
+                    if response.clicked() && window.available(){
+                        self.selected_window=Some(window.hwnd);self.window_mode=true;selected=true;ui.close();
                     }
-                    ui.label(RichText::new(if publishing{"Prévia local · troca aplicada ao confirmar"}else{"Prévia local · envio só ao compartilhar"}).size(10.0).color(MUTED));
-
-                    ui.add_enabled_ui(candidate.is_some(),|ui|{
-                        if update_action(ui,if publishing{"Trocar para esta janela"}else{"Usar esta janela"},true).clicked(){
-                            self.selected_window=self.window_candidate;self.window_mode=true;confirmed=true;ui.close();
-                        }
-                    });
-        confirmed
+                }
+                if self.windows.is_empty(){ui.label("Nenhuma janela disponível");}
+            });
+        self.window_previews.retain(|hwnd,_|visible.contains(hwnd));
+        selected
     }
     fn sharing_settings(&mut self,ui:&mut egui::Ui,publishing:bool){
         let old_target=self.target();
@@ -347,13 +343,12 @@ impl App {
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).selected_text(title)
                     .show_ui(ui,|ui|{
                         if !self.window_picker_open {
-                            self.windows=crate::video_capture::windows();self.window_candidate=self.selected_window
-                                .filter(|hwnd|self.windows.iter().any(|w|w.hwnd==*hwnd));self.window_preview=None;
+                            self.windows=crate::video_capture::windows();self.window_previews.clear();
                         }
-                        self.window_selection(ui,publishing,space)
+                        self.window_selection(ui,space)
                     });
                 self.window_picker_open=response.inner==Some(false);
-                if !self.window_picker_open {self.window_preview=None;}
+                if !self.window_picker_open {self.window_previews.clear();}
             }else{
                 let title=self.displays.get(self.selected_display).map_or("Nenhum monitor".into(),|d|format!("Monitor {} · {} × {}",self.selected_display+1,d.width,d.height));
                 egui::ComboBox::from_id_salt("display_picker").width(width).truncate().selected_text(title).show_ui(ui,|ui|{
@@ -364,7 +359,7 @@ impl App {
                 });
             }
         });
-        if !self.window_mode {self.window_picker_open=false;self.window_preview=None;}
+        if !self.window_mode {self.window_picker_open=false;self.window_previews.clear();}
         if self.window_mode && compact_action(ui,"Atualizar janelas",true).clicked(){self.windows=crate::video_capture::windows();}
         ui.label(RichText::new(if publishing{"Troque a origem sem parar o envio"}else if self.window_mode{"Apenas a janela escolhida"}else{"Seu monitor inteiro será compartilhado"}).size(11.0).color(MUTED));
         egui::CollapsingHeader::new(format!("Formato de vídeo · {}",if self.codec==crate::encoder::Codec::H265{"HEVC"}else{"AV1"})).id_salt("video_format").show(ui,|ui|{
@@ -1077,7 +1072,7 @@ impl eframe::App for App {
                     }
                 }
             });
-        if !self.window_picker_open || self.fullscreen || self.debug_open || self.updater.open {self.window_preview=None;}
+        if !self.window_picker_open || self.fullscreen || self.debug_open || self.updater.open {self.window_previews.clear();}
         if !self.fullscreen && self.creator.open {
             let mut open=true;
             egui::Window::new("Criar sala").id(egui::Id::new("create_room_window"))

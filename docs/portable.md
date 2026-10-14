@@ -1,8 +1,8 @@
 # HyperCast para Windows
 
-0.6.3 padroniza os seletores de monitor e janela: mesma seta, altura e cartões.
-Nomes longos ficam abreviados e a prévia local aparece dentro do dropdown de
-janelas. Confirme em **Usar esta janela**; durante um envio, **Trocar para esta janela**.
+0.6.4 mostra a prévia de cada janela dentro do monitorzinho do cartão.
+Os seletores continuam compactos e padronizados; clique no cartão para escolher
+a janela ou trocar a origem durante o envio. A prévia é local, sem gravação.
 
 0.6.2 mantém token manual somente em **Debug → Token manual (avançado)**.
 Para testes, cole o JWT temporário e use **Entrar com token** nessa janela.
