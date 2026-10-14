@@ -1,5 +1,10 @@
 # HyperCast para Windows
 
+0.6.0 adiciona acesso ao servidor com chave compartilhada e **Criar sala** ao
+lado de **Entrar na sala**. **Lembrar neste Windows** protege a chave com DPAPI;
+a janela de criação pede somente nome da sala e seu apelido.
+Veja [acesso e criação de salas](room-creation.md).
+
 0.5.3 padroniza os botões de atualização. Em tela cheia, use o **X** compacto
 no canto superior direito, **Esc** ou **F11** para sair; o vídeo ocupa mais espaço.
 Ao lado do X, clique no alto-falante para silenciar/reativar e ajuste o slider

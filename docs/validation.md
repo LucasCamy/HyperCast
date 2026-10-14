@@ -1,5 +1,26 @@
 # Validação — 12 e 13/10/2026
 
+## Acesso compartilhado e criação de salas — 0.6.0, 14/10/2026
+
+22 testes Python passaram: autorização, escopo, assinatura, prazo, revogação,
+concorrência, uma sala por dispositivo, quota diária compartilhada e repetição
+após resposta perdida no SFU. Rust: 11 testes passaram, um teste de atualização
+mantido ignorado por exigir fixture própria; inclui DPAPI vinculada à origem.
+
+API real HTTPS validada com duas sessões da mesma chave em dispositivos diferentes:
+criação idempotente, convite, token de vídeo/áudio, limite por dispositivo,
+vínculo do dispositivo e revogação. HYPERCAST_REQUIRE_ACCESS=1 ativo no k3s;
+entrada sem autenticação rejeitada com 401. Sem alterar SFU, TURN ou portas.
+
+A interface do pacote final criou e entrou em sala isolada, copiou convite e
+conectou outro cliente. Nome amigável correto, modal sem chave adicional,
+chave protegida com DPAPI, login automático com chave salva e remoção ao trocar
+acesso. Testes não publicaram nem gravaram tela; credenciais de teste revogadas
+na limpeza e salas próprias removidas. Chave compartilhada real em arquivo privado,
+sem incluí-la no Git, nos logs ou nos instaladores.
+Instalação por usuário, publicação/recepção AV1 com textura GPU e desinstalação
+limpa do pacote 0.6.0 também passaram.
+
 ## Ajustes da interface — 0.5.3, 13/10/2026
 
 Ações de atualização usam a mesma largura disponível e altura de 40 px.

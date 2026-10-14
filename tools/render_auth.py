@@ -17,7 +17,8 @@ def render(image):
         {'name':'gateway-config','mountPath':'/etc/caddy','readOnly':True},
         {'name':'tmp','mountPath':'/tmp'}]
     containers=[{'name':'auth','image':image,'imagePullPolicy':'IfNotPresent',
-        'securityContext':security,'env':[{'name':'LIVEKIT_KEYS','valueFrom':{'secretKeyRef':{'name':'hypercast-livekit','key':'keys'}}}],
+        'securityContext':security,'env':[{'name':'LIVEKIT_KEYS','valueFrom':{'secretKeyRef':{'name':'hypercast-livekit','key':'keys'}}},
+            {'name':'HYPERCAST_MAX_ROOMS','value':'4'},{'name':'HYPERCAST_REQUIRE_ACCESS','value':'1'}],
         'volumeMounts':[{'name':'data','mountPath':'/data'}],
         'resources':{'requests':{'cpu':'100m','memory':'64Mi'},'limits':{'cpu':'500m','memory':'128Mi'}},
         'readinessProbe':{'httpGet':{'host':'127.0.0.1','path':'/health','port':8106},'periodSeconds':5},

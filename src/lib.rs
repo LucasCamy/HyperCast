@@ -24,3 +24,6 @@ pub mod receiver;
 #[cfg(windows)]
 pub mod screen_capture;
 pub mod subscription;
+
+#[cfg(all(windows, feature = "desktop"))]
+pub mod room_creation;

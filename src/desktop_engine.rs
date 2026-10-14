@@ -92,7 +92,7 @@ pub struct Engine {
 }
 enum Access {
     Token(String),
-    Invite { code: String, name: String, request_id: String },
+    Invite { code: String, name: String, request_id: String, session:String },
 }
 impl Drop for Engine {
     fn drop(&mut self) {
@@ -299,11 +299,12 @@ fn update_subscriptions(room: &Room, layout: &Layout) {
 }
 
 impl Engine {
+    pub fn finished(&self)->bool { self.thread.as_ref().is_none_or(|thread|thread.is_finished()) }
     pub fn connect(address: String, token: String, ctx: egui::Context, parent: usize, relay_only: bool) -> Self {
         Self::connect_access(address, Access::Token(token), ctx, parent, relay_only)
     }
-    pub fn connect_invite(address: String, code: String, name: String, request_id: String, ctx: egui::Context, parent: usize, relay_only: bool) -> Self {
-        Self::connect_access(address, Access::Invite { code, name, request_id }, ctx, parent, relay_only)
+    pub fn connect_invite(address: String, code: String, name: String, request_id: String, session:String, ctx: egui::Context, parent: usize, relay_only: bool) -> Self {
+        Self::connect_access(address, Access::Invite { code, name, request_id, session }, ctx, parent, relay_only)
     }
     fn connect_access(address: String, access: Access, ctx: egui::Context, parent: usize, relay_only: bool) -> Self {
         crate::diagnostics::write("connection", "Starting room connection", "");
@@ -316,8 +317,8 @@ impl Engine {
         let thread = std::thread::spawn(move || {
             let token = match access {
                 Access::Token(token) => token,
-                Access::Invite { code, name, request_id } => {
-                    match crate::invitation::join(&address, &code, &name, &request_id) {
+                Access::Invite { code, name, request_id, session } => {
+                    match crate::invitation::join(&address, &code, &name, &request_id, &session) {
                         Ok(token) => token,
                         Err(error) => {
                             let message = error.to_string().replace(&code, "[invite]");
@@ -339,7 +340,9 @@ impl Engine {
                 {
                     let mut state = state.lock().unwrap();
                     state.connected = true;
-                    state.room = room.name();
+                    state.room = serde_json::from_str::<serde_json::Value>(&room.metadata()).ok()
+                        .and_then(|value|value["hypercast_name"].as_str().filter(|name|name.chars().count()<=64).map(str::to_owned))
+                        .unwrap_or_else(||room.name());
                     state.status = "Conectado".into();
                     state.identity = room.local_participant().identity().to_string();
                     state.can_publish = room

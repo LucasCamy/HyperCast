@@ -22,19 +22,14 @@ pub fn client_id() -> String {
     fresh
 }
 
-pub fn join(address: &str, invite: &str, name: &str, request_id: &str) -> Result<String> {
-    let mut endpoint = url::Url::parse(address)?;
-    ensure!(endpoint.scheme() == "wss" || (endpoint.scheme() == "ws" && matches!(endpoint.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))), "Use WSS for invitations");
-    ensure!(endpoint.username().is_empty() && endpoint.password().is_none() && endpoint.query().is_none(), "Unsupported server URL");
-    let scheme = if endpoint.scheme() == "wss" { "https" } else { "http" };
-    endpoint.set_scheme(scheme).map_err(|_| anyhow::anyhow!("Invalid endpoint scheme"))?;
-    endpoint.set_path("/api/join"); endpoint.set_fragment(None);
+pub fn join(address: &str, invite: &str, name: &str, request_id: &str, session: &str) -> Result<String> {
+    let endpoint = endpoint(address,"/api/join")?;
     let client = reqwest::blocking::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(12))
         .user_agent("HyperCast-Desktop/0.1")
         .build()?;
-    let response = client.post(endpoint).json(&serde_json::json!({
+    let response = client.post(endpoint).bearer_auth(session).json(&serde_json::json!({
         "invite": invite, "name": name, "request_id": request_id,
     })).send()?;
     match response.status().as_u16() {
@@ -50,4 +45,14 @@ pub fn join(address: &str, invite: &str, name: &str, request_id: &str) -> Result
     let token = value["token"].as_str().ok_or_else(|| anyhow::anyhow!("Missing room credential"))?;
     ensure!(!token.is_empty() && token.len() <= 8192, "Invalid room credential length");
     Ok(token.to_owned())
+}
+
+pub(crate) fn endpoint(address:&str,path:&str)->Result<url::Url>{
+    let mut endpoint = url::Url::parse(address)?;
+    ensure!(endpoint.scheme() == "wss" || (endpoint.scheme() == "ws" && matches!(endpoint.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))), "Use WSS for invitations");
+    ensure!(endpoint.username().is_empty() && endpoint.password().is_none() && endpoint.query().is_none(), "Unsupported server URL");
+    let scheme = if endpoint.scheme() == "wss" { "https" } else { "http" };
+    endpoint.set_scheme(scheme).map_err(|_| anyhow::anyhow!("Invalid endpoint scheme"))?;
+    endpoint.set_path(path); endpoint.set_fragment(None);
+    Ok(endpoint)
 }

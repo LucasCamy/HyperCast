@@ -1,5 +1,9 @@
 # HyperCast
 
+Versão 0.6.0: autentique-se com a chave compartilhada de acesso ao servidor,
+crie salas pela interface e convide os amigos. A criação pede apenas nome da sala
+e seu apelido. [Como acessar e criar salas](docs/room-creation.md).
+
 Versão 0.5.3: ações de atualização com tamanho uniforme e saída de tela
 cheia com **X de 20 px** à direita, cabeçalho e margens reduzidos.
 Volume e botão de silenciar ficam ao lado do X, sincronizados com a lateral.

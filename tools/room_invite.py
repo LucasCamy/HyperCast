@@ -30,8 +30,15 @@ def main():
     parser.add_argument('--room'); parser.add_argument('--role',choices=['publisher','viewer'],default='viewer')
     parser.add_argument('--days',type=int,default=7); parser.add_argument('--max-uses',type=int,default=12)
     parser.add_argument('--revoke'); parser.add_argument('--output',type=Path)
+    parser.add_argument('--creator','--access-key',dest='creator',action='store_true'); parser.add_argument('--label')
+    parser.add_argument('--revoke-creator','--revoke-access',dest='revoke_creator')
     args=parser.parse_args()
-    if args.revoke:
+    if args.revoke_creator:
+        result=request('/api/admin/revoke-creator',{'creator_id':args.revoke_creator},args.env_file)
+    elif args.creator:
+        if not args.label or not args.output: parser.error('--creator requires --label and --output (private file)')
+        result=request('/api/admin/creators',{'label':args.label,'days':args.days},args.env_file)
+    elif args.revoke:
         result=request('/api/admin/revoke',{'invitation_id':args.revoke},args.env_file)
     else:
         if not args.room: parser.error('--room is required')

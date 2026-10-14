@@ -1,5 +1,15 @@
 # HyperCast no Cloudlane Homelab
 
+Atualização de salas (14/10/2026): API com criação autorizada, SQLite persistente,
+metadata amigável e limite inicial de quatro salas via API. Imagem importada e
+fixada em `ghcr.io/lucascamy/hypercast-auth@sha256:5e24d7e24c2a3b064c5fe8a02eb48eb202dc7305554a2119be14c513ea4a2956`.
+Apenas hypercast-access foi atualizado, com interrupção autorizada de sessões.
+Login compartilhado em /api/login; sessões de 15 minutos e limite por dispositivo.
+HYPERCAST_REQUIRE_ACCESS=1 ativo: entradas pela API exigem sessão de acesso.
+Backup privado em /etc/hypercast/access-login-rollback.json (0600).
+SFU, TURN e portas iguais.
+Veja [criação de salas](room-creation.md).
+
 Atualização de áudio (13/10/2026): SFU e API de convites atualizados após o
 proprietário liberar a sala. `audio/opus` habilitado e até três subscrições de
 áudio. Uma faixa `screen_share_audio` por tela, recusando áudio isolado,

@@ -28,6 +28,7 @@ def digest(value): return hashlib.sha256(value.encode()).hexdigest()
 class Admission:
     def __init__(self, path, key, secret, active=None):
         self.path, self.key, self.secret = str(path), key, secret
+        self.rejection = Rejected
         self.active = active or (lambda room: rt.participants(room, key, secret))
         with closing(self.db()) as db:
             db.executescript('''
@@ -39,6 +40,9 @@ class Admission:
                     id TEXT PRIMARY KEY, invite TEXT, request_id TEXT, name TEXT,
                     UNIQUE(invite,request_id));
             ''')
+
+        from infra.room_creation import RoomCreation
+        self.rooms = RoomCreation(self, max_rooms=int(os.environ.get("HYPERCAST_MAX_ROOMS", "4")))
 
     def db(self):
         db = sqlite3.connect(self.path, timeout=10, isolation_level=None)
@@ -69,6 +73,7 @@ class Admission:
             if not invite or invite['revoked'] or invite['expires']<=now:
                 raise Rejected(401,'Invitation expired, revoked or invalid')
             # Fail closed on SFU availability before reserving any publisher identity.
+            self.rooms.ensure_join(invite['room'])
             if invite['role']=='publisher': self.active(invite['room'])
             db.execute('BEGIN IMMEDIATE')
             try:
@@ -133,9 +138,26 @@ def main():
                 if not 1<=length<=4096 or self.headers.get('Transfer-Encoding'): raise Rejected(400,'Invalid request size')
                 body=json.loads(self.rfile.read(length))
                 if not isinstance(body,dict): raise Rejected(400,'Invalid request')
-                if self.path=='/api/join':
+                if self.path=='/api/login':
+                    if set(body)!={'device_id'}: raise Rejected(400,'Unexpected fields')
+                    code=self.headers.get('Authorization','').removeprefix('Bearer ')
+                    data=admission.rooms.login(code,body['device_id'])
+                elif self.path=='/api/join':
                     if set(body)!={'invite','name','request_id'}: raise Rejected(400,'Unexpected fields')
+                    bearer=self.headers.get('Authorization','').removeprefix('Bearer ')
+                    if bearer or os.environ.get('HYPERCAST_REQUIRE_ACCESS')=='1':
+                        access=admission.rooms.authorize(bearer)
+                        if body['request_id']!=access['device_id']: raise Rejected(403,'Device does not match server session')
                     data=admission.join(body['invite'],body['name'],body['request_id'])
+                elif self.path=='/api/rooms':
+                    if set(body)!={'room_name','request_id'}: raise Rejected(400,'Unexpected fields')
+                    code=self.headers.get('Authorization','').removeprefix('Bearer ')
+                    data=admission.rooms.create(code,body['room_name'],body['request_id'])
+                elif self.path in ('/api/admin/creators','/api/admin/revoke-creator','/api/admin/access-keys','/api/admin/revoke-access'):
+                    admission.verify_admin(self.headers.get('Authorization','').removeprefix('Bearer '))
+                    if self.path.endswith(('revoke-creator','revoke-access')):
+                        admission.rooms.revoke_creator(body.get('access_id',body.get('creator_id'))); data={'revoked':True}
+                    else: data=admission.rooms.issue_creator(body.get('label',''),body.get('days',30))
                 elif self.path in ('/api/admin/invites','/api/admin/revoke'):
                     admission.verify_admin(self.headers.get('Authorization','').removeprefix('Bearer '))
                     if self.path.endswith('/revoke'):

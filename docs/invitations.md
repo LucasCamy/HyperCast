@@ -1,5 +1,9 @@
 # Entrada por convite
 
+Desde 0.6.0, autentique-se no servidor com a chave compartilhada antes de entrar
+ou criar salas. Convites anteriores continuam utilizáveis após login.
+Veja [acesso e criação de salas](room-creation.md).
+
 A interface pede servidor, nome e convite. POST HTTPS /api/join troca o convite
 por JWT de sala válido por cinco minutos. API secret não é enviada ao cliente.
 O convite é armazenado somente como SHA-256 no SQLite persistente do backend.
