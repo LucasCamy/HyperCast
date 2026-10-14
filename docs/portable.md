@@ -1,5 +1,9 @@
 # HyperCast para Windows
 
+0.6.3 padroniza os seletores de monitor e janela: mesma seta, altura e cartões.
+Nomes longos ficam abreviados e a prévia local aparece dentro do dropdown de
+janelas. Confirme em **Usar esta janela**; durante um envio, **Trocar para esta janela**.
+
 0.6.2 mantém token manual somente em **Debug → Token manual (avançado)**.
 Para testes, cole o JWT temporário e use **Entrar com token** nessa janela.
 No uso normal, continue com a chave compartilhada e o convite da sala.

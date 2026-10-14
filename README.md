@@ -1,5 +1,9 @@
 # HyperCast
 
+0.6.3 padroniza os seletores de monitor e janela: mesma seta, altura e cartões.
+Nomes longos ficam abreviados e a prévia local aparece dentro do dropdown de
+janelas. Confirme em **Usar esta janela**; durante um envio, **Trocar para esta janela**.
+
 Versão 0.6.2: token manual fica somente no **Debug**, cuja janela segue o
 mesmo visual da atualização. O acesso normal usa chave do servidor e convite.
 

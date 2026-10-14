@@ -111,4 +111,45 @@ BOOL CALLBACK enumerate(HWND hwnd,LPARAM param){
     auto* e=reinterpret_cast<Enumeration*>(param);e->callback(reinterpret_cast<size_t>(hwnd),pid,title,e->data);return TRUE;
 }
 void hc_window_list(WindowCallback callback,void* data) noexcept {Enumeration e{callback,data};EnumWindows(enumerate,reinterpret_cast<LPARAM>(&e));}
+int hc_window_is_live(size_t window,unsigned pid) noexcept {
+    HWND hwnd=reinterpret_cast<HWND>(window);DWORD actual=0;
+    return IsWindow(hwnd)&&GetWindowThreadProcessId(hwnd,&actual)&&actual==pid;
+}
+// Local DWM preview only. No readback, screenshots, files or network traffic.
+struct WindowPreview {
+    HWND source=nullptr,destination=nullptr;DWORD pid=0;HTHUMBNAIL thumbnail=nullptr;
+    ~WindowPreview(){if(thumbnail)DwmUnregisterThumbnail(thumbnail);}
+    void validate(){
+        DWORD actual=0;GetWindowThreadProcessId(source,&actual);
+        DWORD destination_pid=0;GetWindowThreadProcessId(destination,&destination_pid);
+        if(!IsWindow(source)||actual!=pid||destination_pid!=GetCurrentProcessId())throw std::runtime_error("Preview window closed or changed");
+    }
+};
+void* hc_window_preview_open(size_t destination,size_t source,unsigned pid) noexcept {
+    try {
+        auto p=std::make_unique<WindowPreview>();p->source=reinterpret_cast<HWND>(source);
+        p->destination=reinterpret_cast<HWND>(destination);p->pid=pid;p->validate();
+        if(IsIconic(p->source))return nullptr;
+        check_hresult(DwmRegisterThumbnail(p->destination,p->source,&p->thumbnail));return p.release();
+    }catch(...){return nullptr;}
+}
+int hc_window_preview_present(void* handle,int x,int y,int width,int height) noexcept {
+    try {
+        if(!handle||width<=0||height<=0||width>4096||height>4096||x<0||y<0||x>32768||y>32768)return -1;
+        auto* p=static_cast<WindowPreview*>(handle);p->validate();
+        if(IsIconic(p->source))return -1;
+        SIZE size{};check_hresult(DwmQueryThumbnailSourceSize(p->thumbnail,&size));
+        RECT client{};
+        if(GetClientRect(p->source,&client)){size.cx=client.right-client.left;size.cy=client.bottom-client.top;}
+        if(size.cx<=0||size.cy<=0||size.cx>32768||size.cy>32768)return -1;
+        const double scale=std::min(double(width)/size.cx,double(height)/size.cy);
+        const int w=std::max(1,int(size.cx*scale)),h=std::max(1,int(size.cy*scale));
+        DWM_THUMBNAIL_PROPERTIES properties{};
+        properties.dwFlags=DWM_TNP_RECTDESTINATION|DWM_TNP_VISIBLE|DWM_TNP_OPACITY|DWM_TNP_SOURCECLIENTAREAONLY;
+        properties.rcDestination={x+(width-w)/2,y+(height-h)/2,x+(width+w)/2,y+(height+h)/2};
+        properties.fVisible=TRUE;properties.opacity=255;properties.fSourceClientAreaOnly=TRUE;
+        check_hresult(DwmUpdateThumbnailProperties(p->thumbnail,&properties));return 0;
+    }catch(...){return -1;}
+}
+void hc_window_preview_close(void* handle) noexcept {delete static_cast<WindowPreview*>(handle);}
 }

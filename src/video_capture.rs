@@ -14,6 +14,9 @@ impl CaptureTarget {
 }
 #[derive(Clone)]
 pub struct ApplicationWindow {pub hwnd:usize,pub pid:u32,pub title:String}
+impl ApplicationWindow {
+    pub fn available(&self)->bool {unsafe{hc_window_is_live(self.hwnd,self.pid)!=0}}
+}
 unsafe extern "C" {
     fn hc_window_open(hwnd:usize,pid:u32,adapter:u32,error:*mut c_char,capacity:usize)->*mut c_void;
     fn hc_window_device(handle:*mut c_void)->*mut c_void;
@@ -21,7 +24,25 @@ unsafe extern "C" {
     fn hc_window_frame(handle:*mut c_void,texture:*mut *mut c_void,error:*mut c_char,capacity:usize)->i32;
     fn hc_window_close(handle:*mut c_void);
     fn hc_window_list(callback:unsafe extern "C" fn(usize,u32,*const u16,*mut c_void),data:*mut c_void);
+    fn hc_window_is_live(window:usize,pid:u32)->i32;
+    fn hc_window_preview_open(destination:usize,source:usize,pid:u32)->*mut c_void;
+    fn hc_window_preview_present(handle:*mut c_void,x:i32,y:i32,width:i32,height:i32)->i32;
+    fn hc_window_preview_close(handle:*mut c_void);
 }
+/// Thread-confined local compositor preview; drops its DWM registration on close.
+pub struct WindowPreview {handle:NonNull<c_void>,pub hwnd:usize,_affinity:PhantomData<Rc<()>>}
+impl WindowPreview {
+    pub fn new(parent:usize,window:&ApplicationWindow)->Option<Self>{
+        // SAFETY: native code validates both HWND owners and the selected PID.
+        NonNull::new(unsafe{hc_window_preview_open(parent,window.hwnd,window.pid)})
+            .map(|handle|Self{handle,hwnd:window.hwnd,_affinity:PhantomData})
+    }
+    pub fn present(&mut self,x:i32,y:i32,width:i32,height:i32)->bool{
+        // SAFETY: owns a live handle; native bounds/owner checks precede DWM calls.
+        unsafe{hc_window_preview_present(self.handle.as_ptr(),x,y,width,height)==0}
+    }
+}
+impl Drop for WindowPreview {fn drop(&mut self){unsafe{hc_window_preview_close(self.handle.as_ptr());}}}
 pub fn windows()->Vec<ApplicationWindow>{
     unsafe extern "C" fn collect(hwnd:usize,pid:u32,title:*const u16,data:*mut c_void){
         // SAFETY: synchronous native enumeration supplies a NUL-terminated 512-unit array

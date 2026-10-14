@@ -117,6 +117,12 @@ fn choice_card(ui: &mut egui::Ui, title: &str, subtitle: &str, selected: bool, e
     response.on_hover_text(format!("{title}\n{subtitle}"))
 }
 
+fn compact_window_title(title:&str)->String {
+    let clean:String=title.chars().filter(|c|!c.is_control()).collect();
+    let mut chars=clean.chars();let short:String=chars.by_ref().take(30).collect();
+    if chars.next().is_some(){format!("{short}…")}else{short}
+}
+
 fn section_title(ui: &mut egui::Ui, label: &str, detail: &str) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(label).size(11.0).strong().color(MUTED));
@@ -157,6 +163,9 @@ struct App {
     window_mode:bool,
     windows:Vec<crate::video_capture::ApplicationWindow>,
     selected_window:Option<usize>,
+    window_picker_open:bool,
+    window_candidate:Option<usize>,
+    window_preview:Option<crate::video_capture::WindowPreview>,
     fullscreen:bool,
     debug_open:bool,
     updater:crate::updater::Updater,
@@ -227,7 +236,7 @@ impl App {
             sound_muted: false,
             displays: crate::screen_capture::displays().unwrap_or_default(),
             selected_display: 0,
-            window_mode:false,windows:crate::video_capture::windows(),selected_window:None,fullscreen:false,debug_open:false,updater:crate::updater::Updater::default(),creator:crate::room_creation::Creator::default(),server_access:crate::room_creation::ServerAccess::default(),before_fullscreen_mode:ViewMode::Spotlight,
+            window_mode:false,windows:crate::video_capture::windows(),selected_window:None,window_picker_open:false,window_candidate:None,window_preview:None,fullscreen:false,debug_open:false,updater:crate::updater::Updater::default(),creator:crate::room_creation::Creator::default(),server_access:crate::room_creation::ServerAccess::default(),before_fullscreen_mode:ViewMode::Spotlight,
             codec: if std::env::var("HYPERCAST_CODEC").as_deref() == Ok("av1") {
                 crate::encoder::Codec::Av1
             } else {
@@ -267,6 +276,45 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(enabled));
         self.last_presented.clear();
     }
+    fn window_selection(&mut self,ui:&mut egui::Ui,publishing:bool,space:f32)->bool {
+        let mut confirmed=false;
+                    ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Truncate);
+                    ui.label(RichText::new("Escolha uma janela para conferir a prévia.").size(11.0).color(MUTED));
+                    let preview_height=(space-200.0).clamp(64.0,126.0);
+                    let height=(space-preview_height-120.0).clamp(60.0,150.0);
+                    egui::ScrollArea::vertical().max_height(height).auto_shrink([false,true]).show(ui,|ui|{
+                        for (index,window) in self.windows.iter().enumerate(){
+                            let title=format!("Janela {}",index+1);
+                            if choice_card(ui,&title,&compact_window_title(&window.title),self.window_candidate==Some(window.hwnd),true,None)
+                                .on_hover_text(&window.title).clicked(){self.window_candidate=Some(window.hwnd);}
+                        }
+                        if self.windows.is_empty(){ui.label("Nenhuma janela disponível");}
+                    });
+                    let candidate=self.windows.iter().find(|w|Some(w.hwnd)==self.window_candidate).cloned().filter(|w|w.available());
+                    if self.window_preview.as_ref().map(|p|p.hwnd)!=self.window_candidate {
+                        self.window_preview=None;
+                        if let Some(window)=candidate.as_ref(){self.window_preview=crate::video_capture::WindowPreview::new(self.parent,window);}
+                    }
+                    let (rect,_)=ui.allocate_exact_size(Vec2::new(ui.available_width(),preview_height),egui::Sense::hover());
+                    ui.painter().rect_filled(rect,8.0,BG);
+                    let scale=ui.ctx().pixels_per_point();let inner=rect.shrink(4.0);
+                    let shown=ui.clip_rect().contains_rect(rect) && self.window_preview.as_mut().is_some_and(|preview|preview.present(
+                        (inner.left()*scale) as i32,(inner.top()*scale) as i32,
+                        (inner.width()*scale) as i32,(inner.height()*scale) as i32));
+                    if !shown {
+                        self.window_preview=None;
+                        ui.painter().text(rect.center(),egui::Align2::CENTER_CENTER,
+                            if candidate.is_some(){"Prévia indisponível · restaure a janela"}else{"Selecione uma janela"},egui::FontId::proportional(11.0),MUTED);
+                    }
+                    ui.label(RichText::new(if publishing{"Prévia local · troca aplicada ao confirmar"}else{"Prévia local · envio só ao compartilhar"}).size(10.0).color(MUTED));
+
+                    ui.add_enabled_ui(candidate.is_some(),|ui|{
+                        if update_action(ui,if publishing{"Trocar para esta janela"}else{"Usar esta janela"},true).clicked(){
+                            self.selected_window=self.window_candidate;self.window_mode=true;confirmed=true;ui.close();
+                        }
+                    });
+        confirmed
+    }
     fn sharing_settings(&mut self,ui:&mut egui::Ui,publishing:bool){
         let old_target=self.target();
         section_title(ui,"COMPARTILHAR",if publishing{"AO VIVO"}else{""});
@@ -277,7 +325,10 @@ impl App {
                 let selected=self.window_mode==window;
                 if ui.add(egui::Button::new(RichText::new(label).color(if selected{ACCENT}else{TEXT}))
                     .min_size(Vec2::new(width,38.0)).corner_radius(8)
-                    .fill(if selected{Color32::from_rgb(40,51,40)}else{SURFACE}).selected(selected)).clicked(){self.window_mode=window;}
+                    .fill(if selected{Color32::from_rgb(40,51,40)}else{SURFACE}).selected(selected)).clicked(){
+                    if publishing && window && !self.window_mode{self.selected_window=None;}
+                    self.window_mode=window;
+                }
             }
         });
         ui.scope(|ui|{
@@ -287,14 +338,25 @@ impl App {
             ui.visuals_mut().widgets.inactive.corner_radius=egui::CornerRadius::same(8);
             ui.visuals_mut().widgets.hovered.corner_radius=egui::CornerRadius::same(8);
             if self.window_mode{
-                let title=self.windows.iter().find(|w|Some(w.hwnd)==self.selected_window)
-                    .map(|w|w.title.as_str()).unwrap_or("Selecionar janela…");
-                egui::ComboBox::from_id_salt("window_picker").width(width).selected_text(title).show_ui(ui,|ui|{
-                    for window in &self.windows{ui.selectable_value(&mut self.selected_window,Some(window.hwnd),&window.title).on_hover_text(&window.title);}
-                });
+                let title=self.windows.iter().position(|w|Some(w.hwnd)==self.selected_window)
+                    .map(|index|format!("Janela {} · {}",index+1,compact_window_title(&self.windows[index].title)))
+                    .unwrap_or("Selecionar janela…".into());
+                let bounds=ui.ctx().content_rect();let top=ui.cursor().top();
+                let space=(top-bounds.top()).max(bounds.bottom()-top-38.0)-32.0;
+                let response=egui::ComboBox::from_id_salt("window_picker").width(width).height(380.0).truncate()
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).selected_text(title)
+                    .show_ui(ui,|ui|{
+                        if !self.window_picker_open {
+                            self.windows=crate::video_capture::windows();self.window_candidate=self.selected_window
+                                .filter(|hwnd|self.windows.iter().any(|w|w.hwnd==*hwnd));self.window_preview=None;
+                        }
+                        self.window_selection(ui,publishing,space)
+                    });
+                self.window_picker_open=response.inner==Some(false);
+                if !self.window_picker_open {self.window_preview=None;}
             }else{
                 let title=self.displays.get(self.selected_display).map_or("Nenhum monitor".into(),|d|format!("Monitor {} · {} × {}",self.selected_display+1,d.width,d.height));
-                egui::ComboBox::from_id_salt("display_picker").width(width).selected_text(title).show_ui(ui,|ui|{
+                egui::ComboBox::from_id_salt("display_picker").width(width).truncate().selected_text(title).show_ui(ui,|ui|{
                     for (index,display) in self.displays.iter().enumerate(){
                         if choice_card(ui,&format!("Monitor {}",index+1),&format!("{} × {}",display.width,display.height),index==self.selected_display,true,None)
                             .on_hover_text(format!("{}\n{}",display.display_name,display.gpu_name)).clicked(){self.selected_display=index;}
@@ -302,6 +364,7 @@ impl App {
                 });
             }
         });
+        if !self.window_mode {self.window_picker_open=false;self.window_preview=None;}
         if self.window_mode && compact_action(ui,"Atualizar janelas",true).clicked(){self.windows=crate::video_capture::windows();}
         ui.label(RichText::new(if publishing{"Troque a origem sem parar o envio"}else if self.window_mode{"Apenas a janela escolhida"}else{"Seu monitor inteiro será compartilhado"}).size(11.0).color(MUTED));
         egui::CollapsingHeader::new(format!("Formato de vídeo · {}",if self.codec==crate::encoder::Codec::H265{"HEVC"}else{"AV1"})).id_salt("video_format").show(ui,|ui|{
@@ -323,7 +386,7 @@ impl App {
         ui.horizontal(|ui|{
         ui.label(RichText::new(if publishing{if active.is_some_and(|t|t.process().is_some()){"JANELA AO VIVO"}else{"MONITOR AO VIVO"}}else{"SEU COMPARTILHAMENTO" }).size(10.0).strong().color(if publishing{ACCENT}else{MUTED}));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
-            if compact_action(ui,"Debug",true).on_hover_text("Diagnóstico e opções de depuração").clicked(){self.debug_open=!self.debug_open;if self.debug_open{self.updater.open=false;if !self.creator.busy{self.creator.open=false;}}}
+            if compact_action(ui,"Debug",true).on_hover_text("Diagnóstico e opções de depuração").clicked(){self.debug_open=!self.debug_open;if self.debug_open{self.window_picker_open=false;egui::Popup::close_all(ui.ctx());self.updater.open=false;if !self.creator.busy{self.creator.open=false;}}}
         });
         });
         ui.scope(|ui|{
@@ -580,7 +643,7 @@ impl eframe::App for App {
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
                                 ui.label(RichText::new(if connected{"ONLINE"}else{"OFFLINE"}).size(10.0).color(if connected{ACCENT}else{MUTED}));
                                 if compact_action(ui,"Atualizar",true).on_hover_text("Verificar atualização do HyperCast").clicked(){
-                                    self.debug_open=false;if !self.creator.busy{self.creator.open=false;}self.updater.open=true;self.updater.check(ctx.clone());
+                                    self.window_picker_open=false;egui::Popup::close_all(&ctx);self.debug_open=false;if !self.creator.busy{self.creator.open=false;}self.updater.open=true;self.updater.check(ctx.clone());
                                 }
                             });
                         });
@@ -621,7 +684,7 @@ impl eframe::App for App {
                             }
                             if ui.add_enabled(self.server_access.authenticated() && !self.creator.busy && (self.engine.is_none() || !status.starts_with("Conectando")),
                                 egui::Button::new("Criar sala").min_size(Vec2::new(width,44.0)).corner_radius(9)).clicked() {
-                                self.creator.open(&self.address);self.debug_open=false;self.updater.open=false;
+                                self.window_picker_open=false;egui::Popup::close_all(&ctx);self.creator.open(&self.address);self.debug_open=false;self.updater.open=false;
                             }
                         });
                         if !self.server_access.status.is_empty(){ui.label(RichText::new(&self.server_access.status).size(11.0).color(MUTED));}
@@ -1014,6 +1077,7 @@ impl eframe::App for App {
                     }
                 }
             });
+        if !self.window_picker_open || self.fullscreen || self.debug_open || self.updater.open {self.window_preview=None;}
         if !self.fullscreen && self.creator.open {
             let mut open=true;
             egui::Window::new("Criar sala").id(egui::Id::new("create_room_window"))

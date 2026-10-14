@@ -1,5 +1,24 @@
 # Validação — 12 e 13/10/2026
 
+## Seletores padronizados e prévia local — 0.6.3, 14/10/2026
+
+Monitor e janela usam ComboBox, mesma largura/altura/seta e os mesmos cartões.
+Truncamento explícito impede nomes longos de ampliar o campo. A lista de janelas
+abre no dropdown, com altura ajustada ao espaço acima/abaixo, sem modal separada.
+
+Prévia local de uma janela por vez via DWM, preservando proporção e sem leitura
+de pixels para RAM ou gravação de arquivos. HWND/PID e destino do próprio processo
+são validados. Registro liberado ao fechar o dropdown, abrir outros painéis ou
+entrar em tela cheia. Se a janela fechar, a confirmação é desabilitada.
+A seleção é aplicada ao confirmar; enquanto já transmite, usa ChangeSource.
+
+Conferência real com janela sintética de nome longo: cartões, prévia visível,
+confirmação e campo dentro da dimensão do seletor de monitor. Conferidos viewport
+1320×820 e mínimo 960×620. Nenhum conteúdo de aplicativo real foi pré-visualizado
+pelo teste; somente mídia sintética gerada pelo próprio teste.
+O pacote final repetiu esse teste na janela mínima. A regressão de WGC, áudio
+do processo, resize, troca com mesmo SID, tela cheia e fechamento da origem passou.
+
 ## Debug e acesso manual — 0.6.2, 14/10/2026
 
 Token manual saiu da lateral e aparece somente em Debug. O JWT fica em campo
