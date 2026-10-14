@@ -1,6 +1,15 @@
 # Validação — 12 e 13/10/2026
 
 
+## Remoção de tooltips sobrepostos — 0.6.5, 14/10/2026
+
+Removidos os dois balões dos cartões de janela (texto genérico e título completo).
+O hover mantém apenas a resposta visual do cartão, sem cobrir nomes e miniaturas.
+Conferência visual do portátil 0.6.5 em 960 × 620: mouse sobre a lista após
+rolagem sem tooltip; seleção direta, miniaturas e fechamento continuam funcionando.
+Build release e empacotamento de portátil/instalador aprovados.
+
+
 ## Miniaturas no monitorzinho — 0.6.4, 14/10/2026
 
 Prévia DWM dentro da moldura de monitor de cada cartão de janela, preservando

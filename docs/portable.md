@@ -1,5 +1,9 @@
 # HyperCast para Windows
 
+
+0.6.5 remove os tooltips dos cartões de janelas, evitando sobreposição nos nomes
+e nas miniaturas durante a escolha da origem.
+
 0.6.4 mostra a prévia de cada janela dentro do monitorzinho do cartão.
 Os seletores continuam compactos e padronizados; clique no cartão para escolher
 a janela ou trocar a origem durante o envio. A prévia é local, sem gravação.

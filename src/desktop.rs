@@ -114,7 +114,7 @@ fn choice_card(ui: &mut egui::Ui, title: &str, subtitle: &str, selected: bool, e
     painter.text(response.rect.left_top() + Vec2::new(60.0, 37.0), egui::Align2::LEFT_TOP,
         subtitle, egui::FontId::proportional(11.0), if selected { ACCENT } else { MUTED });
     if response.has_focus() { painter.rect_stroke(response.rect.shrink(2.0), 8.0, egui::Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside); }
-    response.on_hover_text(format!("{title}\n{subtitle}"))
+    response
 }
 
 fn compact_window_title(title:&str)->String {
@@ -283,8 +283,7 @@ impl App {
             .auto_shrink([false,true]).show(ui,|ui|{
                 for (index,window) in self.windows.iter().enumerate(){
                     let response=choice_card(ui,&format!("Janela {}",index+1),
-                        &compact_window_title(&window.title),self.selected_window==Some(window.hwnd),true,None)
-                        .on_hover_text(&window.title);
+                        &compact_window_title(&window.title),self.selected_window==Some(window.hwnd),true,None);
                     // DWM draws into the native viewport, so only register fully visible
                     // screens. Keep compositor work bounded and release offscreen sources.
                     let center=response.rect.left_center()+Vec2::new(30.0,-38.0*0.08);
