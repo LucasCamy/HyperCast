@@ -1,5 +1,9 @@
 # HyperCast
 
+0.7.4 mostra a disponibilidade do servidor no indicador **ONLINE/OFFLINE**,
+independente de estar em uma sala. A consulta de saúde do SFU ocorre em segundo
+plano a cada 15 segundos, sem chave ou token. [Como funciona](docs/server-status.md).
+
 0.7.3 adiciona **Reconectar recepção** (↻ / F5), sem sair da sala ou interromper
 seu compartilhamento, e mantém os receptores negociados ao alternar o destaque.
 [Recuperação da recepção e testes](docs/reception.md).

@@ -32,7 +32,7 @@ def main():
     shutil.copyfile(ROOT / "tools/Test-Streaming.ps1", missing / "Test-Streaming.ps1")
     logs = run(missing / "Test-Streaming.ps1", fixture / "missing-data")
     assert "Extraia TODO" in (logs / "error.log").read_text(encoding="utf-8-sig")
-    stage = ROOT / "dist/HyperCast-0.7.3-windows-x64"
+    stage = ROOT / "dist/HyperCast-0.7.4-windows-x64"
     logs = run(stage / "Test-Streaming.ps1", fixture / "native-error-data")
     stream = (logs / "stream.log").read_text(encoding="utf-8-sig")
     assert stream.strip(), "Native stderr must be drained and saved under PowerShell 5.1"

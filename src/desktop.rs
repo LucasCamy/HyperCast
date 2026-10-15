@@ -189,6 +189,7 @@ struct App {
     updater:crate::updater::Updater,
     creator:crate::room_creation::Creator,
     server_access:crate::room_creation::ServerAccess,
+    server_status:crate::server_status::ServerStatus,
     before_fullscreen_mode:ViewMode,
     codec: crate::encoder::Codec,
     parent: usize,
@@ -255,7 +256,7 @@ impl App {
             sound_muted: false,
             displays: crate::screen_capture::displays().unwrap_or_default(),
             selected_display: 0,
-            window_mode:false,windows:crate::video_capture::windows(),selected_window:None,window_picker_open:false,window_previews:HashMap::new(),fullscreen:false,debug_open:false,updater:crate::updater::Updater::default(),creator:crate::room_creation::Creator::default(),server_access:crate::room_creation::ServerAccess::default(),before_fullscreen_mode:ViewMode::Spotlight,
+            window_mode:false,windows:crate::video_capture::windows(),selected_window:None,window_picker_open:false,window_previews:HashMap::new(),fullscreen:false,debug_open:false,updater:crate::updater::Updater::default(),creator:crate::room_creation::Creator::default(),server_access:crate::room_creation::ServerAccess::default(),server_status:crate::server_status::ServerStatus::default(),before_fullscreen_mode:ViewMode::Spotlight,
             codec: if std::env::var("HYPERCAST_CODEC").as_deref() == Ok("av1") {
                 crate::encoder::Codec::Av1
             } else {
@@ -479,6 +480,7 @@ impl eframe::App for App {
         }
         self.updater.poll();
         self.server_access.poll(&self.address,&self.client_id,ctx.clone());
+        self.server_status.poll(&self.address,&ctx);
         if let Some(created)=self.creator.poll() {
             self.invite=created.invite;self.token_mode=false;self.token.clear();
             self.error.clear();
@@ -686,7 +688,7 @@ impl eframe::App for App {
                             ui.label(RichText::new("H").size(24.0).strong().color(ACCENT));
                             ui.label(RichText::new("HYPERCAST").size(16.0).strong());
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
-                                ui.label(RichText::new(if connected{"ONLINE"}else{"OFFLINE"}).size(10.0).color(if connected{ACCENT}else{MUTED}));
+                                ui.label(RichText::new(self.server_status.label()).size(10.0).color(if self.server_status.status==crate::server_status::Status::Online{ACCENT}else{MUTED})).on_hover_text(format!("Servidor: {}",self.server_status.detail));
                                 if compact_action(ui,"Atualizar",true).on_hover_text("Verificar atualização do HyperCast").clicked(){
                                     self.window_picker_open=false;egui::Popup::close_all(&ctx);self.debug_open=false;if !self.creator.busy{self.creator.open=false;}self.updater.open=true;self.updater.check(ctx.clone());
                                 }

@@ -67,6 +67,7 @@ struct App {
     invite: String,
     device: String,
     access: ServerAccess,
+    server_status: crate::server_status::ServerStatus,
     creator: Creator,
     engine: Option<Engine>,
     joining: Option<mpsc::Receiver<anyhow::Result<String>>>,
@@ -99,6 +100,7 @@ impl App {
             invite: std::env::var("HYPERCAST_INVITE").unwrap_or_default(),
             device: crate::invitation::client_id(),
             access: ServerAccess::default(),
+            server_status: crate::server_status::ServerStatus::default(),
             creator: Creator::default(),
             engine: None,
             joining: None,
@@ -227,6 +229,7 @@ impl eframe::App for App {
         let context = root.ctx().clone();
         let ctx = &context;
         self.access.poll(&self.address, &self.device, ctx.clone());
+        self.server_status.poll(&self.address,ctx);
         if let Some(room) = self.creator.poll() {
             self.invite = room.invite;
             self.status = format!("Sala criada: {}", room.title);
@@ -284,7 +287,8 @@ impl eframe::App for App {
                     ui.horizontal(|ui|{ui.label(RichText::new("HYPERCAST").size(16.0));
                         if small(ui,"Atualizar").clicked(){ctx.open_url(egui::OpenUrl::new_tab("https://github.com/LucasCamy/HyperCast/releases"));}
                     });
-                    ui.label(RichText::new(if reconnecting{"RECONECTANDO"}else if connected{"ONLINE"}else{"OFFLINE"}).size(11.0).color(MUTED));
+                    ui.label(RichText::new(self.server_status.label()).size(11.0).color(if self.server_status.status==crate::server_status::Status::Online{ACCENT}else{MUTED})).on_hover_text(format!("Servidor: {}",self.server_status.detail));
+                    if reconnecting {ui.label(RichText::new("Sala: reconectando…").size(11.0).color(MUTED));}
                     ui.add_space(12.0);
                     if !self.access.authenticated(){
                         ui.label(RichText::new("ACESSO AO SERVIDOR").size(11.0).color(MUTED));
