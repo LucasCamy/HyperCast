@@ -1,0 +1,11 @@
+[Unit]
+Description=Check HyperCast dynamic WAN address every two minutes
+
+[Timer]
+OnBootSec=60
+OnUnitInactiveSec=120
+AccuracySec=10
+Unit=hypercast-network-sync.service
+
+[Install]
+WantedBy=timers.target

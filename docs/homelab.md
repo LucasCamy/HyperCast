@@ -1,5 +1,11 @@
 # HyperCast no Cloudlane Homelab
 
+Correção de rede (15/10/2026): SFU e DNS TURN reconciliados após troca do IPv4
+da operadora. `hypercast-network-sync.timer` ativo na VM, com verificação a cada
+dois minutos. Atualiza o registro A DNS-only do TURN e o candidato público do
+SFU; não reinicia se os endereços continuarem iguais.
+Veja [IP dinâmico e Cloudflare](dynamic-public-ip.md).
+
 Atualização de salas (14/10/2026): API com criação autorizada, SQLite persistente,
 metadata amigável e limite inicial de quatro salas via API. Imagem importada e
 fixada em `ghcr.io/lucascamy/hypercast-auth@sha256:5e24d7e24c2a3b064c5fe8a02eb48eb202dc7305554a2119be14c513ea4a2956`.
