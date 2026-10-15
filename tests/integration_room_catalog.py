@@ -72,19 +72,21 @@ def main():
                     if live.get(old,0)==0 and live.get(new,0)==1:return
                     time.sleep(.2)
                 raise AssertionError('Room switch did not leave exactly one connected session')
-            gui(access['access_key'],title,room['invite'],extras[1]['room_name'],lambda:moved(room['room'],extras[1]['room']))
+            gui(access['access_key'],title,room['invite'],extras[1]['room_name'],lambda:moved(room['room'],extras[1]['room']),extras[2]['room_name'])
         print('PASS: permanent room, eight-letter code, catalog, duplicate recovery, authenticated join and friendly name')
     finally:
         if room and session:
             post('/api/rooms/keep',{'room':room['room'],'persistent':False},session)
             delete_instance(room['room'])
         for extra in extras:
-            post('/api/rooms/keep',{'room':extra['room'],'persistent':False},session)
+            try:post('/api/rooms/keep',{'room':extra['room'],'persistent':False},session)
+            except urllib.error.HTTPError as error:
+                if error.code!=404:raise
         admin=rt.sign({'iss':key,'sub':'catalog-test','aud':'hypercast-invites','scope':'invites:write',
             'nbf':int(time.time())-5,'exp':int(time.time())+60},secret)
         post('/api/admin/revoke-access',{'access_id':access['access_id']},admin)
 
-def gui(access_key,title,legacy_code,other_title,assert_moved):
+def gui(access_key,title,legacy_code,other_title,assert_moved,delete_title):
     class Proxy(socketserver.BaseRequestHandler):
         def handle(self):
             try:
@@ -147,11 +149,22 @@ def gui(access_key,title,legacy_code,other_title,assert_moved):
             wait(other_title)
             assert_moved()
             screenshot(app.pid,ROOT/'.tools/catalog-switched.png')
+            control('Escolher sala')
+            wait(delete_title)
+            screenshot(app.pid,ROOT/'.tools/catalog-current-room.png')
+            control('Excluir sala '+delete_title)
+            wait('Excluir esta sala?')
+            control('Confirmar exclusão de '+delete_title)
+            deadline=time.monotonic()+12
+            while control(delete_title,'-Read',check=False):
+                assert time.monotonic()<deadline,'Deleted room remained in the list'
+                time.sleep(.2)
+            screenshot(app.pid,ROOT/'.tools/catalog-deleted-room.png')
             control('Sair')
             wait('Escolher sala')
             control('Escolher sala')
             wait(title)
-            print('PASS: GUI catalog entry, automatic room switch with exactly one session, leave and rediscovery')
+            print('PASS: GUI catalog entry, automatic room switch, confirmed empty-room deletion, leave and rediscovery')
         finally:
             if app.poll() is None:app.terminate()
             app.wait(timeout=10);server.shutdown();server.server_close();credential.unlink(missing_ok=True)

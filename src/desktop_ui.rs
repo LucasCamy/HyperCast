@@ -29,7 +29,20 @@ pub fn compact(ui:&mut egui::Ui,label:&str,enabled:bool)->egui::Response {
     }).inner
 }
 pub fn primary(ui:&mut egui::Ui,label:&str,enabled:bool,size:Vec2)->egui::Response {
-    ui.add_enabled_ui(enabled,|ui|ui.add_sized(size,
-        egui::Button::new(RichText::new(label).size(13.0).color(ACCENT)).corner_radius(8)
-            .fill(ACCENT.gamma_multiply(0.16)).stroke(egui::Stroke::new(1.0,ACCENT.gamma_multiply(0.45))))).inner
+    ui.add_enabled_ui(enabled,|ui|{ui.spacing_mut().button_padding=Vec2::new(8.0,6.0);ui.add_sized(size,
+        egui::Button::new(RichText::new(label).size(13.0).color(ACCENT)).wrap_mode(egui::TextWrapMode::Extend).corner_radius(8)
+            .fill(ACCENT.gamma_multiply(0.16)).stroke(egui::Stroke::new(1.0,ACCENT.gamma_multiply(0.45))))}).inner
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn current_room_label_stays_on_one_line_inside_the_button() {
+        let ctx=egui::Context::default();let mut button=egui::Rect::NOTHING;
+        let output=ctx.run_ui(Default::default(),|ui|{button=primary(ui,"Nesta sala",false,egui::vec2(88.0,36.0)).rect;});
+        let label=output.shapes.iter().find_map(|s|match &s.shape {egui::Shape::Text(t) if t.galley.text()=="Nesta sala"=>Some(t),_=>None}).unwrap();
+        assert_eq!(label.galley.rows.len(),1);
+        assert!(button.contains_rect(label.visual_bounding_rect()));
+    }
 }

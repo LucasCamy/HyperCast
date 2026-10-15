@@ -1,5 +1,13 @@
 # HyperCast no Cloudlane Homelab
 
+Salas e exclusão (15/10/2026, 0.8.4): serviço de acesso em
+`ghcr.io/lucascamy/hypercast-auth@sha256:522542095d481933ae3299765858b0cd348e93dd8616015315224977cd79475a`.
+Backup SQLite realizado antes da atualização. SFU não reiniciado. Salvar não
+abre sessão de mídia; limite permanece quatro instâncias. Novas instâncias usam
+empty_timeout=60 e departure_timeout=1. Instâncias já existentes mantêm os valores
+anteriores até encerrarem. Exclusão de cadastro valida ocupação e não força DeleteRoom.
+Ledger separado conserva a quota de dez criações/dia mesmo após exclusão.
+
 Limpeza do catálogo (15/10/2026, 0.8.2): serviço de acesso atualizado para
 `ghcr.io/lucascamy/hypercast-auth@sha256:9dfb3804755f9d3f08f53219af606b4930a6c4632aa14b45371b402e6c36effb`.
 Backup SQLite realizado antes da atualização. A primeira execução removeu 15 salas

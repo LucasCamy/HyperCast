@@ -5,24 +5,29 @@ use eframe::egui;
 use crate::desktop_ui as controls;
 
 pub struct SavedRoom { pub room:String, pub title:String, pub persistent:bool, pub expired:bool, pub participants:u64 }
+enum CatalogAction {Keep(String,bool),Delete(String)}
 #[derive(Default)]
 pub struct Catalog {
     pub open:bool, busy:bool, status:String, rooms:Vec<SavedRoom>, origin:String,
     last_refresh:Option<std::time::Instant>,
+    confirm_delete:Option<String>,
     receiver:Option<mpsc::Receiver<(String,String,Result<Vec<SavedRoom>>)>>,
 }
 impl Catalog {
     pub fn open(&mut self,address:String,session:String,ctx:egui::Context) {
         self.open=true;self.request(address,session,None,ctx);
     }
-    fn request(&mut self,address:String,session:String,keep:Option<(String,bool)>,ctx:egui::Context) {
+    fn request(&mut self,address:String,session:String,action:Option<CatalogAction>,ctx:egui::Context) {
         if self.busy{return;}
         if self.origin!=address {self.rooms.clear();}
         self.origin=address.clone();self.last_refresh=Some(std::time::Instant::now());self.busy=true;self.status.clear();
         let(tx,rx)=mpsc::channel();self.receiver=Some(rx);
         std::thread::spawn(move|| {
             let result=(||->Result<Vec<SavedRoom>> {
-                if let Some((room,persistent))=keep {catalog_post(&address,&session,"/api/rooms/keep",serde_json::json!({"room":room,"persistent":persistent}))?;}
+                if let Some(action)=action {match action {
+                    CatalogAction::Keep(room,persistent)=>{catalog_post(&address,&session,"/api/rooms/keep",serde_json::json!({"room":room,"persistent":persistent}))?;},
+                    CatalogAction::Delete(room)=>{catalog_post(&address,&session,"/api/rooms/delete",serde_json::json!({"room":room}))?;},
+                }}
                 let value=catalog_post(&address,&session,"/api/rooms/list",serde_json::json!({}))?;
                 let rows=value["rooms"].as_array().ok_or_else(||anyhow::anyhow!("Lista de salas inválida"))?;
                 ensure!(rows.len()<=32,"Lista de salas excedeu o limite");
@@ -50,7 +55,7 @@ impl Catalog {
         if self.origin!=address || session.is_empty(){self.open=false;self.rooms.clear();return None;}
         if !self.open{return None;}
         if !self.busy && self.last_refresh.is_none_or(|at|at.elapsed()>=std::time::Duration::from_secs(30)) {self.request(address.to_owned(),session.clone(),None,ctx.clone());}
-        let mut open=true;let mut selected=None;let mut keep=None;let mut refresh=false;
+        let mut open=true;let mut selected=None;let mut action=None;let mut refresh=false;
         egui::Window::new("Escolher sala").id(egui::Id::new("saved_rooms_window")).open(&mut open)
             .frame(egui::Frame::window(&ctx.style_of(egui::Theme::Dark)).fill(controls::PANEL).stroke(egui::Stroke::new(1.0,controls::BORDER)).corner_radius(12).inner_margin(16))
             .fixed_pos(egui::pos2(16.0,16.0)).default_width(440.0).max_width(440.0).resizable(false).collapsible(false).show(ctx,|ui|{
@@ -76,6 +81,7 @@ impl Catalog {
                                     ui.set_width((card_width-26.0).max(200.0));
                                     ui.set_min_width((card_width-26.0).max(200.0));
                                     let title_width=(ui.available_width()-98.0).max(120.0);
+                                    let current=current_room==Some(entry.room.as_str());
                                     ui.horizontal_top(|ui|{
                                         ui.allocate_ui_with_layout(egui::vec2(title_width,0.0),egui::Layout::top_down(egui::Align::Min),|ui|{
                                             ui.set_min_width(title_width);
@@ -83,16 +89,32 @@ impl Catalog {
                                             ui.label(egui::RichText::new(format!("{} · {} pessoa(s)",if entry.expired{"Expirada"}else if entry.persistent{"Permanente"}else{"Temporária · 24 h"},entry.participants)).size(12.0).color(controls::MUTED));
                                         });
                                         let valid_name=!name.is_empty() && name.len()<=64 && name.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_');
-                                        let current=current_room==Some(entry.room.as_str());
                                         let enabled=!self.busy && !transitioning && !entry.expired && !current && valid_name;
                                         let enter=controls::primary(ui,if current{"Nesta sala"}else{"Entrar"},enabled,egui::vec2(88.0,36.0));
                                         enter.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,enabled,format!("Entrar em {}",entry.title)));
                                         if enter.clicked(){selected=Some(CreatedRoom{room:entry.room.clone(),title:entry.title.clone()});}
                                     });
-                                    let mut persistent=entry.persistent;
-                                    let checkbox=ui.add_enabled(!self.busy,egui::Checkbox::new(&mut persistent,"Manter esta sala"));
-                                    checkbox.widget_info(||egui::WidgetInfo::selected(egui::WidgetType::Checkbox,!self.busy,persistent,format!("Manter sala {}",entry.title)));
-                                    if checkbox.changed(){keep=Some((entry.room.clone(),persistent));}
+                                    let can_delete=!self.busy && !transitioning && entry.participants==0 && !current;
+                                    ui.horizontal(|ui|{
+                                        let mut persistent=entry.persistent;
+                                        let checkbox=ui.add_enabled(!self.busy,egui::Checkbox::new(&mut persistent,"Manter esta sala"));
+                                        checkbox.widget_info(||egui::WidgetInfo::selected(egui::WidgetType::Checkbox,!self.busy,persistent,format!("Manter sala {}",entry.title)));
+                                        if checkbox.changed(){action=Some(CatalogAction::Keep(entry.room.clone(),persistent));}
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
+                                            let delete=controls::compact(ui,"Excluir sala",can_delete);
+                                            delete.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,can_delete,format!("Excluir sala {}",entry.title)));
+                                            if delete.clicked(){self.confirm_delete=Some(entry.room.clone());}
+                                        });
+                                    });
+                                    if self.confirm_delete.as_deref()==Some(&entry.room) {
+                                        ui.horizontal(|ui|{
+                                            ui.label(egui::RichText::new("Excluir esta sala?").size(11.0).color(controls::MUTED));
+                                            if controls::compact(ui,"Cancelar",!self.busy).clicked(){self.confirm_delete=None;}
+                                            let confirm=controls::compact(ui,"Excluir",can_delete);
+                                            confirm.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,can_delete,format!("Confirmar exclusão de {}",entry.title)));
+                                            if confirm.clicked(){action=Some(CatalogAction::Delete(entry.room.clone()));self.confirm_delete=None;}
+                                        });
+                                    }
                                     if entry.expired{ui.label(egui::RichText::new(if entry.participants>0{"A limpeza aguarda os participantes saírem."}else{"Aguardando limpeza automática."}).size(11.0).color(controls::MUTED));}
                                 });
                         });
@@ -102,7 +124,7 @@ impl Catalog {
                 else if current_room.is_some(){ui.small("Ao entrar em outra sala, seu compartilhamento atual será encerrado.");}
             });
         self.open=open && selected.is_none();
-        if refresh || keep.is_some(){self.request(address.to_owned(),session,keep,ctx.clone());}
+        if refresh || action.is_some(){self.request(address.to_owned(),session,action,ctx.clone());}
         selected
     }
 }
@@ -111,7 +133,7 @@ fn catalog_post(address:&str,session:&str,path:&str,body:serde_json::Value)->Res
     let response=reqwest::blocking::Client::builder().redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(15)).build()?.post(crate::invitation::endpoint(address,path)?)
         .bearer_auth(session).json(&body).send().map_err(|_|anyhow::anyhow!("Servidor indisponível; tente novamente"))?;
-    match response.status().as_u16(){200=>{},401|403=>anyhow::bail!("Sessão expirada; entre no servidor novamente"),_=>anyhow::bail!("Não foi possível atualizar a lista de salas")}
+    match response.status().as_u16(){200=>{},401|403=>anyhow::bail!("Sessão expirada; entre no servidor novamente"),404=>anyhow::bail!("Sala já removida; atualize a lista"),409 if path=="/api/rooms/delete"=>anyhow::bail!("A sala recebeu participantes. Aguarde todos saírem para excluir"),_=>anyhow::bail!("Não foi possível atualizar a lista de salas")}
     let mut bytes=Vec::new();response.take(65537).read_to_end(&mut bytes)?;ensure!(bytes.len()<=65536,"Resposta excedeu o limite");
     Ok(serde_json::from_slice(&bytes)?)
 }
@@ -196,7 +218,14 @@ pub fn create(address:&str,code:&str,title:&str,request_id:&str,persistent:bool)
         200=>{},
         400=>anyhow::bail!("Use um nome de sala com 1 a 64 caracteres visíveis"),
         401|403=>anyhow::bail!("Sessão expirada; entre novamente no servidor"),
-        409=>anyhow::bail!("Você já tem uma sala ativa ou o servidor atingiu o limite de salas. Aguarde ou volte à sala anterior"),
+        409=>{
+            let mut body=Vec::new();response.take(4097).read_to_end(&mut body)?;
+            let value=serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default();
+            anyhow::bail!(match value["error"].as_str(){
+                Some("Saved room limit reached")=>"Limite de 32 salas salvas atingido; exclua uma sala vazia",
+                _=>"Pedido de criação desatualizado; feche esta janela e tente novamente",
+            });
+        },
         429=>anyhow::bail!("Limite de criação atingido; tente novamente mais tarde"),
         _=>anyhow::bail!("Criação de salas indisponível; tente novamente"),
     }

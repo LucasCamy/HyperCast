@@ -1,4 +1,4 @@
-# Acesso ao servidor, salas salvas e permanentes — 0.8.3
+# Acesso ao servidor, salas salvas e permanentes — 0.8.4
 
 Primeiro informe a **Chave de acesso** compartilhada e use **Entrar no servidor**.
 Essa chave autoriza usar o HyperCast: criar salas e escolher as salas da sua lista.
@@ -24,8 +24,8 @@ ser copiados ou guardados pelo usuário. Credenciais não entram nos logs.
 ## Entrada pela lista
 
 Use **Escolher sala** para listar as salas da chave compartilhada do servidor,
-inclusive as criadas em outro dispositivo com a mesma chave. Saia da sessão
-atual antes de entrar em outra. A interface não tem campo de código nem ações
+inclusive as criadas em outro dispositivo com a mesma chave. A troca de sala
+encerra a sessão anterior automaticamente. A interface não tem campo de código nem ações
 de copiar convite. A entrada usa o ID interno da sala e o servidor valida que
 a sala pertence à mesma chave de acesso. Sessão válida e vínculo ao dispositivo
 continuam obrigatórios.
@@ -42,7 +42,9 @@ não no cache do aplicativo. A chave de acesso continua sujeita à validade e à
 revogação pelo operador; a sala não é apagada quando uma sessão de acesso expira.
 
 Permanência não mantém um processo ou uma conexão de vídeo rodando para sempre.
-O SFU libera a sala vazia após dez minutos. A próxima entrada recria a sala com
+O cadastro não abre uma instância de vídeo: ela é aberta na entrada. Instâncias
+novas têm 60 segundos para a primeira conexão; após a última saída, o SFU as libera
+com timeout de um segundo, verificado a cada segundo. A próxima entrada recria a sala com
 o mesmo nome, identificador e limites. A interface usa o nome retornado pela API de
 entrada, evitando exibir o identificador interno `hcr-...` por falta de metadata.
 
@@ -64,6 +66,20 @@ não precisa esperar por um mutex de mídia ou pelo encerramento da conexão par
 desenhar. Testes simulam rejeição atrasada do servidor e mídia bloqueada, além de
 realizar duas trocas de sala usando credenciais temporárias de teste.
 
+## Excluir uma sala vazia
+
+Use **Excluir sala** no cartão e confirme **Excluir**. A opção fica desativada na
+sala atual e nas salas com participantes. O servidor verifica novamente a chave
+de acesso e a ocupação antes de remover o cadastro, os convites e os membros.
+Se alguém já tiver entrado, a exclusão é recusada. Salas permanentes também podem
+ser removidas explicitamente quando vazias; a limpeza automática não as remove.
+
+A operação não chama DeleteRoom no SFU: isso poderia expulsar alguém que conectou
+logo após a consulta de ocupação. A instância vazia é liberada pelo timeout do SFU.
+JWTs emitidos antes da exclusão ainda têm validade de até cinco minutos; novas
+entradas pela API e pelo convite removido são recusadas. O histórico das criações
+é separado do cadastro, portanto excluir não contorna a quota diária.
+
 ## Limpeza automática
 
 O servidor verifica as salas a cada minuto, e também ao carregar a lista.
@@ -83,7 +99,12 @@ limitadas a 128 salas por execução.
 ## Limites e validade
 
 - Chave compartilhada: validade definida pelo operador, inicialmente 30 dias.
-- Até quatro salas abertas no servidor via API. HYPERCAST_MAX_ROOMS aceita 1–16.
+- Até quatro instâncias de vídeo abertas no servidor via API, incluindo conexões
+  em andamento. HYPERCAST_MAX_ROOMS aceita 1–16. Salas somente salvas não ocupam
+  essas vagas. Ao atingir o limite, a entrada aguarda até dois segundos se houver
+  uma instância vazia prestes a fechar; salas ocupadas nunca são expulsas.
+  Instâncias abertas antes da atualização conservam os timeouts antigos até
+  encerrarem; as seguintes usam os novos valores.
 - Até 32 registros de salas válidas por chave compartilhada. Não há mais o
   bloqueio de uma única sala aberta por dispositivo.
 - Até dez novas salas por chave compartilhada em 24 horas. Repetir o mesmo pedido
@@ -115,7 +136,8 @@ JWT HS256 com audience hypercast-access, scope server:access e expiração de 90
 `POST /api/rooms/list` recebe esse JWT e um objeto vazio; lista até 32 registros,
 priorizando permanentes e válidos. `POST /api/rooms/join` recebe `room`, `name` e `request_id`, e devolve JWT curto
 e nome amigável após verificar que a sala pertence à mesma chave.
-`POST /api/rooms/keep` recebe `room` (ID interno)
+`POST /api/rooms/delete` recebe `room` e só remove registros da mesma chave se
+o SFU confirmar a sala vazia. `POST /api/rooms/keep` recebe `room` (ID interno)
 e `persistent`; só altera salas da mesma chave de acesso.
 `POST /api/join` recebe o JWT, convite, apelido e request_id igual ao device_id.
 O servidor verifica assinatura, escopo, prazo, revogação e vínculo ao dispositivo.

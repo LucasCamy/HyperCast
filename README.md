@@ -1,5 +1,10 @@
 # HyperCast
 
+0.8.4 mantém **Nesta sala** em uma linha, permite excluir salas vazias com
+confirmação e separa salas salvas das sessões de vídeo. Salvar uma sala não
+reserva mais uma das quatro vagas de vídeo no servidor.
+[Exclusão e limites](docs/room-creation.md#excluir-uma-sala-vazia).
+
 0.8.3 permite trocar de sala diretamente pela lista, encerrando a conexão e o
 compartilhamento anteriores automaticamente. No Linux, a interface continua
 desenhando enquanto aguarda respostas, acesso ao estado de mídia e encerramento

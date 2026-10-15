@@ -58,6 +58,10 @@ class RoomCreation:
                 CREATE TABLE IF NOT EXISTS room_options (
                     room TEXT PRIMARY KEY, persistent INTEGER NOT NULL DEFAULT 0,
                     code_version INTEGER NOT NULL DEFAULT 1, code_nonce INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS room_creation_events (
+                    room TEXT PRIMARY KEY, actor TEXT NOT NULL, created INTEGER NOT NULL);
+                INSERT OR IGNORE INTO room_creation_events
+                    SELECT room,CASE WHEN instr(creator,':')>0 THEN substr(creator,1,instr(creator,':')-1) ELSE creator END,created FROM rooms;
                 CREATE VIEW IF NOT EXISTS room_catalog AS
                     SELECT rooms.*,COALESCE(o.persistent,0) AS persistent,
                     COALESCE(o.code_version,1) AS code_version,COALESCE(o.code_nonce,0) AS code_nonce
@@ -174,6 +178,31 @@ class RoomCreation:
         code=self.invite_code(room,record['code_version'],record['code_nonce'])
         return self.admission.join(code,name,request_id,session)
 
+    def delete(self,session,room):
+        access=self.authorize(session)
+        if not isinstance(room,str) or not rt.NAME.fullmatch(room):self.reject(400,'Invalid room')
+        with closing(self.admission.db()) as db:
+            db.execute('BEGIN IMMEDIATE')
+            try:
+                record=db.execute('SELECT room FROM rooms WHERE room=? AND (creator=? OR creator LIKE ?)',
+                    (room,access['id'],access['id']+':%')).fetchone()
+                if not record:self.reject(404,'Room not found')
+                live=self.api('ListRooms',{}).get('rooms',[])
+                for item in live:
+                    if item['name']==room:
+                        count=item.get('num_participants',0)
+                        if type(count) is not int or count!=0:self.reject(409,'Room is occupied')
+                # Delete only the catalog. Never call DeleteRoom here: a participant
+                # with a previously issued JWT may have joined since ListRooms.
+                # The SFU retires the empty instance through its own timeout.
+                db.execute('DELETE FROM members WHERE invite IN (SELECT id FROM invites WHERE room=?)',(room,))
+                db.execute('DELETE FROM invites WHERE room=?',(room,))
+                db.execute('DELETE FROM room_options WHERE room=?',(room,))
+                db.execute('DELETE FROM rooms WHERE room=?',(room,))
+                db.commit()
+            except Exception:db.rollback();raise
+        return {'deleted':True}
+
     def keep(self,session,room,persistent):
         access=self.authorize(session)
         if not isinstance(room,str) or not rt.NAME.fullmatch(room) or type(persistent) is not bool:
@@ -202,9 +231,18 @@ class RoomCreation:
         live_info=self.api('ListRooms',{}).get('rooms',[])
         live={r['name'] for r in live_info}
         if room in live: return
+        # A just-left room may be waiting for the SFU's one-second departure
+        # timeout. Wait briefly; never evict an instance from a stale snapshot.
+        if len(live)>=self.max_rooms and any(r.get('num_participants',0)==0 for r in live_info):
+            for _ in range(5):
+                time.sleep(0.4)
+                live_info=self.api('ListRooms',{}).get('rooms',[])
+                live={r['name'] for r in live_info}
+                if room in live:return
+                if len(live)<self.max_rooms:break
         if len(live)>=self.max_rooms: self.reject(409,'Server room limit reached')
-        self.api('CreateRoom',{'name':room,'max_participants':12,'empty_timeout':600,
-            'departure_timeout':600,'metadata':json.dumps({'hypercast_name':record['title'],'hypercast_creator':record['creator']},ensure_ascii=False)})
+        self.api('CreateRoom',{'name':room,'max_participants':12,'empty_timeout':60,
+            'departure_timeout':1,'metadata':json.dumps({'hypercast_name':record['title'],'hypercast_creator':record['creator']},ensure_ascii=False)})
 
     def ensure_join(self,room):
         with closing(self.admission.db()) as db:
@@ -244,22 +282,25 @@ class RoomCreation:
                             (room,1,previous['code_version'],previous['code_nonce']))
                         db.execute('UPDATE invites SET expires=0 WHERE room=? AND revoked=0',(room,))
                 else:
-                    if db.execute('SELECT COUNT(*) FROM room_catalog WHERE (creator=? OR creator LIKE ?) AND created>?',(actor['id'],actor['id']+':%',now-86400)).fetchone()[0]>=10:
+                    db.execute('DELETE FROM room_creation_events WHERE created<=?',(now-86400,))
+                    if db.execute('SELECT COUNT(*) FROM room_creation_events WHERE actor=? AND created>?',(actor['id'],now-86400)).fetchone()[0]>=10:
                         self.reject(429,'Daily room creation limit reached')
                     if db.execute('SELECT COUNT(*) FROM room_catalog WHERE (creator=? OR creator LIKE ?) AND (persistent=1 OR expires>?)',
                         (actor['id'],actor['id']+':%',now)).fetchone()[0]>=32:self.reject(409,'Saved room limit reached')
                     room='hcr-'+hmac.new(self.admission.secret.encode(),('hypercast-room:'+access['owner']+':'+request_id).encode(),hashlib.sha256).hexdigest()[:32]
+                    if db.execute('SELECT 1 FROM room_creation_events WHERE room=?',(room,)).fetchone():self.reject(409,'Deleted room request')
                     expires=0 if persistent else now+86400;version=2 if short_code else 1;nonce=0
                     while db.execute('SELECT 1 FROM invites WHERE hash=?',(hashlib.sha256(self.invite_code(room,version,nonce).encode()).hexdigest(),)).fetchone():
                         if version==1 or nonce>=32:self.reject(503,'Unable to allocate room code')
                         nonce+=1
                     db.execute('INSERT INTO rooms(room,creator,request_id,title,created,expires) VALUES(?,?,?,?,?,?)',
                         (room,access['owner'],request_id,title,now,expires))
+                    db.execute('INSERT INTO room_creation_events VALUES(?,?,?)',(room,actor['id'],now))
                     db.execute('INSERT INTO room_options VALUES(?,?,?,?)',(room,int(persistent),version,nonce))
                     invitation=uuid.uuid4().hex
                     db.execute('INSERT INTO invites(id,hash,room,role,expires,max_uses) VALUES(?,?,?,?,?,?)',
                         (invitation,hashlib.sha256(self.invite_code(room,version,nonce).encode()).hexdigest(),room,'publisher',expires,12))
-                self.ensure(db,room)
+                # Saved rooms do not reserve a media slot; admission opens it.
                 record=db.execute('SELECT * FROM room_catalog WHERE room=?',(room,)).fetchone()
                 db.commit()
             except Exception: db.rollback();raise

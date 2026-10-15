@@ -83,7 +83,7 @@ class Admission:
             db.execute('BEGIN IMMEDIATE')
             try:
                 invite = db.execute('SELECT * FROM invites WHERE id=?',(invite['id'],)).fetchone()
-                if invite['revoked'] or (invite['expires']!=0 and invite['expires']<=now): raise Rejected(401,'Invitation expired or revoked')
+                if not invite or invite['revoked'] or (invite['expires']!=0 and invite['expires']<=now): raise Rejected(401,'Invitation expired or revoked')
                 member = db.execute('SELECT * FROM members WHERE invite=? AND request_id=?',(invite['id'],request_id)).fetchone()
                 new_member = member is None
                 if new_member and invite['expires']!=0 and invite['uses']>=invite['max_uses']: raise Rejected(403,'Invitation use limit reached')
@@ -173,6 +173,9 @@ def main():
                 elif self.path=='/api/rooms/join':
                     if set(body)!={'room','name','request_id'}:raise Rejected(400,'Unexpected fields')
                     data=admission.rooms.join(self.headers.get('Authorization','').removeprefix('Bearer '),body['room'],body['name'],body['request_id'])
+                elif self.path=='/api/rooms/delete':
+                    if set(body)!={'room'}:raise Rejected(400,'Unexpected fields')
+                    data=admission.rooms.delete(self.headers.get('Authorization','').removeprefix('Bearer '),body['room'])
                 elif self.path=='/api/rooms/keep':
                     if set(body)!={'room','persistent'}:raise Rejected(400,'Unexpected fields')
                     data=admission.rooms.keep(self.headers.get('Authorization','').removeprefix('Bearer '),body['room'],body['persistent'])

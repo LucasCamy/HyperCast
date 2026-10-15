@@ -51,7 +51,7 @@ fn join_request(address:&str,session:&str,path:&str,body:serde_json::Value)->Res
         200 => {},
         401 | 403 => anyhow::bail!("Sala indisponível ou sessão expirada; entre no servidor novamente"),
         404 => anyhow::bail!("Sala não encontrada nesta chave de acesso"),
-        409 => anyhow::bail!("O servidor atingiu o limite de salas abertas"),
+        409 => anyhow::bail!("Limite de salas de vídeo simultâneas atingido; aguarde uma ficar livre e tente novamente"),
         400 => anyhow::bail!("Use nome com letras sem acentos, números, hífen ou sublinhado"),
         _ => anyhow::bail!("Não foi possível entrar na sala; tente novamente"),
     }
