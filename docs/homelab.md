@@ -1,5 +1,12 @@
 # HyperCast no Cloudlane Homelab
 
+Limpeza do catálogo (15/10/2026, 0.8.2): serviço de acesso atualizado para
+`ghcr.io/lucascamy/hypercast-auth@sha256:9dfb3804755f9d3f08f53219af606b4930a6c4632aa14b45371b402e6c36effb`.
+Backup SQLite realizado antes da atualização. A primeira execução removeu 15 salas
+temporárias expiradas e vazias. Verificação a cada minuto, com tolerância de cinco
+minutos após expiração para os tokens de entrada; falha ao consultar o SFU adia a
+limpeza. Salas permanentes e ocupadas são preservadas. SFU e TURN não foram alterados.
+
 Entrada pela lista (15/10/2026, 0.8.1): novo `/api/rooms/join` aceita ID interno
 e valida acesso à sala pela mesma chave compartilhada. Clientes antigos e suas
 rotas permanecem compatíveis. Imagem de acesso instalada:

@@ -13,6 +13,8 @@ pub mod diagnostics;
 #[cfg(feature = "desktop")]
 pub mod invitation;
 #[cfg(feature = "desktop")]
+pub mod desktop_ui;
+#[cfg(feature = "desktop")]
 pub mod server_status;
 #[cfg(feature = "desktop")]
 pub mod preferences;

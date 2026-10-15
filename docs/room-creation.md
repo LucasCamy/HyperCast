@@ -1,4 +1,4 @@
-# Acesso ao servidor, salas salvas e permanentes — 0.8.1
+# Acesso ao servidor, salas salvas e permanentes — 0.8.2
 
 Primeiro informe a **Chave de acesso** compartilhada e use **Entrar no servidor**.
 Essa chave autoriza usar o HyperCast: criar salas e escolher as salas da sua lista.
@@ -35,7 +35,7 @@ compatibilidade. O fluxo atual não depende de receber um código na listagem.
 
 Ao criar, marque **Manter sala indefinidamente** para não expirar o registro
 da sala. A mesma opção está nos cartões da lista; desmarcar inicia um novo prazo
-de 24 horas. Uma sala expirada pode ser reativada marcando essa opção. Criar com
+de 24 horas. Criar com
 o mesmo nome, sem diferenciar maiúsculas e minúsculas, recupera o registro válido
 existente em vez de criar uma duplicata. Os dados ficam no SQLite persistente,
 não no cache do aplicativo. A chave de acesso continua sujeita à validade e à
@@ -45,6 +45,22 @@ Permanência não mantém um processo ou uma conexão de vídeo rodando para sem
 O SFU libera a sala vazia após dez minutos. A próxima entrada recria a sala com
 o mesmo nome, identificador e limites. A interface usa o nome retornado pela API de
 entrada, evitando exibir o identificador interno `hcr-...` por falta de metadata.
+
+## Limpeza automática
+
+O servidor verifica as salas a cada minuto, e também ao carregar a lista.
+Temporárias que expiraram e estão vazias têm seus registros, convites e membros
+removidos automaticamente do banco. Aguarda-se a validade residual máxima de
+cinco minutos dos tokens de entrada antes da remoção. Salas permanentes e salas
+com participantes são preservadas. Se o SFU estiver indisponível, a limpeza é
+adiada: não se presume que uma sala esteja vazia sem consultar o servidor.
+
+A lista aberta se atualiza a cada 30 segundos. Salas expiradas que ainda tenham
+participantes permanecem visíveis até ficarem vazias e cumprirem o prazo de
+segurança. O serviço não desconecta participantes nem apaga salas permanentes
+por estarem sem transmissão. O SFU continua liberando suas instâncias vazias
+pelo timeout normal. As operações de remoção no SQLite são transacionais e
+limitadas a 128 salas por execução.
 
 ## Limites e validade
 

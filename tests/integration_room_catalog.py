@@ -33,10 +33,22 @@ def main():
     admin=rt.sign({'iss':key,'sub':'catalog-test','aud':'hypercast-invites','scope':'invites:write',
         'nbf':now-5,'exp':now+90},secret)
     access=post('/api/admin/access-keys',{'label':'catalog-'+uuid.uuid4().hex[:8],'days':1},admin)
-    session='';room=None
+    session='';room=None;extras=[]
+    def delete_instance(target):
+        operator=rt.sign({'iss':key,'sub':'catalog-cleanup','nbf':int(time.time())-5,'exp':int(time.time())+60,
+            'video':{'room':target,'roomCreate':True,'roomAdmin':True}},secret)
+        try:post('/twirp/livekit.RoomService/DeleteRoom',{'room':target},operator)
+        except urllib.error.HTTPError as error:
+            if error.code!=404:raise
     try:
         device=uuid.uuid4().hex
         session=post('/api/login',{'device_id':device},access['access_key'])['token']
+        if os.environ.get('HYPERCAST_CATALOG_UI')=='1':
+            for name in ['Sala com um nome comprido para testar alinhamento dos botões','Jogos','Trabalho e projetos','Filmes com amigos']:
+                extra=post('/api/rooms',{'room_name':name,'request_id':uuid.uuid4().hex,'persistent':True},session)
+                extras.append(extra)
+                delete_instance(extra['room'])
+            time.sleep(1.1)  # Keep the room used for entry first in the catalog.
         title='Jogos e amigos · teste '+uuid.uuid4().hex[:6]
         room=post('/api/rooms',{'room_name':title,'request_id':uuid.uuid4().hex,'persistent':True},session)
         assert re.fullmatch('[A-Z]{8}',room['invite']) and room['persistent'] and room['expires_at']==0
@@ -56,9 +68,9 @@ def main():
     finally:
         if room and session:
             post('/api/rooms/keep',{'room':room['room'],'persistent':False},session)
-            operator=rt.sign({'iss':key,'sub':'catalog-cleanup','nbf':int(time.time())-5,'exp':int(time.time())+60,
-                'video':{'room':room['room'],'roomCreate':True,'roomAdmin':True}},secret)
-            post('/twirp/livekit.RoomService/DeleteRoom',{'room':room['room']},operator)
+            delete_instance(room['room'])
+        for extra in extras:
+            post('/api/rooms/keep',{'room':extra['room'],'persistent':False},session)
         admin=rt.sign({'iss':key,'sub':'catalog-test','aud':'hypercast-invites','scope':'invites:write',
             'nbf':int(time.time())-5,'exp':int(time.time())+60},secret)
         post('/api/admin/revoke-access',{'access_id':access['access_id']},admin)
@@ -110,11 +122,11 @@ def gui(access_key,title,legacy_code):
             assert not control('Copiar código','-Read',check=False)
             assert not control(legacy_code,'-Read',check=False)
             screenshot(app.pid,ROOT/'.tools/catalog-list.png')
-            control('Manter esta sala','-Toggle')
+            control('Manter sala '+title,'-Toggle')
             wait('Temporária · 24 h · 0 pessoa(s)')
-            control('Manter esta sala','-Toggle')
+            control('Manter sala '+title,'-Toggle')
             wait('Permanente · 0 pessoa(s)')
-            control('Entrar')
+            control('Entrar em '+title)
             wait('Conectado',20)
             wait(title)
             assert not control('Copiar convite','-Read',check=False)

@@ -129,12 +129,38 @@ class RoomCreation:
 
     def listing(self,session):
         access=self.authorize(session)
+        live_info=self.api('ListRooms',{}).get('rooms',[])
+        self.cleanup(live_info)
         with closing(self.admission.db()) as db:
             rows=db.execute('SELECT * FROM room_catalog WHERE creator=? OR creator LIKE ? ORDER BY persistent DESC,(expires>?) DESC,created DESC,room LIMIT 32',
                 (access['id'],access['id']+':%',int(time.time()))).fetchall()
-        live={r['name']:r for r in self.api('ListRooms',{}).get('rooms',[])}
+        live={r['name']:r for r in live_info}
         return {'rooms':[dict(self.result(r),active=r['room'] in live,
             participants=int(live.get(r['room'],{}).get('num_participants',0))) for r in rows]}
+
+    def cleanup(self,live_info=None):
+        if live_info is None:live_info=self.api('ListRooms',{}).get('rooms',[])
+        participants={r['name']:r.get('num_participants',0) for r in live_info}
+        # An admission token issued just before expiry may remain valid for five
+        # minutes. Wait for it before deleting records, and never disconnect a
+        # live session. The SFU independently retires its empty room instance.
+        cutoff=int(time.time())-300
+        removed=0
+        with closing(self.admission.db()) as db:
+            db.execute('BEGIN IMMEDIATE')
+            try:
+                rows=db.execute('SELECT room FROM room_catalog WHERE persistent=0 AND expires>0 AND expires<=? ORDER BY expires LIMIT 128',(cutoff,)).fetchall()
+                for row in rows:
+                    room=row['room'];count=participants.get(room,0)
+                    if type(count) is not int or count!=0:continue
+                    db.execute('DELETE FROM members WHERE invite IN (SELECT id FROM invites WHERE room=?)',(room,))
+                    db.execute('DELETE FROM invites WHERE room=?',(room,))
+                    db.execute('DELETE FROM room_options WHERE room=?',(room,))
+                    db.execute('DELETE FROM rooms WHERE room=?',(room,))
+                    removed+=1
+                db.commit()
+            except Exception:db.rollback();raise
+        return removed
 
     def join(self,session,room,name,request_id):
         access=self.authorize(session)

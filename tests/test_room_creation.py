@@ -14,12 +14,38 @@ class RoomCreationTests(unittest.TestCase):
         self.tmp=tempfile.TemporaryDirectory();self.live={}
         self.app=Admission(Path(self.tmp.name)/'db.sqlite','key','x'*64,active=lambda _:set())
         def api(method,body):
-            if method=='ListRooms':return {'rooms':[{'name':r,'metadata':v.get('metadata','{}')} for r,v in self.live.items()]}
+            if method=='ListRooms':return {'rooms':[{'name':r,'metadata':v.get('metadata','{}'),'num_participants':v.get('num_participants',0)} for r,v in self.live.items()]}
             self.live[body['name']]=body;return body
         self.api=api;self.app.rooms=RoomCreation(self.app,api,max_rooms=2)
         self.key=self.app.rooms.issue_creator('Amigos')['access_key']
         self.creator=self.app.rooms.login(self.key,'a'*32)['token']
     def tearDown(self):self.tmp.cleanup()
+    def test_cleanup_requires_expiry_empty_and_expired_admission_tokens(self):
+        import time
+        empty=self.app.rooms.create(self.creator,'Empty',uuid.uuid4().hex)
+        self.app.rooms.join(self.creator,empty['room'],'Tester','a'*32)
+        self.live.clear()
+        active=self.app.rooms.create(self.creator,'Active',uuid.uuid4().hex)
+        self.live[active['room']]['num_participants']=1
+        permanent=self.app.rooms.create(self.creator,'Permanent',uuid.uuid4().hex,True)
+        self.live.pop(permanent['room'])
+        recent=self.app.rooms.create(self.creator,'RecentlyExpired',uuid.uuid4().hex)
+        with closing(self.app.db()) as db:
+            db.execute('UPDATE rooms SET expires=? WHERE room IN (?,?)',(int(time.time())-1000,empty['room'],active['room']))
+            db.execute('UPDATE rooms SET expires=? WHERE room=?',(int(time.time())-20,recent['room']))
+        with patch.object(self.app.rooms,'api',side_effect=OSError('SFU unavailable')):
+            with self.assertRaises(OSError):self.app.rooms.cleanup()
+        self.assertEqual(self.app.rooms.cleanup(),1)
+        with closing(self.app.db()) as db:
+            self.assertIsNone(db.execute('SELECT * FROM rooms WHERE room=?',(empty['room'],)).fetchone())
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM members').fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM invites WHERE room=?',(empty['room'],)).fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM room_options WHERE room=?',(empty['room'],)).fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM rooms').fetchone()[0],3)
+        self.assertEqual(self.app.rooms.cleanup(),0)
+        self.live.pop(active['room'])
+        self.assertEqual(self.app.rooms.cleanup(),1)
+        self.assertIn(permanent['room'],{r['room'] for r in self.app.rooms.listing(self.creator)['rooms']})
     def test_additive_migration_keeps_legacy_rows_and_six_column_inserts(self):
         import time
         with closing(self.app.db()) as db:

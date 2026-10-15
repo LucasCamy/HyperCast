@@ -36,30 +36,11 @@ fn button(ui: &mut egui::Ui, label: &str, enabled: bool, primary: bool) -> egui:
         .stroke(egui::Stroke::new(1.0, BORDER)),
     )
 }
-fn small(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    ui.scope(|ui| {
-        ui.spacing_mut().button_padding = Vec2::new(10.0, 4.0);
-        ui.spacing_mut().interact_size.y = 26.0;
-        ui.add(
-            egui::Button::new(RichText::new(label).size(11.0).color(MUTED))
-                .corner_radius(9)
-                .fill(SURFACE)
-                .stroke(egui::Stroke::new(1.0, BORDER)),
-        )
-    })
-    .inner
+fn small(ui:&mut egui::Ui,label:&str)->egui::Response {crate::desktop_ui::compact(ui,label,true)}
+fn input(ui:&mut egui::Ui,value:&mut String,hint:&str,password:bool,limit:usize)->egui::Response {
+    crate::desktop_ui::input(ui,value,hint,password,limit,true)
 }
-fn input(ui: &mut egui::Ui, value: &mut String, hint: &str, password: bool, limit: usize) -> egui::Response {
-    ui.add(
-        egui::TextEdit::singleline(value)
-            .desired_width(f32::INFINITY)
-            .password(password)
-            .char_limit(limit)
-            .margin(egui::Margin::symmetric(12, 10))
-            .background_color(SURFACE)
-            .hint_text(hint),
-    )
-}
+
 struct App {
     address: String,
     name: String,

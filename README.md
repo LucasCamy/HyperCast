@@ -1,5 +1,10 @@
 # HyperCast
 
+0.8.2 padroniza a lista de salas: cartões ocupam toda a largura, botões alinhados
+e campo de nome igual ao restante do aplicativo. Salas temporárias expiradas e
+vazias são removidas automaticamente; permanentes e ocupadas são preservadas.
+[Detalhes da limpeza](docs/room-creation.md).
+
 0.8.1 permite **Escolher sala** pelo nome, sem digitar ou copiar códigos. A lista
 ocupa a altura útil da janela e mantém entrada protegida pela chave do servidor.
 [Como usar](docs/room-creation.md).

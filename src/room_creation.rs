@@ -2,12 +2,14 @@
 use anyhow::{Result, ensure};
 use std::{io::Read, sync::mpsc};
 use eframe::egui;
+use crate::desktop_ui as controls;
 
 pub struct SavedRoom { pub room:String, pub title:String, pub persistent:bool, pub expired:bool, pub participants:u64 }
 #[derive(Default)]
 pub struct Catalog {
     pub open:bool, busy:bool, status:String, rooms:Vec<SavedRoom>, origin:String,
-    receiver:Option<mpsc::Receiver<(String,Result<Vec<SavedRoom>>)>>,
+    last_refresh:Option<std::time::Instant>,
+    receiver:Option<mpsc::Receiver<(String,String,Result<Vec<SavedRoom>>)>>,
 }
 impl Catalog {
     pub fn open(&mut self,address:String,session:String,ctx:egui::Context) {
@@ -16,7 +18,7 @@ impl Catalog {
     fn request(&mut self,address:String,session:String,keep:Option<(String,bool)>,ctx:egui::Context) {
         if self.busy{return;}
         if self.origin!=address {self.rooms.clear();}
-        self.origin=address.clone();self.busy=true;self.status.clear();
+        self.origin=address.clone();self.last_refresh=Some(std::time::Instant::now());self.busy=true;self.status.clear();
         let(tx,rx)=mpsc::channel();self.receiver=Some(rx);
         std::thread::spawn(move|| {
             let result=(||->Result<Vec<SavedRoom>> {
@@ -34,44 +36,65 @@ impl Catalog {
                     Ok(SavedRoom{room,title,persistent,expired:!persistent && expires<=now,participants:v["participants"].as_u64().unwrap_or(0).min(12)})
                 }).collect()
             })();
-            let _=tx.send((address,result));ctx.request_repaint();
+            let _=tx.send((address,session,result));ctx.request_repaint();
         });
     }
     pub fn show(&mut self,ctx:&egui::Context,address:&str,session:String,name:&mut String,connected:bool)->Option<CreatedRoom> {
         if let Some(rx)=&self.receiver {
             match rx.try_recv() {
-                Ok((origin,result))=>{self.receiver=None;self.busy=false;if origin==address && !session.is_empty(){match result {Ok(rooms)=>self.rooms=rooms,Err(e)=>self.status=e.to_string()}}},
+                Ok((origin,requested_session,result))=>{self.receiver=None;self.busy=false;if origin==address && requested_session==session && !session.is_empty(){match result {Ok(rooms)=>self.rooms=rooms,Err(e)=>self.status=e.to_string()}}},
                 Err(mpsc::TryRecvError::Disconnected)=>{self.receiver=None;self.busy=false;self.status="Consulta interrompida; tente novamente".into();},
                 Err(mpsc::TryRecvError::Empty)=>{}
             }
         }
         if self.origin!=address || session.is_empty(){self.open=false;self.rooms.clear();return None;}
         if !self.open{return None;}
+        if !self.busy && self.last_refresh.is_none_or(|at|at.elapsed()>=std::time::Duration::from_secs(30)) {self.request(address.to_owned(),session.clone(),None,ctx.clone());}
         let mut open=true;let mut selected=None;let mut keep=None;let mut refresh=false;
         egui::Window::new("Escolher sala").id(egui::Id::new("saved_rooms_window")).open(&mut open)
-            .frame(egui::Frame::window(&ctx.style_of(egui::Theme::Dark)).corner_radius(12).inner_margin(16))
+            .frame(egui::Frame::window(&ctx.style_of(egui::Theme::Dark)).fill(controls::PANEL).stroke(egui::Stroke::new(1.0,controls::BORDER)).corner_radius(12).inner_margin(16))
             .fixed_pos(egui::pos2(16.0,16.0)).default_width(440.0).max_width(440.0).resizable(false).collapsible(false).show(ctx,|ui|{
                 ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
-                ui.horizontal(|ui|{ui.label("Salas da sua chave de acesso");if ui.add_enabled(!self.busy,egui::Button::new("Atualizar lista").corner_radius(8)).clicked(){refresh=true;}});
-                ui.label("Seu nome");ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY).char_limit(64).margin(egui::Margin::symmetric(10,8)));
-                if self.busy {ui.horizontal(|ui|{ui.spinner();ui.label("Atualizando salas…");});}
+                ui.spacing_mut().item_spacing=egui::vec2(10.0,10.0);
+                ui.horizontal(|ui|{
+                    ui.label(egui::RichText::new(if self.busy {"Atualizando salas…".into()}else{format!("{} sala(s) disponível(is)",self.rooms.len())}).size(12.0).color(controls::MUTED));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
+                        if controls::compact(ui,"Atualizar lista",!self.busy).clicked(){refresh=true;}
+                    });
+                });
+                let name_label=ui.label("Seu nome").id;
+                controls::input(ui,name,"Como quer aparecer na sala",false,64,!connected).labelled_by(name_label);
                 if !self.status.is_empty(){ui.label(&self.status);}
                 if !self.busy && self.rooms.is_empty(){ui.label("Nenhuma sala salva. Crie uma para começar.");}
                 let list_height=(ctx.content_rect().bottom()-ui.cursor().top()-64.0).max(160.0);
                 egui::ScrollArea::vertical().min_scrolled_height(list_height).max_height(list_height).auto_shrink([false,false]).show(ui,|ui|{
+                    let card_width=ui.available_width();
                     for entry in &self.rooms {
-                        ui.push_id(&entry.room,|ui|{egui::Frame::group(ui.style()).corner_radius(10).inner_margin(12).show(ui,|ui|{
-                            ui.set_min_width(ui.available_width());
-                            ui.label(egui::RichText::new(&entry.title).strong().size(16.0));
-                            ui.label(format!("{} · {} pessoa(s)",if entry.persistent{"Permanente"}else if entry.expired{"Expirada"}else{"Temporária · 24 h"},entry.participants));
-                            ui.horizontal(|ui|{
-                                let valid_name=!name.is_empty() && name.len()<=64 && name.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_');
-                                if ui.add_enabled(!self.busy && !entry.expired && !connected && valid_name,egui::Button::new("Entrar").corner_radius(8)).clicked(){selected=Some(CreatedRoom{room:entry.room.clone(),title:entry.title.clone()});}
-                            });
-                            let mut persistent=entry.persistent;
-                            if ui.add_enabled(!self.busy,egui::Checkbox::new(&mut persistent,"Manter esta sala")).changed(){keep=Some((entry.room.clone(),persistent));}
-                            if entry.expired{ui.small("Marque Manter esta sala para reativá-la.");}
-                        });});
+                        ui.push_id(&entry.room,|ui|{
+                            egui::Frame::new().fill(controls::SURFACE).stroke(egui::Stroke::new(1.0,controls::BORDER))
+                                .corner_radius(10).inner_margin(12).show(ui,|ui|{
+                                    ui.set_width((card_width-26.0).max(200.0));
+                                    ui.set_min_width((card_width-26.0).max(200.0));
+                                    let title_width=(ui.available_width()-98.0).max(120.0);
+                                    ui.horizontal_top(|ui|{
+                                        ui.allocate_ui_with_layout(egui::vec2(title_width,0.0),egui::Layout::top_down(egui::Align::Min),|ui|{
+                                            ui.set_min_width(title_width);
+                                            ui.label(egui::RichText::new(&entry.title).strong().size(15.0));
+                                            ui.label(egui::RichText::new(format!("{} · {} pessoa(s)",if entry.expired{"Expirada"}else if entry.persistent{"Permanente"}else{"Temporária · 24 h"},entry.participants)).size(12.0).color(controls::MUTED));
+                                        });
+                                        let valid_name=!name.is_empty() && name.len()<=64 && name.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_');
+                                        let enabled=!self.busy && !entry.expired && !connected && valid_name;
+                                        let enter=controls::primary(ui,"Entrar",enabled,egui::vec2(88.0,36.0));
+                                        enter.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,enabled,format!("Entrar em {}",entry.title)));
+                                        if enter.clicked(){selected=Some(CreatedRoom{room:entry.room.clone(),title:entry.title.clone()});}
+                                    });
+                                    let mut persistent=entry.persistent;
+                                    let checkbox=ui.add_enabled(!self.busy,egui::Checkbox::new(&mut persistent,"Manter esta sala"));
+                                    checkbox.widget_info(||egui::WidgetInfo::selected(egui::WidgetType::Checkbox,!self.busy,persistent,format!("Manter sala {}",entry.title)));
+                                    if checkbox.changed(){keep=Some((entry.room.clone(),persistent));}
+                                    if entry.expired{ui.label(egui::RichText::new(if entry.participants>0{"A limpeza aguarda os participantes saírem."}else{"Aguardando limpeza automática."}).size(11.0).color(controls::MUTED));}
+                                });
+                        });
                     }
                 });
                 if connected{ui.small("Saia da sala atual para entrar em outra.");}

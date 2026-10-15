@@ -122,6 +122,16 @@ def main():
     os.environ['LIVEKIT_URL']='http://127.0.0.1:8107'
     database=Path('/data/admission.sqlite3')
     admission=Admission(database,key.strip(),secret.strip())
+    def cleanup_rooms():
+        while True:
+            try:
+                removed=admission.rooms.cleanup()
+                if removed:print(f'Expired empty temporary rooms removed: {removed}',flush=True)
+            except Exception:
+                # No cleanup if SFU participant state is unavailable.
+                print('Room cleanup deferred; could not confirm server state',flush=True)
+            time.sleep(60)
+    threading.Thread(target=cleanup_rooms,daemon=True).start()
     budget=[0,0]; lock=threading.Lock()
     class Handler(BaseHTTPRequestHandler):
         def log_message(self,*args): pass

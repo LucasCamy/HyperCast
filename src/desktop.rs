@@ -21,13 +21,7 @@ const SURFACE: Color32 = Color32::from_rgb(28, 35, 36);
 const DANGER: Color32 = Color32::from_rgb(235, 127, 119);
 
 fn compact_action(ui:&mut egui::Ui,label:&str,enabled:bool)->egui::Response {
-    ui.scope(|ui| {
-        ui.spacing_mut().button_padding=Vec2::new(10.0,4.0);
-        ui.spacing_mut().interact_size.y=26.0;
-        ui.add_enabled(enabled,egui::Button::new(RichText::new(label).size(11.0).color(MUTED))
-            .min_size(Vec2::new(0.0,26.0)).corner_radius(9).fill(SURFACE)
-            .stroke(egui::Stroke::new(1.0,BORDER)))
-    }).inner
+    crate::desktop_ui::compact(ui,label,enabled)
 }
 
 fn utility_window_frame(style:&egui::Style)->egui::Frame {
@@ -146,18 +140,8 @@ fn section_title(ui: &mut egui::Ui, label: &str, detail: &str) {
     });
 }
 
-fn text_input(ui:&mut egui::Ui,text:&mut String,hint:&str,password:bool,limit:usize,enabled:bool)->egui::Response{
-    ui.scope(|ui|{
-        ui.visuals_mut().widgets.inactive.corner_radius=egui::CornerRadius::same(8);
-        ui.visuals_mut().widgets.hovered.corner_radius=egui::CornerRadius::same(8);
-        ui.visuals_mut().widgets.active.corner_radius=egui::CornerRadius::same(8);
-        ui.visuals_mut().widgets.inactive.bg_stroke=egui::Stroke::new(1.0,BORDER);
-        ui.visuals_mut().widgets.hovered.bg_stroke=egui::Stroke::new(1.0,MUTED);
-        ui.visuals_mut().selection.stroke=egui::Stroke::new(1.5,ACCENT);
-        ui.add_enabled(enabled,egui::TextEdit::singleline(text).password(password).char_limit(limit)
-            .desired_width(f32::INFINITY).margin(egui::Margin::symmetric(12,10))
-            .background_color(SURFACE).hint_text(hint))
-    }).inner
+fn text_input(ui:&mut egui::Ui,text:&mut String,hint:&str,password:bool,limit:usize,enabled:bool)->egui::Response {
+    crate::desktop_ui::input(ui,text,hint,password,limit,enabled)
 }
 
 struct App {
