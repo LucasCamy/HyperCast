@@ -188,6 +188,7 @@ struct App {
     debug_open:bool,
     updater:crate::updater::Updater,
     creator:crate::room_creation::Creator,
+    catalog:crate::room_creation::Catalog,
     server_access:crate::room_creation::ServerAccess,
     server_status:crate::server_status::ServerStatus,
     before_fullscreen_mode:ViewMode,
@@ -256,7 +257,7 @@ impl App {
             sound_muted: false,
             displays: crate::screen_capture::displays().unwrap_or_default(),
             selected_display: 0,
-            window_mode:false,windows:crate::video_capture::windows(),selected_window:None,window_picker_open:false,window_previews:HashMap::new(),fullscreen:false,debug_open:false,updater:crate::updater::Updater::default(),creator:crate::room_creation::Creator::default(),server_access:crate::room_creation::ServerAccess::default(),server_status:crate::server_status::ServerStatus::default(),before_fullscreen_mode:ViewMode::Spotlight,
+            window_mode:false,windows:crate::video_capture::windows(),selected_window:None,window_picker_open:false,window_previews:HashMap::new(),fullscreen:false,debug_open:false,updater:crate::updater::Updater::default(),creator:crate::room_creation::Creator::default(),catalog:crate::room_creation::Catalog::default(),server_access:crate::room_creation::ServerAccess::default(),server_status:crate::server_status::ServerStatus::default(),before_fullscreen_mode:ViewMode::Spotlight,
             codec: if std::env::var("HYPERCAST_CODEC").as_deref() == Ok("av1") {
                 crate::encoder::Codec::Av1
             } else {
@@ -702,6 +703,7 @@ impl eframe::App for App {
                             if !self.invite.is_empty() && ui.add_sized([ui.available_width(),34.0],
                                 egui::Button::new("Copiar convite").corner_radius(8)).clicked() {ctx.copy_text(self.invite.clone());}
 
+                            if self.server_access.authenticated() && compact_action(ui,"Salas salvas",true).clicked(){self.catalog.open(self.address.clone(),self.server_access.token(),ctx.clone());}
                             ui.label(RichText::new(if can_publish { "Você pode assistir e compartilhar" } else { "Você está assistindo à sala" }).size(11.0).color(MUTED));
                         } else {
                         egui::CollapsingHeader::new("Servidor").show(ui, |ui| {
@@ -720,8 +722,8 @@ impl eframe::App for App {
                         } else {
                             ui.label("Seu nome");
                             if text_input(ui,&mut self.name,"Como quer aparecer na sala",false,64,self.engine.is_none() || self.engine.as_ref().is_some_and(|engine|engine.finished())).lost_focus() { let _ = crate::preferences::save_name(&self.name); }
-                            ui.label("Convite da sala");
-                            text_input(ui,&mut self.invite,"Cole o convite da sala",true,64,self.engine.is_none() || self.engine.as_ref().is_some_and(|engine|engine.finished()));
+                            ui.label("Código da sala");
+                            text_input(ui,&mut self.invite,"Código de 8 letras ou convite",false,64,self.engine.is_none() || self.engine.as_ref().is_some_and(|engine|engine.finished()));
                         ui.horizontal(|ui| {
                             let width=(ui.available_width()-ui.spacing().item_spacing.x)/2.0;
                             let ready=(self.engine.is_none() || self.engine.as_ref().is_some_and(|engine|engine.finished())) && !self.creator.busy;
@@ -735,6 +737,7 @@ impl eframe::App for App {
                             }
                         });
                         if !self.server_access.status.is_empty(){ui.label(RichText::new(&self.server_access.status).size(11.0).color(MUTED));}
+                        if compact_action(ui,"Salas salvas",!self.creator.busy).clicked(){self.catalog.open(self.address.clone(),self.server_access.token(),ctx.clone());}
                         if compact_action(ui,"Trocar acesso ao servidor",!self.server_access.busy).clicked(){self.server_access.logout(&self.address);}
                         }
                         }
@@ -1151,8 +1154,8 @@ impl eframe::App for App {
                     text_input(ui,&mut self.creator.title,"Jogos com amigos",false,64,!self.creator.busy).labelled_by(title_label);
                     let name_label=ui.label("Seu nome").id;
                     text_input(ui,&mut self.name,"Como vão chamar você",false,64,!self.creator.busy).labelled_by(name_label);
-                    ui.label(RichText::new("Até 12 pessoas · 3 telas
-Convite válido por 24 horas").size(11.0).color(MUTED));
+                    ui.checkbox(&mut self.creator.persistent,"Manter sala indefinidamente");
+                    ui.label(RichText::new(if self.creator.persistent{"Até 12 pessoas · 3 telas · sem expiração"}else{"Até 12 pessoas · 3 telas · válida por 24 horas"}).size(11.0).color(MUTED));
                     if !self.creator.status.is_empty(){ui.label(RichText::new(&self.creator.status).size(12.0).color(MUTED));}
                     if self.creator.busy {ui.spinner();}
                     let valid_name=!self.name.is_empty() && self.name.len()<=64 && self.name.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_');
@@ -1162,6 +1165,12 @@ Convite válido por 24 horas").size(11.0).color(MUTED));
                     if !valid_name && !self.name.is_empty() {ui.label(RichText::new("Seu nome: letras sem acentos, números, hífen ou sublinhado").size(11.0).color(MUTED));}
                 });
             self.creator.open=open || self.creator.busy;
+        }
+        if !self.fullscreen {
+            if let Some(selected)=self.catalog.show(&ctx,&self.address,self.server_access.token(),&mut self.name,connected) {
+                self.invite=selected.invite;self.token_mode=false;self.token.clear();self.error.clear();
+                self.engine=Some(self.join_room(ctx.clone()));
+            }
         }
         if !self.fullscreen && self.debug_open {
             let mut open=self.debug_open;

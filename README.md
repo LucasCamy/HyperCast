@@ -1,5 +1,9 @@
 # HyperCast
 
+0.8.0 adiciona **Salas salvas**, salas permanentes e códigos de **oito letras**.
+Reencontre salas sem guardar o convite, mantenha o nome escolhido e altere a
+permanência pela lista. [Como usar](docs/room-creation.md).
+
 0.7.4 mostra a disponibilidade do servidor no indicador **ONLINE/OFFLINE**,
 independente de estar em uma sala. A consulta de saúde do SFU ocorre em segundo
 plano a cada 15 segundos, sem chave ou token. [Como funciona](docs/server-status.md).

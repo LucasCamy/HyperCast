@@ -1,5 +1,12 @@
 # HyperCast no Cloudlane Homelab
 
+Salas salvas (15/10/2026, cliente 0.8.0): API de listagem e permanência,
+códigos de oito letras para novas salas e nome amigável retornado no join.
+Imagem de acesso instalada: `ghcr.io/lucascamy/hypercast-auth@sha256:c218239ca1c507f4713720ed02ce4a589ff8ceb8ea63f6ae9e907bf74dd059b4`.
+Backup SQLite privado `pre-catalog-*.sqlite3` no PVC `/data`; migração aditiva
+com `room_options`/`room_catalog`, sem apagar registros antigos. Mantém SFU,
+TURN e portas. [Como usar](room-creation.md).
+
 Correção de rede (15/10/2026): SFU e DNS TURN reconciliados após troca do IPv4
 da operadora. `hypercast-network-sync.timer` ativo na VM, com verificação a cada
 dois minutos. Atualiza o registro A DNS-only do TURN e o candidato público do

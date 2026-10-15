@@ -1,11 +1,11 @@
-# Acesso ao servidor e criação de salas — 0.6.0
+# Acesso ao servidor, salas salvas e permanentes — 0.8.0
 
 Primeiro informe a **Chave de acesso** compartilhada e use **Entrar no servidor**.
 Essa chave autoriza usar o HyperCast: criar salas e entrar em salas por convite.
 Não é a chave administrativa do LiveKit. Cada amigo usa seu próprio apelido.
 
 Depois use **Criar sala**, ao lado de **Entrar na sala**. A janela pede somente
-nome da sala e seu nome. O nome da sala aceita espaços e acentos (1–64 caracteres);
+nome da sala, seu nome e a opção **Manter sala indefinidamente**. O nome da sala aceita espaços e acentos (1–64 caracteres);
 seu apelido aceita letras sem acentos, números, hífen e sublinhado.
 **Criar e entrar** abre a sessão automaticamente. **Copiar convite** permite
 convidar amigos, que precisam autenticar no servidor antes de usar esse convite.
@@ -18,18 +18,47 @@ fica somente em memória, dura 15 minutos e é renovada automaticamente com a ch
 não revoga a chave compartilhada. Convites ficam em memória e na área de
 transferência quando copiados pelo usuário. Credenciais não entram nos logs.
 
+## Salas salvas e códigos curtos
+
+Use **Salas salvas** para listar as salas da chave compartilhada do servidor,
+inclusive as criadas em outro dispositivo com a mesma chave. Cada cartão mostra
+o nome escolhido, o código, a permanência e a quantidade de participantes.
+**Copiar código** e **Entrar** permitem recuperar uma sala sem guardar seu convite
+na área de transferência. Saia da sessão atual antes de entrar em outra.
+
+Novas salas criadas no 0.8.0 usam **oito letras maiúsculas**; é possível digitar
+minúsculas para entrar. O código identifica a sala, mas não substitui a chave de
+acesso ao servidor. Colisões são verificadas no banco e recebem outro código.
+Convites longos antigos continuam válidos e aparecem na lista sem serem trocados.
+Clientes anteriores também continuam criando convites longos pela API legada.
+
+Ao criar, marque **Manter sala indefinidamente** para não expirar o registro e o
+convite. A mesma opção está nos cartões da lista; desmarcar inicia um novo prazo
+de 24 horas. Uma sala expirada pode ser reativada marcando essa opção. Criar com
+o mesmo nome, sem diferenciar maiúsculas e minúsculas, recupera o registro válido
+existente em vez de criar uma duplicata. Os dados ficam no SQLite persistente,
+não no cache do aplicativo. A chave de acesso continua sujeita à validade e à
+revogação pelo operador; a sala não é apagada quando uma sessão de acesso expira.
+
+Permanência não mantém um processo ou uma conexão de vídeo rodando para sempre.
+O SFU libera a sala vazia após dez minutos. A próxima entrada recria a sala com
+o mesmo nome, código e limites. A interface usa o nome retornado pela API de
+entrada, evitando exibir o identificador interno `hcr-...` por falta de metadata.
+
 ## Limites e validade
 
 - Chave compartilhada: validade definida pelo operador, inicialmente 30 dias.
-- Uma sala aberta por dispositivo autenticado e até quatro salas abertas no
-  servidor via API, incluindo salas anteriores. HYPERCAST_MAX_ROOMS aceita 1–16.
+- Até quatro salas abertas no servidor via API. HYPERCAST_MAX_ROOMS aceita 1–16.
+- Até 32 registros de salas válidas por chave compartilhada. Não há mais o
+  bloqueio de uma única sala aberta por dispositivo.
 - Até dez novas salas por chave compartilhada em 24 horas. Repetir o mesmo pedido
   não cria outra sala nem consome nova quota.
-- Convite: 24 horas, até 12 dispositivos distintos. Reentrar pelo mesmo dispositivo
-  não consome outro uso. Salas vazias aguardam dez minutos antes de fechar.
+- Sala temporária: 24 horas e até 12 dispositivos distintos por convite.
+- Sala permanente: registro/convite sem expiração; não bloqueia o 13º dispositivo
+  usado ao longo do tempo. O limite continua sendo 12 pessoas simultâneas no SFU.
 
-O limite por dispositivo organiza o uso entre amigos; não é uma identidade de
-pessoa verificada. A quota global e diária continuam aplicadas no servidor.
+A chave compartilhada não identifica pessoas individualmente. As quotas de
+salas abertas, registros e criações diárias continuam aplicadas no servidor.
 Revogar a chave bloqueia login, novas criações e novas entradas pela API, inclusive
 sessões de acesso já emitidas. Sessões LiveKit já conectadas e seus JWTs curtos não
 são encerrados automaticamente. O operador pode encerrá-las separadamente.
@@ -47,7 +76,10 @@ Arquivos privados ficam ignorados pelo Git e fora dos instaladores.
 
 `POST /api/login` recebe a chave bearer e somente `device_id` no corpo; retorna
 JWT HS256 com audience hypercast-access, scope server:access e expiração de 900s.
-`POST /api/rooms` recebe esse JWT e somente `room_name` e `request_id`.
+`POST /api/rooms` recebe esse JWT e `room_name`, `request_id` e `persistent` (booleano).
+`POST /api/rooms/list` recebe esse JWT e um objeto vazio; lista até 32 registros,
+priorizando permanentes e válidos. `POST /api/rooms/keep` recebe `room` (ID interno)
+e `persistent`; só altera salas da mesma chave de acesso.
 `POST /api/join` recebe o JWT, convite, apelido e request_id igual ao device_id.
 O servidor verifica assinatura, escopo, prazo, revogação e vínculo ao dispositivo.
 SQLite serializa quotas e criações, guardando somente hashes das chaves/convites.
@@ -56,7 +88,8 @@ inclusive quando se perde uma resposta de criação no SFU.
 
 HYPERCAST_REQUIRE_ACCESS=1 exige login para toda entrada pela API. Clientes 0.5.3
 precisam atualizar; os convites anteriores continuam utilizáveis após autenticar.
-A migração adiciona tabelas sem apagar convites existentes. Mesmas portas,
+A migração adiciona `room_options` e a view `room_catalog`, preservando a tabela
+original de salas e os convites existentes. Mesmas portas,
 hostname e túnel. O rollout atualiza hypercast-access, que hospeda o gateway de
 sinalização; deploy_rooms_on_node.py exige sala livre, salvo autorização explícita
 do operador com --drain-approved. Mantém snapshot para rollback. Não reinicia SFU/TURN.
@@ -65,11 +98,13 @@ do operador com --drain-approved. Mantém snapshot para rollback. Não reinicia 
 
 ```powershell
 python -m unittest discover -s tests -p 'test_*.py'
-python -m tests.integration_room_creation
-python -m tests.integration_room_creation_gui
+python -m tests.integration_room_catalog
+$env:HYPERCAST_CATALOG_UI="1"
+python -m tests.integration_room_catalog
 ```
 
 Integrações usam configuração privada, salas isoladas e revogam acessos de teste.
-O teste da interface recusa sobrescrever uma chave de usuário já salva e verifica
-login, criação sem chave na janela, convite, outro membro e proteção DPAPI.
+O teste de interface cria uma credencial DPAPI temporária para uma origem
+loopback exclusiva, sem sobrescrever a chave do servidor real. Verifica login,
+lista, alteração de permanência, entrada com nome amigável, saída e recuperação.
 Não publica nem grava tela durante a criação/entrada.

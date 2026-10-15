@@ -1,4 +1,4 @@
-﻿param([int]$TargetPid,[string]$ExpectedExecutable,[string]$Name,[switch]$Double,[switch]$Read,[switch]$List,[string]$FocusSequence)
+﻿param([int]$TargetPid,[string]$ExpectedExecutable,[string]$Name,[switch]$Double,[switch]$Read,[switch]$List,[string]$FocusSequence,[switch]$Toggle)
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false)
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
@@ -20,6 +20,7 @@ if($FocusSequence){
 $hcCondition=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,$Name)
 $hcNode=$hcRoot.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$hcCondition)
 if(-not $hcNode){throw "Owned control missing: $Name"}
+if($Toggle){$hcNode.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle();exit}
 if($Read){$hcNode.Current.BoundingRectangle | ConvertTo-Json -Compress; exit}
 if($Double){
 Add-Type -TypeDefinition @"
@@ -50,4 +51,8 @@ Start-Sleep -Milliseconds 40
 Start-Sleep -Milliseconds 70
 }
 }finally{[HcClick]::SetCursorPos($hcOld.x,$hcOld.y)|Out-Null}
-}else{$hcNode.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle()}
+}else{
+$hcAction=$null
+if($hcNode.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$hcAction)){$hcAction.Invoke()}
+else{$hcNode.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle()}
+}

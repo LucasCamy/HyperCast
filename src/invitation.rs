@@ -29,7 +29,11 @@ pub fn client_id() -> String {
     fresh
 }
 
-pub fn join(address: &str, invite: &str, name: &str, request_id: &str, session: &str) -> Result<String> {
+pub struct JoinedRoom { pub token:String, pub title:Option<String> }
+pub fn join(address:&str,invite:&str,name:&str,request_id:&str,session:&str)->Result<String> {
+    Ok(join_details(address,invite,name,request_id,session)?.token)
+}
+pub fn join_details(address: &str, invite: &str, name: &str, request_id: &str, session: &str) -> Result<JoinedRoom> {
     let endpoint = endpoint(address,"/api/join")?;
     let client = reqwest::blocking::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -51,7 +55,8 @@ pub fn join(address: &str, invite: &str, name: &str, request_id: &str, session: 
     let value: serde_json::Value = serde_json::from_slice(&bytes)?;
     let token = value["token"].as_str().ok_or_else(|| anyhow::anyhow!("Missing room credential"))?;
     ensure!(!token.is_empty() && token.len() <= 8192, "Invalid room credential length");
-    Ok(token.to_owned())
+    let title=value["room_name"].as_str().filter(|s|!s.is_empty() && s.chars().count()<=64 && !s.chars().any(char::is_control)).map(str::to_owned);
+    Ok(JoinedRoom{token:token.to_owned(),title})
 }
 
 pub(crate) fn endpoint(address:&str,path:&str)->Result<url::Url>{

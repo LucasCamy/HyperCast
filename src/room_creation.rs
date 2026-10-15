@@ -3,23 +3,117 @@ use anyhow::{Result, ensure};
 use std::{io::Read, sync::mpsc};
 use eframe::egui;
 
+fn valid_invite(code:&str)->bool {
+    (code.len()==8 && code.bytes().all(|c|c.is_ascii_uppercase())) ||
+    ((32..=64).contains(&code.len()) && code.bytes().all(|c|c.is_ascii_alphanumeric()||c==b'-'||c==b'_'))
+}
+
+pub struct SavedRoom { pub room:String, pub title:String, pub invite:String, pub persistent:bool, pub expired:bool, pub participants:u64 }
+#[derive(Default)]
+pub struct Catalog {
+    pub open:bool, busy:bool, status:String, rooms:Vec<SavedRoom>, origin:String,
+    receiver:Option<mpsc::Receiver<(String,Result<Vec<SavedRoom>>)>>,
+}
+impl Catalog {
+    pub fn open(&mut self,address:String,session:String,ctx:egui::Context) {
+        self.open=true;self.request(address,session,None,ctx);
+    }
+    fn request(&mut self,address:String,session:String,keep:Option<(String,bool)>,ctx:egui::Context) {
+        if self.busy{return;}
+        if self.origin!=address {self.rooms.clear();}
+        self.origin=address.clone();self.busy=true;self.status.clear();
+        let(tx,rx)=mpsc::channel();self.receiver=Some(rx);
+        std::thread::spawn(move|| {
+            let result=(||->Result<Vec<SavedRoom>> {
+                if let Some((room,persistent))=keep {catalog_post(&address,&session,"/api/rooms/keep",serde_json::json!({"room":room,"persistent":persistent}))?;}
+                let value=catalog_post(&address,&session,"/api/rooms/list",serde_json::json!({}))?;
+                let rows=value["rooms"].as_array().ok_or_else(||anyhow::anyhow!("Lista de salas inválida"))?;
+                ensure!(rows.len()<=32,"Lista de salas excedeu o limite");
+                let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
+                rows.iter().map(|v| {
+                    let text=|key:&str|->Result<String>{Ok(v[key].as_str().ok_or_else(||anyhow::anyhow!("Sala inválida"))?.to_owned())};
+                    let room=text("room")?;let title=text("room_name")?;let invite=text("invite")?;
+                    ensure!(room.len()<=64 && !title.is_empty() && title.chars().count()<=64 && !title.chars().any(char::is_control) && valid_invite(&invite),"Sala inválida");
+                    let persistent=v["persistent"].as_bool().ok_or_else(||anyhow::anyhow!("Sala inválida"))?;
+                    let expires=v["expires_at"].as_u64().ok_or_else(||anyhow::anyhow!("Sala inválida"))?;
+                    Ok(SavedRoom{room,title,invite,persistent,expired:!persistent && expires<=now,participants:v["participants"].as_u64().unwrap_or(0).min(12)})
+                }).collect()
+            })();
+            let _=tx.send((address,result));ctx.request_repaint();
+        });
+    }
+    pub fn show(&mut self,ctx:&egui::Context,address:&str,session:String,name:&mut String,connected:bool)->Option<CreatedRoom> {
+        if let Some(rx)=&self.receiver {
+            match rx.try_recv() {
+                Ok((origin,result))=>{self.receiver=None;self.busy=false;if origin==address && !session.is_empty(){match result {Ok(rooms)=>self.rooms=rooms,Err(e)=>self.status=e.to_string()}}},
+                Err(mpsc::TryRecvError::Disconnected)=>{self.receiver=None;self.busy=false;self.status="Consulta interrompida; tente novamente".into();},
+                Err(mpsc::TryRecvError::Empty)=>{}
+            }
+        }
+        if self.origin!=address || session.is_empty(){self.open=false;self.rooms.clear();return None;}
+        if !self.open{return None;}
+        let mut open=true;let mut selected=None;let mut keep=None;let mut refresh=false;
+        egui::Window::new("Salas salvas").id(egui::Id::new("saved_rooms_window")).open(&mut open)
+            .frame(egui::Frame::window(&ctx.style_of(egui::Theme::Dark)).corner_radius(12).inner_margin(16))
+            .default_width(420.0).max_width(420.0).resizable(false).collapsible(false).show(ctx,|ui|{
+                ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
+                ui.horizontal(|ui|{ui.label("Salas da sua chave de acesso");if ui.add_enabled(!self.busy,egui::Button::new("Atualizar lista").corner_radius(8)).clicked(){refresh=true;}});
+                ui.label("Seu nome");ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY).char_limit(64).margin(egui::Margin::symmetric(10,8)));
+                if self.busy {ui.horizontal(|ui|{ui.spinner();ui.label("Atualizando salas…");});}
+                if !self.status.is_empty(){ui.label(&self.status);}
+                if !self.busy && self.rooms.is_empty(){ui.label("Nenhuma sala salva. Crie uma para começar.");}
+                egui::ScrollArea::vertical().max_height(420.0).show(ui,|ui|{
+                    for entry in &self.rooms {
+                        ui.push_id(&entry.room,|ui|{egui::Frame::group(ui.style()).corner_radius(10).inner_margin(12).show(ui,|ui|{
+                            ui.set_min_width(ui.available_width());
+                            ui.label(egui::RichText::new(&entry.title).strong().size(16.0));
+                            ui.label(format!("{} · {} pessoa(s)",if entry.persistent{"Permanente"}else if entry.expired{"Expirada"}else{"Temporária · 24 h"},entry.participants));
+                            ui.label(egui::RichText::new(&entry.invite).monospace());
+                            ui.horizontal(|ui|{
+                                if ui.button("Copiar código").clicked(){ctx.copy_text(entry.invite.clone());}
+                                let valid_name=!name.is_empty() && name.len()<=64 && name.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_');
+                                if ui.add_enabled(!self.busy && !entry.expired && !connected && valid_name,egui::Button::new("Entrar").corner_radius(8)).clicked(){selected=Some(CreatedRoom{invite:entry.invite.clone(),title:entry.title.clone()});}
+                            });
+                            let mut persistent=entry.persistent;
+                            if ui.add_enabled(!self.busy,egui::Checkbox::new(&mut persistent,"Manter esta sala")).changed(){keep=Some((entry.room.clone(),persistent));}
+                            if entry.expired{ui.small("Marque Manter esta sala para reativá-la.");}
+                        });});
+                    }
+                });
+                if connected{ui.small("Saia da sala atual para entrar em outra.");}
+            });
+        self.open=open && selected.is_none();
+        if refresh || keep.is_some(){self.request(address.to_owned(),session,keep,ctx.clone());}
+        selected
+    }
+}
+fn catalog_post(address:&str,session:&str,path:&str,body:serde_json::Value)->Result<serde_json::Value> {
+    ensure!(!session.is_empty() && session.len()<=4096,"Entre no servidor novamente");
+    let response=reqwest::blocking::Client::builder().redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(15)).build()?.post(crate::invitation::endpoint(address,path)?)
+        .bearer_auth(session).json(&body).send().map_err(|_|anyhow::anyhow!("Servidor indisponível; tente novamente"))?;
+    match response.status().as_u16(){200=>{},401|403=>anyhow::bail!("Sessão expirada; entre no servidor novamente"),_=>anyhow::bail!("Não foi possível atualizar a lista de salas")}
+    let mut bytes=Vec::new();response.take(65537).read_to_end(&mut bytes)?;ensure!(bytes.len()<=65536,"Resposta excedeu o limite");
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
 pub struct CreatedRoom { pub invite: String, pub title: String }
 pub struct Creator {
-    pub open: bool, pub title: String, pub busy: bool, pub status: String,
-    request_id: String, requested_title: String,
+    pub open: bool, pub title: String, pub persistent: bool, pub busy: bool, pub status: String,
+    request_id: String, requested_title: String, requested_persistent:bool,
     receiver: Option<mpsc::Receiver<Result<CreatedRoom>>>,
 }
 impl Default for Creator {
-    fn default()->Self {Self {open:false,title:String::new(),busy:false,status:String::new(),request_id:String::new(),requested_title:String::new(),receiver:None}}
+    fn default()->Self {Self {open:false,title:String::new(),persistent:false,busy:false,status:String::new(),request_id:String::new(),requested_title:String::new(),requested_persistent:false,receiver:None}}
 }
 impl Creator {
     pub fn open(&mut self,_address:&str) {self.open=true;self.status.clear();self.request_id=uuid::Uuid::new_v4().simple().to_string();self.requested_title.clear();}
     pub fn start(&mut self,address:String,session:String,ctx:egui::Context) {
         if self.busy {return;}
         let title=self.title.trim().to_owned();
-        if self.requested_title!=title {self.request_id=uuid::Uuid::new_v4().simple().to_string();self.requested_title=title.clone();}
-        let request=self.request_id.clone();let(tx,rx)=mpsc::channel();self.busy=true;self.status="Criando sala…".into();
-        std::thread::spawn(move||{let _=tx.send(create(&address,&session,&title,&request));ctx.request_repaint();});self.receiver=Some(rx);
+        if self.requested_title!=title || self.requested_persistent!=self.persistent {self.request_id=uuid::Uuid::new_v4().simple().to_string();self.requested_title=title.clone();self.requested_persistent=self.persistent;}
+        let persistent=self.persistent;let request=self.request_id.clone();let(tx,rx)=mpsc::channel();self.busy=true;self.status="Criando sala…".into();
+        std::thread::spawn(move||{let _=tx.send(create(&address,&session,&title,&request,persistent));ctx.request_repaint();});self.receiver=Some(rx);
     }
     pub fn poll(&mut self)->Option<CreatedRoom> {
         let result=match self.receiver.as_ref()?.try_recv(){Ok(r)=>r,Err(mpsc::TryRecvError::Empty)=>return None,Err(_)=>Err(anyhow::anyhow!("Criação interrompida; tente novamente"))};
@@ -72,12 +166,12 @@ fn login(address:&str,code:&str,device:&str)->Result<String> {
     ensure!(!token.is_empty() && token.len()<=4096 && value["expires_in"].as_u64()==Some(900),"Resposta de acesso inválida");Ok(token.to_owned())
 }
 
-pub fn create(address:&str,code:&str,title:&str,request_id:&str)->Result<CreatedRoom> {
+pub fn create(address:&str,code:&str,title:&str,request_id:&str,persistent:bool)->Result<CreatedRoom> {
     ensure!(!code.is_empty() && code.len()<=4096,"Autentique-se no servidor");
     let endpoint=crate::invitation::endpoint(address,"/api/rooms")?;
     let response=reqwest::blocking::Client::builder().redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(20)).user_agent("HyperCast-Desktop/0.6").build()?
-        .post(endpoint).bearer_auth(code).json(&serde_json::json!({"room_name":title,"request_id":request_id}))
+        .post(endpoint).bearer_auth(code).json(&serde_json::json!({"room_name":title,"request_id":request_id,"persistent":persistent}))
         .send().map_err(|_|anyhow::anyhow!("Não foi possível acessar o servidor; tente novamente"))?;
     match response.status().as_u16() {
         200=>{},
@@ -92,7 +186,7 @@ pub fn create(address:&str,code:&str,title:&str,request_id:&str)->Result<Created
     let value:serde_json::Value=serde_json::from_slice(&bytes)?;
     let invite=value["invite"].as_str().ok_or_else(||anyhow::anyhow!("Resposta de sala inválida"))?;
     let title=value["room_name"].as_str().ok_or_else(||anyhow::anyhow!("Resposta de sala inválida"))?;
-    ensure!((32..=64).contains(&invite.len()) && invite.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_') && title.chars().count()<=64,"Resposta de sala inválida");
+    ensure!(valid_invite(invite) && title.chars().count()<=64,"Resposta de sala inválida");
     Ok(CreatedRoom{invite:invite.to_owned(),title:title.to_owned()})
 }
 

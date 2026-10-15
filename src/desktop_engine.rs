@@ -358,11 +358,11 @@ impl Engine {
         }));
         let state = shared.clone();
         let thread = std::thread::spawn(move || {
-            let token = match access {
-                Access::Token(token) => token,
+            let (token,room_title) = match access {
+                Access::Token(token) => (token,None),
                 Access::Invite { code, name, request_id, session } => {
-                    match crate::invitation::join(&address, &code, &name, &request_id, &session) {
-                        Ok(token) => token,
+                    match crate::invitation::join_details(&address, &code, &name, &request_id, &session) {
+                        Ok(joined) => (joined.token,joined.title),
                         Err(error) => {
                             let message = error.to_string().replace(&code, "[invite]");
                             crate::diagnostics::write("invitation_error", &message, &code);
@@ -383,8 +383,8 @@ impl Engine {
                 {
                     let mut state = state.lock().unwrap();
                     state.connected = true;
-                    state.room = serde_json::from_str::<serde_json::Value>(&room.metadata()).ok()
-                        .and_then(|value|value["hypercast_name"].as_str().filter(|name|name.chars().count()<=64).map(str::to_owned))
+                    state.room = room_title.or_else(||serde_json::from_str::<serde_json::Value>(&room.metadata()).ok()
+                        .and_then(|value|value["hypercast_name"].as_str().filter(|name|name.chars().count()<=64).map(str::to_owned)))
                         .unwrap_or_else(||room.name());
                     state.status = "Conectado".into();
                     state.identity = room.local_participant().identity().to_string();

@@ -69,8 +69,10 @@ struct App {
     access: ServerAccess,
     server_status: crate::server_status::ServerStatus,
     creator: Creator,
+    catalog:crate::room_creation::Catalog,
+    room_title:String,
     engine: Option<Engine>,
-    joining: Option<mpsc::Receiver<anyhow::Result<String>>>,
+    joining: Option<mpsc::Receiver<anyhow::Result<crate::invitation::JoinedRoom>>>,
     status: String,
     layout: Layout,
     codec: Codec,
@@ -102,6 +104,7 @@ impl App {
             access: ServerAccess::default(),
             server_status: crate::server_status::ServerStatus::default(),
             creator: Creator::default(),
+            catalog:crate::room_creation::Catalog::default(),room_title:String::new(),
             engine: None,
             joining: None,
             status: String::new(),
@@ -152,7 +155,7 @@ impl App {
         self.joining = Some(rx);
         self.status = "Entrando na sala…".into();
         std::thread::spawn(move || {
-            let _ = tx.send(crate::invitation::join(
+            let _ = tx.send(crate::invitation::join_details(
                 &address, &invite, &name, &device, &session,
             ));
             repaint.request_repaint();
@@ -238,7 +241,9 @@ impl eframe::App for App {
             if let Ok(result) = rx.try_recv() {
                 self.joining = None;
                 match result {
-                    Ok(token) => {
+                    Ok(joined) => {
+                        self.room_title=joined.title.unwrap_or_else(||"Sala".into());
+                        let token=joined.token;
                         self.engine = Some(Engine::start(self.address.clone(), token, ctx.clone()));
                         self.status.clear();
                         self.textures.clear();
@@ -298,11 +303,13 @@ impl eframe::App for App {
                         ui.label(RichText::new(&self.access.status).size(12.0).color(MUTED));
                     }else if !connected{
                         if input(ui,&mut self.name,"Seu nome",false,32).lost_focus(){let _=crate::preferences::save_name(&self.name);}
-                        input(ui,&mut self.invite,"Convite da sala",false,128);
+                        input(ui,&mut self.invite,"Código de 8 letras ou convite",false,64);
                         if button(ui,"Entrar na sala",self.joining.is_none()&&!self.name.trim().is_empty()&&!self.invite.trim().is_empty(),true).clicked(){self.connect(ctx);}
                         if button(ui,"Criar sala",!self.creator.busy,false).clicked(){self.creator.open(&self.address);}
+                        if small(ui,"Salas salvas").clicked(){self.catalog.open(self.address.clone(),self.access.token(),ctx.clone());}
                         if small(ui,"Trocar acesso ao servidor").clicked(){self.access.logout(&self.address);}
                     }else{
+                        ui.label(RichText::new(&self.room_title).strong());
                         ui.label(RichText::new("PARTICIPANTES").size(11.0).color(MUTED));
                         ui.label(format!("{} (você) · {}",if self.name.is_empty(){"Linux"}else{&self.name},if sharing{"Transmitindo"}else{"Assistindo"}));
                         for(id,name)in participants{
@@ -311,6 +318,7 @@ impl eframe::App for App {
                             let response=button(ui,&format!("{title} · {}",if live {if focused {"Em destaque · transmitindo"}else{"Transmitindo"}}else{"Assistindo"}),live,focused);
                             if response.clicked(){self.layout.focus=Some(id);if response.double_clicked(){self.layout.mode=ViewMode::Spotlight;}self.layout();}
                         }
+                        if small(ui,"Salas salvas").clicked(){self.catalog.open(self.address.clone(),self.access.token(),ctx.clone());}
                         if !self.invite.is_empty()&&small(ui,"Copiar convite").clicked(){ctx.copy_text(self.invite.clone());}
                     }
                     ui.separator();ui.label(RichText::new("COMPARTILHAR").size(11.0).color(MUTED));
@@ -421,6 +429,7 @@ impl eframe::App for App {
                 .default_width(360.0)
                 .show(ctx, |ui| {
                     input(ui, &mut self.creator.title, "Nome da sala", false, 64);
+                    ui.checkbox(&mut self.creator.persistent,"Manter sala indefinidamente");
                     if button(ui, "Criar sala", !self.creator.busy, true).clicked() {
                         self.creator
                             .start(self.address.clone(), self.access.token(), ctx.clone());
@@ -428,6 +437,11 @@ impl eframe::App for App {
                     ui.label(&self.creator.status);
                 });
             self.creator.open = open;
+        }
+        if !self.fullscreen {
+            if let Some(selected)=self.catalog.show(ctx,&self.address,self.access.token(),&mut self.name,connected) {
+                self.invite=selected.invite;self.connect(ctx);
+            }
         }
         if self.debug {
             egui::Window::new("Diagnóstico").open(&mut self.debug).collapsible(false).resizable(false).default_width(360.0).show(ctx,|ui|{

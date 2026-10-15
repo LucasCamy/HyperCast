@@ -62,15 +62,20 @@ class Admission:
         with closing(self.db()) as db:
             db.execute('UPDATE invites SET revoked=1 WHERE id=?',(invitation,))
 
-    def join(self, code, name, request_id):
-        if not isinstance(code,str) or not re.fullmatch(r'[A-Za-z0-9_-]{32,64}',code):
+    def join(self, code, name, request_id, session=""):
+        short=isinstance(code,str) and re.fullmatch(r'[A-Za-z]{8}',code) is not None
+        if short:code=code.upper()
+        if not isinstance(code,str) or not (short or re.fullmatch(r'[A-Za-z0-9_-]{32,64}',code)):
             raise Rejected(401,'Invalid invitation')
         if not isinstance(name,str) or not rt.NAME.fullmatch(name) or not isinstance(request_id,str) or not re.fullmatch(r'[A-Za-z0-9_-]{32,64}',request_id):
             raise Rejected(400,'Name/request ID must use ASCII letters, digits, underscore or hyphen')
+        if short or session or os.environ.get('HYPERCAST_REQUIRE_ACCESS')=='1':
+            access=self.rooms.authorize(session)
+            if request_id!=access['device_id']:raise Rejected(403,'Device does not match server session')
         now = int(time.time())
         with closing(self.db()) as db:
             invite = db.execute('SELECT * FROM invites WHERE hash=?',(digest(code),)).fetchone()
-            if not invite or invite['revoked'] or invite['expires']<=now:
+            if not invite or invite['revoked'] or (invite['expires']!=0 and invite['expires']<=now):
                 raise Rejected(401,'Invitation expired, revoked or invalid')
             # Fail closed on SFU availability before reserving any publisher identity.
             self.rooms.ensure_join(invite['room'])
@@ -78,10 +83,10 @@ class Admission:
             db.execute('BEGIN IMMEDIATE')
             try:
                 invite = db.execute('SELECT * FROM invites WHERE id=?',(invite['id'],)).fetchone()
-                if invite['revoked'] or invite['expires']<=now: raise Rejected(401,'Invitation expired or revoked')
+                if invite['revoked'] or (invite['expires']!=0 and invite['expires']<=now): raise Rejected(401,'Invitation expired or revoked')
                 member = db.execute('SELECT * FROM members WHERE invite=? AND request_id=?',(invite['id'],request_id)).fetchone()
                 new_member = member is None
-                if new_member and invite['uses']>=invite['max_uses']: raise Rejected(403,'Invitation use limit reached')
+                if new_member and invite['expires']!=0 and invite['uses']>=invite['max_uses']: raise Rejected(403,'Invitation use limit reached')
                 member_id = member['id'] if member else uuid.uuid4().hex
                 # Everyone may enter; screen quota is enforced atomically by the SFU.
                 identity = 'hc-member-'+member_id
@@ -96,7 +101,9 @@ class Admission:
         if grants['canPublish']: grants['canPublishSources']=['screen_share','screen_share_audio']
         token = rt.sign({'iss':self.key,'sub':identity,'name':member['name'] if member else name,
             'nbf':now-5,'exp':now+300,'video':grants},self.secret)
-        return {'token':token,'room':invite['room'],'expires_in':300}
+        with closing(self.db()) as db:
+            record=db.execute('SELECT title FROM rooms WHERE room=?',(invite['room'],)).fetchone()
+        return {'token':token,'room':invite['room'],'room_name':record['title'] if record else invite['room'],'expires_in':300}
 
     def verify_admin(self, bearer):
         try:
@@ -145,14 +152,17 @@ def main():
                 elif self.path=='/api/join':
                     if set(body)!={'invite','name','request_id'}: raise Rejected(400,'Unexpected fields')
                     bearer=self.headers.get('Authorization','').removeprefix('Bearer ')
-                    if bearer or os.environ.get('HYPERCAST_REQUIRE_ACCESS')=='1':
-                        access=admission.rooms.authorize(bearer)
-                        if body['request_id']!=access['device_id']: raise Rejected(403,'Device does not match server session')
-                    data=admission.join(body['invite'],body['name'],body['request_id'])
+                    data=admission.join(body['invite'],body['name'],body['request_id'],bearer)
                 elif self.path=='/api/rooms':
-                    if set(body)!={'room_name','request_id'}: raise Rejected(400,'Unexpected fields')
+                    if set(body) not in ({'room_name','request_id'},{'room_name','request_id','persistent'}): raise Rejected(400,'Unexpected fields')
                     code=self.headers.get('Authorization','').removeprefix('Bearer ')
-                    data=admission.rooms.create(code,body['room_name'],body['request_id'])
+                    data=admission.rooms.create(code,body['room_name'],body['request_id'],body.get('persistent',False),short_code='persistent' in body)
+                elif self.path=='/api/rooms/list':
+                    if body:raise Rejected(400,'Unexpected fields')
+                    data=admission.rooms.listing(self.headers.get('Authorization','').removeprefix('Bearer '))
+                elif self.path=='/api/rooms/keep':
+                    if set(body)!={'room','persistent'}:raise Rejected(400,'Unexpected fields')
+                    data=admission.rooms.keep(self.headers.get('Authorization','').removeprefix('Bearer '),body['room'],body['persistent'])
                 elif self.path in ('/api/admin/creators','/api/admin/revoke-creator','/api/admin/access-keys','/api/admin/revoke-access'):
                     admission.verify_admin(self.headers.get('Authorization','').removeprefix('Bearer '))
                     if self.path.endswith(('revoke-creator','revoke-access')):

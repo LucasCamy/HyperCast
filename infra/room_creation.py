@@ -52,6 +52,18 @@ class RoomCreation:
                     UNIQUE(creator,request_id));
             """)
 
+        # Additive side table: older servers can still insert legacy room rows.
+        with closing(admission.db()) as db:
+            db.executescript("""
+                CREATE TABLE IF NOT EXISTS room_options (
+                    room TEXT PRIMARY KEY, persistent INTEGER NOT NULL DEFAULT 0,
+                    code_version INTEGER NOT NULL DEFAULT 1, code_nonce INTEGER NOT NULL DEFAULT 0);
+                CREATE VIEW IF NOT EXISTS room_catalog AS
+                    SELECT rooms.*,COALESCE(o.persistent,0) AS persistent,
+                    COALESCE(o.code_version,1) AS code_version,COALESCE(o.code_nonce,0) AS code_nonce
+                    FROM rooms LEFT JOIN room_options o ON rooms.room=o.room;
+            """)
+
     def reject(self,status,message):
         raise self.admission.rejection(status,message)
 
@@ -98,25 +110,60 @@ class RoomCreation:
         if not isinstance(actor,str) or not re.fullmatch(r'[0-9a-f]{32}',actor): self.reject(400,'Invalid creator ID')
         with closing(self.admission.db()) as db: db.execute('UPDATE creators SET revoked=1 WHERE id=?',(actor,))
 
-    def invite_code(self,room):
-        # Stable retry response, while SQLite stores only the invite hash.
-        raw=hmac.new(self.admission.secret.encode(),('hypercast-room-invite:'+room).encode(),hashlib.sha256).digest()
-        return base64.urlsafe_b64encode(raw).rstrip(b'=').decode()
+    def invite_code(self,room,version=1,nonce=0):
+        # HMAC makes retries stable; SQLite stores only hashes of the codes.
+        if version==1:
+            raw=hmac.new(self.admission.secret.encode(),('hypercast-room-invite:'+room).encode(),hashlib.sha256).digest()
+            return base64.urlsafe_b64encode(raw).rstrip(b'=').decode()
+        raw=hmac.new(self.admission.secret.encode(),f'hypercast-short-room:{room}:{nonce}'.encode(),hashlib.sha256).digest()
+        value=int.from_bytes(raw,'big') % (26**8)
+        result=''
+        for _ in range(8): value,remainder=divmod(value,26);result=chr(65+remainder)+result
+        return result
+
+    def result(self,record):
+        return {'room':record['room'],'room_name':record['title'],
+            'invite':self.invite_code(record['room'],record['code_version'],record['code_nonce']),
+            'persistent':bool(record['persistent']),'expires_at':record['expires'],
+            'expires_in':None if record['persistent'] else max(0,record['expires']-int(time.time()))}
+
+    def listing(self,session):
+        access=self.authorize(session)
+        with closing(self.admission.db()) as db:
+            rows=db.execute('SELECT * FROM room_catalog WHERE creator=? OR creator LIKE ? ORDER BY persistent DESC,(expires>?) DESC,created DESC,room LIMIT 32',
+                (access['id'],access['id']+':%',int(time.time()))).fetchall()
+        live={r['name']:r for r in self.api('ListRooms',{}).get('rooms',[])}
+        return {'rooms':[dict(self.result(r),active=r['room'] in live,
+            participants=int(live.get(r['room'],{}).get('num_participants',0))) for r in rows]}
+
+    def keep(self,session,room,persistent):
+        access=self.authorize(session)
+        if not isinstance(room,str) or not rt.NAME.fullmatch(room) or type(persistent) is not bool:
+            self.reject(400,'Invalid room settings')
+        with closing(self.admission.db()) as db:
+            db.execute('BEGIN IMMEDIATE')
+            record=db.execute('SELECT * FROM room_catalog WHERE room=? AND (creator=? OR creator LIKE ?)',
+                (room,access['id'],access['id']+':%')).fetchone()
+            if not record:self.reject(404,'Room not found')
+            if not record['persistent'] and record['expires']<=int(time.time()):
+                count=db.execute('SELECT COUNT(*) FROM room_catalog WHERE (creator=? OR creator LIKE ?) AND (persistent=1 OR expires>?)',
+                    (access['id'],access['id']+':%',int(time.time()))).fetchone()[0]
+                if count>=32:self.reject(409,'Saved room limit reached')
+            expires=0 if persistent else int(time.time())+86400
+            db.execute('UPDATE rooms SET expires=? WHERE room=?',(expires,room))
+            db.execute('INSERT INTO room_options VALUES(?,?,?,?) ON CONFLICT(room) DO UPDATE SET persistent=excluded.persistent',
+                (room,int(persistent),record['code_version'],record['code_nonce']))
+            db.execute('UPDATE invites SET expires=? WHERE room=? AND revoked=0',(expires,room))
+            record=db.execute('SELECT * FROM room_catalog WHERE room=?',(room,)).fetchone();db.commit()
+        return self.result(record)
 
     def ensure(self,db,room):
-        record=db.execute('SELECT * FROM rooms WHERE room=?',(room,)).fetchone()
+        record=db.execute('SELECT * FROM room_catalog WHERE room=?',(room,)).fetchone()
         if record is None: return
-        if record['expires']<=int(time.time()): self.reject(401,'Room invitation expired')
+        if not record['persistent'] and record['expires']<=int(time.time()): self.reject(401,'Room invitation expired')
         live_info=self.api('ListRooms',{}).get('rooms',[])
         live={r['name'] for r in live_info}
         if room in live: return
-        owned={r[0] for r in db.execute('SELECT room FROM rooms WHERE creator=?',(record['creator'],))}
-        for item in live_info:
-            try: metadata=json.loads(item.get('metadata','{}'))
-            except (ValueError,TypeError): continue
-            if isinstance(metadata,dict) and metadata.get('hypercast_creator')==record['creator']:
-                owned.add(item['name'])
-        if live & owned: self.reject(409,'Creator already has an active room')
         if len(live)>=self.max_rooms: self.reject(409,'Server room limit reached')
         self.api('CreateRoom',{'name':room,'max_participants':12,'empty_timeout':600,
             'departure_timeout':600,'metadata':json.dumps({'hypercast_name':record['title'],'hypercast_creator':record['creator']},ensure_ascii=False)})
@@ -128,8 +175,9 @@ class RoomCreation:
             try: self.ensure(db,room);db.commit()
             except Exception: db.rollback();raise
 
-    def create(self,session,title,request_id):
+    def create(self,session,title,request_id,persistent=False,short_code=True):
         access=self.authorize(session)
+        if type(persistent) is not bool:self.reject(400,'Invalid permanence setting')
         if not isinstance(title,str): self.reject(400,'Invalid room name')
         title=unicodedata.normalize('NFC',title.strip())
         if not 1<=len(title)<=64 or len(title.encode())>256 or any(unicodedata.category(c).startswith('C') for c in title):
@@ -142,20 +190,39 @@ class RoomCreation:
             try:
                 actor=db.execute('SELECT * FROM creators WHERE id=?',(access['id'],)).fetchone()
                 if not actor or actor['revoked'] or actor['expires']<=now: self.reject(401,'Creator authorization expired or revoked')
-                previous=db.execute('SELECT * FROM rooms WHERE creator=? AND request_id=?',(access['owner'],request_id)).fetchone()
+                previous=db.execute('SELECT * FROM room_catalog WHERE creator=? AND request_id=?',(access['owner'],request_id)).fetchone()
+                if previous and (previous['title']!=title or bool(previous['persistent'])!=persistent):
+                    self.reject(409,'Request ID already used with different settings')
+                if previous is None:
+                    # A repeated name retrieves the registered room rather than
+                    # creating an inaccessible duplicate with another code.
+                    previous=next((r for r in db.execute('SELECT * FROM room_catalog WHERE (creator=? OR creator LIKE ?) AND (persistent=1 OR expires>?)',
+                        (actor['id'],actor['id']+':%',now)) if r['title'].casefold()==title.casefold()),None)
                 if previous:
-                    if previous['title']!=title: self.reject(409,'Request ID already used for another room name')
-                    room=previous['room'];expires=previous['expires']
+                    room=previous['room']
+                    if persistent and not previous['persistent']:
+                        db.execute('UPDATE rooms SET expires=0 WHERE room=?',(room,))
+                        db.execute('INSERT INTO room_options VALUES(?,?,?,?) ON CONFLICT(room) DO UPDATE SET persistent=excluded.persistent',
+                            (room,1,previous['code_version'],previous['code_nonce']))
+                        db.execute('UPDATE invites SET expires=0 WHERE room=? AND revoked=0',(room,))
                 else:
-                    if db.execute('SELECT COUNT(*) FROM rooms WHERE (creator=? OR creator LIKE ?) AND created>?',(actor['id'],actor['id']+':%',now-86400)).fetchone()[0]>=10:
+                    if db.execute('SELECT COUNT(*) FROM room_catalog WHERE (creator=? OR creator LIKE ?) AND created>?',(actor['id'],actor['id']+':%',now-86400)).fetchone()[0]>=10:
                         self.reject(429,'Daily room creation limit reached')
-                    room='hcr-'+hmac.new(self.admission.secret.encode(),('hypercast-room:'+access['owner']+':'+request_id).encode(),hashlib.sha256).hexdigest()[:32];expires=now+86400
-                    db.execute('INSERT INTO rooms VALUES(?,?,?,?,?,?)',(room,access['owner'],request_id,title,now,expires))
+                    if db.execute('SELECT COUNT(*) FROM room_catalog WHERE (creator=? OR creator LIKE ?) AND (persistent=1 OR expires>?)',
+                        (actor['id'],actor['id']+':%',now)).fetchone()[0]>=32:self.reject(409,'Saved room limit reached')
+                    room='hcr-'+hmac.new(self.admission.secret.encode(),('hypercast-room:'+access['owner']+':'+request_id).encode(),hashlib.sha256).hexdigest()[:32]
+                    expires=0 if persistent else now+86400;version=2 if short_code else 1;nonce=0
+                    while db.execute('SELECT 1 FROM invites WHERE hash=?',(hashlib.sha256(self.invite_code(room,version,nonce).encode()).hexdigest(),)).fetchone():
+                        if version==1 or nonce>=32:self.reject(503,'Unable to allocate room code')
+                        nonce+=1
+                    db.execute('INSERT INTO rooms(room,creator,request_id,title,created,expires) VALUES(?,?,?,?,?,?)',
+                        (room,access['owner'],request_id,title,now,expires))
+                    db.execute('INSERT INTO room_options VALUES(?,?,?,?)',(room,int(persistent),version,nonce))
                     invitation=uuid.uuid4().hex
                     db.execute('INSERT INTO invites(id,hash,room,role,expires,max_uses) VALUES(?,?,?,?,?,?)',
-                        (invitation,hashlib.sha256(self.invite_code(room).encode()).hexdigest(),room,'publisher',expires,12))
+                        (invitation,hashlib.sha256(self.invite_code(room,version,nonce).encode()).hexdigest(),room,'publisher',expires,12))
                 self.ensure(db,room)
-                # Room ID/code are deterministic: a lost RPC response cannot create duplicates on retry.
+                record=db.execute('SELECT * FROM room_catalog WHERE room=?',(room,)).fetchone()
                 db.commit()
             except Exception: db.rollback();raise
-        return {'room':room,'room_name':title,'invite':self.invite_code(room),'expires_in':max(0,expires-now)}
+        return self.result(record)
