@@ -1,4 +1,7 @@
-# GPUs AMD — 0.6.1
+# GPUs AMD
+
+Na versão 0.8.5 há perfis HEVC, controle de taxa revisado e medições de qualidade.
+Veja [perfis e validação](video-quality.md).
 
 A publicação agora escolhe o encoder pelo dispositivo da captura: NVENC em
 NVIDIA, AMF em AMD. Isso vale para monitor (DXGI) e janela (WGC). Não é preciso

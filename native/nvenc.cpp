@@ -187,6 +187,7 @@ struct Encoder {
     void rates(uint32_t bitrate, uint32_t frame_rate) {
         if (bitrate < 64000 || bitrate > 45000000 || !frame_rate || frame_rate > fps)
             throw std::runtime_error("Invalid NVENC rate-control target");
+        if(config.rcParams.averageBitRate==bitrate && init.frameRateNum==frame_rate)return;
         config.rcParams.averageBitRate = bitrate;
         config.rcParams.maxBitRate = bitrate;
         config.rcParams.vbvBufferSize = bitrate / frame_rate;
@@ -195,7 +196,7 @@ struct Encoder {
         NV_ENC_RECONFIGURE_PARAMS params{};
         params.version = NV_ENC_RECONFIGURE_PARAMS_VER;
         params.reInitEncodeParams = init;
-        params.forceIDR = 1;
+        params.forceIDR = 0; // Rate-only updates must not reset the reference chain.
         check(api.nvEncReconfigureEncoder(session, &params), "Reconfigure rate control");
     }
 

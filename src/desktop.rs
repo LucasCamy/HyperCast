@@ -180,6 +180,7 @@ struct App {
     server_status:crate::server_status::ServerStatus,
     before_fullscreen_mode:ViewMode,
     codec: crate::encoder::Codec,
+    amd_profile:crate::encoder::AmdProfile,
     parent: usize,
     presenters: HashMap<String, Presenter>,
     error: String,
@@ -245,6 +246,7 @@ impl App {
             displays: crate::screen_capture::displays().unwrap_or_default(),
             selected_display: 0,
             window_mode:false,windows:crate::video_capture::windows(),selected_window:None,window_picker_open:false,window_previews:HashMap::new(),fullscreen:false,debug_open:false,updater:crate::updater::Updater::default(),creator:crate::room_creation::Creator::default(),catalog:crate::room_creation::Catalog::default(),departure:None,pending_join:false,server_access:crate::room_creation::ServerAccess::default(),server_status:crate::server_status::ServerStatus::default(),before_fullscreen_mode:ViewMode::Spotlight,
+            amd_profile:crate::encoder::AmdProfile::Fast,
             codec: if std::env::var("HYPERCAST_CODEC").as_deref() == Ok("av1") {
                 crate::encoder::Codec::Av1
             } else {
@@ -378,6 +380,15 @@ impl App {
                     if ui.add_enabled(!publishing,egui::Button::new(title).selected(selected).min_size(Vec2::new(width,38.0))).clicked(){self.codec=codec;}
                 }
             });
+            ui.add_enabled_ui(!publishing,|ui|{
+                let previous=self.amd_profile;
+                ui.label(RichText::new("Perfil AMD · HEVC").size(11.0).color(MUTED));
+                egui::ComboBox::from_id_salt("amd_profile").width(ui.available_width()).selected_text(self.amd_profile.label()).show_ui(ui,|ui|{
+                    for profile in [crate::encoder::AmdProfile::Fast,crate::encoder::AmdProfile::Text,crate::encoder::AmdProfile::Compatibility]{ui.selectable_value(&mut self.amd_profile,profile,profile.label());}
+                });
+                if previous!=self.amd_profile {if let Some(engine)=&self.engine{let _=engine.commands.send(Command::AmdProfile(self.amd_profile));}}
+                ui.label(RichText::new("Texto é experimental; aplicado apenas ao envio HEVC pela AMD.").size(11.0).color(MUTED));
+            });
             ui.label(RichText::new(if publishing{"Pare o envio para trocar o formato"}else if self.codec==crate::encoder::Codec::Av1{"Envio e recepção exigem GPU compatível com AV1"}else{"NVIDIA e AMD com suporte HEVC por hardware"}).size(11.0).color(MUTED));
         });
         if publishing && self.target()!=old_target{
@@ -453,6 +464,7 @@ impl App {
         } else {
             Engine::connect_invite(self.address.trim().to_owned(), self.invite.trim().to_owned(), self.name.trim().to_owned(), self.client_id.clone(), self.server_access.token(), ctx, self.parent, self.relay_only)
         };
+        let _ = engine.commands.send(Command::AmdProfile(self.amd_profile));
         let _ = engine.commands.send(Command::SystemAudio(self.system_audio));
         let _ = engine.commands.send(Command::Layout(Layout {
                 self_preview: self.self_preview,
@@ -1177,6 +1189,7 @@ impl eframe::App for App {
                 .show(&ctx,|ui|{
                     ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
                     ui.label(RichText::new(&status).size(12.0));
+                    if let Some(engine)=&self.engine{let stats=engine.shared.lock().unwrap().encoder_stats.clone();if !stats.is_empty(){ui.collapsing("Estatísticas do encoder",|ui|{ui.small(stats);});}}
                     if !audio_status.is_empty(){ui.label(RichText::new(&audio_status).size(11.0).color(MUTED));}
                     let idle=self.engine.is_none() || self.engine.as_ref().is_some_and(|engine|engine.finished());
                     ui.add_space(4.0);

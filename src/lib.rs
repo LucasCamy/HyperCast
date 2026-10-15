@@ -24,6 +24,8 @@ pub mod preferences;
 pub mod encoder;
 #[cfg(feature = "livekit-network")]
 pub mod network;
+#[cfg(feature = "livekit-network")]
+pub mod video_metrics;
 pub mod pacing;
 pub mod resolution;
 #[cfg(all(windows, feature = "desktop"))]

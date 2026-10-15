@@ -1,6 +1,7 @@
 // HyperCast Linux decoder. System FFmpeg is isolated from libwebrtc's
 // reduced static FFmpeg. Hardware decode may still require CPU transfer for
 // the portable I420 renderer; this path does not claim zero-copy presentation.
+#include "livekit/codec_pump.h"
 #include "livekit/hypercast_linux_decoder.h"
 #include "api/make_ref_counted.h"
 #include "api/video/i420_buffer.h"
@@ -92,16 +93,15 @@ class LinuxDecoder final:public webrtc::VideoDecoder {
     auto& f=ff();auto packet=f.av_packet_alloc_fn();if(!packet)return -1;
     if(f.av_new_packet_fn(packet,static_cast<int>(input.size()))<0){f.av_packet_free_fn(&packet);return -1;}
     std::memcpy(packet->data,input.data(),input.size());packet->pts=input.RtpTimestamp();
-    int result=f.avcodec_send_packet_fn(context_,packet);f.av_packet_free_fn(&packet);
-    if(result<0){
-      if(using_av1_hw_ && software_av1())return Decode(input,0);
-      return -1;
-    }
+    auto packet_free=[](AVPacket* p){ff().av_packet_free_fn(&p);};
+    std::unique_ptr<AVPacket,decltype(packet_free)> packet_owner(packet,packet_free);
+    int result=0;
     auto destroy=[](AVFrame* p){ff().av_frame_free_fn(&p);};
     std::unique_ptr<AVFrame,decltype(destroy)> decoded_owner(f.av_frame_alloc_fn(),destroy),cpu_owner(f.av_frame_alloc_fn(),destroy);
     auto decoded=decoded_owner.get();auto cpu=cpu_owner.get();
     if(!decoded||!cpu)return -1;
     int received=0;
+    auto drain=[&]()->int {
     try {
     while((received=f.avcodec_receive_frame_fn(context_,decoded))==0) {
       AVFrame* source=decoded;
@@ -139,10 +139,11 @@ class LinuxDecoder final:public webrtc::VideoDecoder {
       callback_->Decoded(frame);f.av_frame_unref_fn(decoded);f.av_frame_unref_fn(cpu);
     }
     }catch(...){return -1;}
-    if(received<0 && received!=AVERROR(EAGAIN) && received!=AVERROR_EOF){
-      if(using_av1_hw_ && software_av1())return Decode(input,0);
-      return -1;
-    }
+    if(result<0)return result;
+    return received==AVERROR(EAGAIN)||received==AVERROR_EOF?0:received;
+    };
+    result=livekit::SendAndDrainCodec(AVERROR(EAGAIN),[&]{return f.avcodec_send_packet_fn(context_,packet);},drain);
+    if(result<0 && result!=AVERROR(EAGAIN) && using_av1_hw_ && software_av1())return Decode(input,0);
     return result<0?-1:0;
   }
   int32_t Release() override {

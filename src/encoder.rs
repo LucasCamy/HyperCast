@@ -7,6 +7,7 @@ use std::{
     marker::PhantomData,
     ptr::NonNull,
     rc::Rc,
+    time::{Duration,Instant},
 };
 use windows::{
     Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D},
@@ -51,16 +52,6 @@ unsafe extern "C" {
     fn hc_amf_size(handle:*mut c_void,w:*mut u32,h:*mut u32);
     fn hc_nvenc_close(handle: *mut c_void);
     fn hc_nvenc_preview(handle: *mut c_void) -> *mut c_void;
-    fn hc_amf_open(
-        device: *mut c_void,
-        width: u32,
-        height: u32,
-        fps: u32,
-        bitrate: u32,
-        av1: u32,
-        error: *mut c_char,
-        capacity: usize,
-    ) -> *mut c_void;
     fn hc_amf_encode(
         handle: *mut c_void,
         texture: *mut c_void,
@@ -80,6 +71,8 @@ unsafe extern "C" {
         error: *mut c_char,
         capacity: usize,
     ) -> i32;
+    fn hc_amf_open_profile(device:*mut c_void,width:u32,height:u32,fps:u32,bitrate:u32,av1:u32,profile:u32,error:*mut c_char,capacity:usize)->*mut c_void;
+    fn hc_amf_feedback(handle:*mut c_void,qp:*mut i32,bitrate:*mut u32,vbv:*mut u32,fps:*mut u32,runtime:*mut u32);
     fn hc_amf_close(handle: *mut c_void);
     fn hc_amf_preview(handle: *mut c_void) -> *mut c_void;
 }
@@ -90,10 +83,20 @@ pub enum Codec {
     Av1,
 }
 
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq,clap::ValueEnum)]
+#[repr(u32)]
+pub enum AmdProfile { #[default] Fast=0, Text=1, Compatibility=2 }
+impl AmdProfile {
+    pub fn label(self)->&'static str {match self{Self::Fast=>"Fluidez",Self::Text=>"Texto · experimental",Self::Compatibility=>"Compatibilidade"}}
+}
+#[derive(Debug,Default)]
+pub struct EncoderFeedback {pub qp:Option<u32>,pub bitrate:u32,pub vbv_bits:Option<u32>,pub fps:u32,pub vbv_runtime:Option<bool>}
 pub struct EncodedPacket<'a> {
     pub bytes: &'a [u8],
     pub timestamp_us: i64,
     pub keyframe: bool,
+    pub encode_time:Duration,
+    pub qp:Option<u32>,
 }
 
 #[derive(Clone,Copy)]
@@ -104,6 +107,8 @@ pub struct HardwareEncoder {
     handle: NonNull<c_void>,
     output: Vec<u8>,
     poisoned: bool,
+    requested_rate:(u32,u32),
+    actual_profile:AmdProfile,
     _thread_affinity: PhantomData<Rc<()>>,
 }
 
@@ -123,6 +128,7 @@ impl HardwareEncoder {
         unsafe {(match self.backend {Backend::Nvidia=>hc_nvenc_size,Backend::Amd=>hc_amf_size})(self.handle.as_ptr(),&mut w,&mut h);}
         (w,h)
     }
+    pub fn profile(&self)->Option<AmdProfile>{matches!(self.backend,Backend::Amd).then_some(self.actual_profile)}
     pub fn backend_name(&self)->&'static str {match self.backend {Backend::Nvidia=>"NVENC",Backend::Amd=>"AMF"}}
     pub fn preview_texture(&self) -> Option<ID3D11Texture2D> {
         // SAFETY: native helper returns a new owned COM reference, never the
@@ -142,6 +148,9 @@ impl HardwareEncoder {
         bitrate: u32,
         codec: Codec,
     ) -> Result<Self> {
+        Self::new_with_profile(device,width,height,fps,bitrate,codec,AmdProfile::Fast)
+    }
+    pub fn new_with_profile(device:&ID3D11Device,width:u32,height:u32,fps:u32,bitrate:u32,codec:Codec,profile:AmdProfile)->Result<Self> {
         // SAFETY: the borrowed live device supports IDXGIDevice; returned COM
         // references retain the adapter through the descriptor query.
         let backend=unsafe {
@@ -152,30 +161,41 @@ impl HardwareEncoder {
         let mut error = [0; 1024];
         // SAFETY: device remains alive during open; bridge retains its own COM
         // reference. Error output is bounded. Opaque handle is uniquely owned.
-        let raw = unsafe {
-            let open=match backend {Backend::Nvidia=>hc_nvenc_open,Backend::Amd=>hc_amf_open};
-            open(
-                device.as_raw(),
-                width,
-                height,
-                fps,
-                bitrate,
-                matches!(codec, Codec::Av1) as u32,
-                error.as_mut_ptr(),
-                error.len(),
-            )
-        };
+        let mut actual_profile=if codec==Codec::Av1{AmdProfile::Fast}else{profile};
+        let mut raw = unsafe {match backend {
+            Backend::Nvidia=>hc_nvenc_open(device.as_raw(),width,height,fps,bitrate,matches!(codec,Codec::Av1) as u32,error.as_mut_ptr(),error.len()),
+            Backend::Amd=>hc_amf_open_profile(device.as_raw(),width,height,fps,bitrate,matches!(codec,Codec::Av1) as u32,if codec==Codec::Av1{AmdProfile::Fast as u32}else{profile as u32},error.as_mut_ptr(),error.len()),
+        }};
+        if raw.is_null() && matches!(backend,Backend::Amd) && actual_profile==AmdProfile::Text {
+            actual_profile=AmdProfile::Fast;
+            // SAFETY: the failed native constructor has already released its partial session.
+            raw=unsafe{hc_amf_open_profile(device.as_raw(),width,height,fps,bitrate,matches!(codec,Codec::Av1) as u32,actual_profile as u32,error.as_mut_ptr(),error.len())};
+        }
         let handle = NonNull::new(raw).ok_or_else(|| anyhow!(error_text(&error)))?;
         Ok(Self {
-            handle,backend,
+            handle,backend,actual_profile,
             output: vec![0; 16 * 1024 * 1024],
-            poisoned: false,
+            poisoned: false,requested_rate:(bitrate,fps),
             _thread_affinity: PhantomData,
         })
     }
 
-    pub fn reconfigure(&mut self, bitrate: u32, fps: u32) -> Result<()> {
+    pub fn feedback(&self)->EncoderFeedback {
+        let mut feedback=EncoderFeedback{bitrate:self.requested_rate.0,fps:self.requested_rate.1,..Default::default()};
+        if matches!(self.backend,Backend::Amd){
+            let(mut qp,mut bitrate,mut vbv,mut fps,mut runtime)=(-1,0,0,0,0);
+            // SAFETY: live uniquely owned native encoder; outputs point to initialized scalars.
+            unsafe{hc_amf_feedback(self.handle.as_ptr(),&mut qp,&mut bitrate,&mut vbv,&mut fps,&mut runtime);}
+            feedback.qp=(0..=51).contains(&qp).then_some(qp as u32);feedback.bitrate=bitrate;feedback.fps=fps;feedback.vbv_bits=Some(vbv);feedback.vbv_runtime=Some(runtime!=0);
+        }
+        feedback
+    }
+    /// False means a driver rejected this budget: pause until a new supported target.
+    /// It must never turn a transient network limit into a destroyed encoder.
+    pub fn reconfigure(&mut self, bitrate: u32, fps: u32) -> Result<bool> {
         ensure!(!self.poisoned, "Encoder must be recreated after an error");
+        ensure!((64000..=45000000).contains(&bitrate) && (1..=240).contains(&fps),"Invalid rate target");
+        if self.requested_rate==(bitrate,fps){return Ok(true);}
         let mut error = [0; 1024];
         // SAFETY: valid unique live handle, bounded writable error buffer.
         let status = unsafe {
@@ -188,9 +208,11 @@ impl HardwareEncoder {
                 error.len(),
             )
         };
+        if status==2 && matches!(self.backend,Backend::Amd){self.requested_rate=(0,0);return Ok(false);}
         self.poisoned = status != 0;
         ensure!(status == 0, "{}", error_text(&error));
-        Ok(())
+        self.requested_rate=(bitrate,fps);
+        Ok(true)
     }
 
     pub fn encode<'a>(
@@ -212,6 +234,7 @@ impl HardwareEncoder {
         let texture = frame
             .map(|f| f.as_raw())
             .unwrap_or(std::ptr::null_mut());
+        let encode_start=Instant::now();
         let status = unsafe {
             let encode=match self.backend {Backend::Nvidia=>hc_nvenc_encode,Backend::Amd=>hc_amf_encode};
             encode(
@@ -233,10 +256,12 @@ impl HardwareEncoder {
             length <= self.output.len(),
             "Native encoder returned an invalid length"
         );
+        let encode_time=encode_start.elapsed();
+        let qp=self.feedback().qp;
         Ok(EncodedPacket {
             bytes: &self.output[..length],
             timestamp_us,
-            keyframe: key != 0,
+            keyframe: key != 0,encode_time,qp,
         })
     }
 }

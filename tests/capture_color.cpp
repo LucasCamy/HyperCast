@@ -10,6 +10,7 @@ extern "C" {
 void* hc_nvenc_open(void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, char*, size_t) noexcept;
 int hc_nvenc_encode(void*, void*, uint64_t, uint32_t, uint8_t*, size_t, size_t*, uint32_t*, char*, size_t) noexcept;
 void hc_nvenc_close(void*) noexcept;
+int hc_nvenc_rates(void*,uint32_t,uint32_t,char*,size_t) noexcept;
 }
 
 int main() {
@@ -80,6 +81,13 @@ int main() {
             require(length > 0 && key == 1, "NVENC encoded access unit");
         }
         std::puts("PASS: production NVENC bridge encodes HDR/SDR transitions and retained GPU frame");
+        for(unsigned i=4;i<12;++i){
+            require(hc_nvenc_rates(encoder.get(),28000000,120,error.data(),error.size())==0,error.data());
+            size_t length=0;uint32_t key=0;
+            require(hc_nvenc_encode(encoder.get(),sdr_source.Get(),i*8333,i==11,bytes.data(),bytes.size(),&length,&key,error.data(),error.size())==0,error.data());
+            require(length>0 && key==uint32_t(i==11),"Rate-only NVENC update must preserve GOP; requested key must work");
+        }
+        std::puts("PASS: NVENC rate changes and duplicates preserve GOP, explicit keyframe honored");
         return 0;
     } catch (const std::exception& error) { std::fprintf(stderr, "%s\n", error.what()); return 1; }
 }

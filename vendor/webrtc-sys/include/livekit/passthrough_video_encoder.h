@@ -49,6 +49,8 @@ class PassthroughVideoEncoderFactory : public webrtc::VideoEncoderFactory {
 };
 
 #ifdef LIVEKIT_TEST
+bool passthrough_rate_lifecycle_for_test();
+bool codec_backpressure_for_test();
 // Frame kinds for passthrough_chain_guard_for_test().
 constexpr uint8_t kChainTestKey = 0;
 constexpr uint8_t kChainTestDelta = 1;

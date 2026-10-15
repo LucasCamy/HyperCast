@@ -42,7 +42,10 @@ struct Encoder {
     ComPtr<ID3D11Query> fence;
     CaptureColor color;
     uint32_t width=0,height=0,fps=0,source_width=0,source_height=0;
-    bool av1=false,ready=false;
+    bool av1=false,ready=false,initialized=false;
+    uint32_t profile=0,applied_bitrate=0,vbv_bits=0,vbv_frames=2,submissions=0;
+    int last_qp=-1;bool vbv_runtime=true;
+
     ~Encoder() noexcept {
         --live_encoders;
         if(encoder){encoder->Terminate();encoder=nullptr;}
@@ -51,9 +54,11 @@ struct Encoder {
         if(dll)FreeLibrary(dll);
     }
     template<class T> void property(const wchar_t* name,T value,const char* operation){check(encoder->SetProperty(name,value),operation);}
-    void open(ID3D11Device* d,uint32_t w,uint32_t h,uint32_t f,uint32_t bitrate,bool use_av1){
+    void open(ID3D11Device* d,uint32_t w,uint32_t h,uint32_t f,uint32_t bitrate,bool use_av1,uint32_t selected_profile=0){
         if(!d || !hc_capture_size(w,h) || f<1 || f>240 || bitrate<1000000 || bitrate>45000000)
             throw std::runtime_error("Invalid AMF configuration (maximum 8192 per axis and 32 megapixels, 1-240 FPS, 1-45 Mbps)");
+        if(selected_profile>2)throw std::runtime_error("Invalid AMF profile");
+        profile=selected_profile;vbv_frames=profile==2?1:2;
         source_width=w;source_height=h;fps=f;av1=use_av1;device=d;
         ComPtr<IDXGIDevice> dxgi;ComPtr<IDXGIAdapter> adapter;DXGI_ADAPTER_DESC desc{};
         hr(device.As(&dxgi),"Query AMF adapter");hr(dxgi->GetAdapter(&adapter),"Get AMF adapter");hr(adapter->GetDesc(&desc),"Describe AMF adapter");
@@ -92,20 +97,19 @@ struct Encoder {
             property(AMF_VIDEO_ENCODER_AV1_PRE_ANALYSIS_ENABLE,false,"Disable AMF AV1 lookahead");
         }else{
             property(AMF_VIDEO_ENCODER_HEVC_USAGE,amf_int64(AMF_VIDEO_ENCODER_HEVC_USAGE_ULTRA_LOW_LATENCY),"Set AMF HEVC low latency");
-            property(AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET,amf_int64(AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_SPEED),"Set AMF HEVC speed");
+            property(AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET,amf_int64(profile==1?AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_BALANCED:AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_SPEED),"Set AMF HEVC speed");
             property(AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD,amf_int64(AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_CBR),"Set AMF HEVC CBR");
             property(AMF_VIDEO_ENCODER_HEVC_FRAMESIZE,AMFConstructSize(w,h),"Set AMF HEVC frame size");
-            property(AMF_VIDEO_ENCODER_HEVC_GOP_SIZE,amf_int64(f),"Set AMF HEVC GOP");
+            property(AMF_VIDEO_ENCODER_HEVC_GOP_SIZE,amf_int64(profile==1?f*2:f),"Set AMF HEVC GOP");
             property(AMF_VIDEO_ENCODER_HEVC_HEADER_INSERTION_MODE,amf_int64(AMF_VIDEO_ENCODER_HEVC_HEADER_INSERTION_MODE_IDR_ALIGNED),"Set AMF HEVC headers");
             property(AMF_VIDEO_ENCODER_HEVC_PRE_ANALYSIS_ENABLE,false,"Disable AMF HEVC lookahead");
         }
         rates(bitrate,f);
-        property(av1?AMF_VIDEO_ENCODER_AV1_VBV_BUFFER_SIZE:AMF_VIDEO_ENCODER_HEVC_VBV_BUFFER_SIZE,
-                 amf_int64(bitrate/f),"Set one-frame AMF VBV");
         property(av1?AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_SKIP_FRAME:AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_SKIP_FRAME_ENABLE,
                  false,"Disable AMF rate-control frame skips");
         result=encoder->Init(amf::AMF_SURFACE_NV12,w,h);
         if(result!=AMF_OK)throw std::runtime_error(av1?"AV1 por hardware indisponível nesta GPU AMD. Selecione HEVC (H.265).":"Não foi possível iniciar HEVC na AMD (AMF status "+std::to_string(result)+"). Confira o driver e o diagnóstico.");
+        initialized=true;
         check(factory->CreateComponent(amf_context,AMFVideoConverter,&converter),"Create GPU AMF converter");
         check(converter->SetProperty(AMF_VIDEO_CONVERTER_COMPUTE_DEVICE,amf_int64(amf::AMF_MEMORY_DX11)),"Set AMF DX11 compute");
         check(converter->SetProperty(AMF_VIDEO_CONVERTER_MEMORY_TYPE,amf_int64(amf::AMF_MEMORY_DX11)),"Set AMF GPU converter memory");
@@ -118,10 +122,22 @@ struct Encoder {
         D3D11_QUERY_DESC query{D3D11_QUERY_EVENT,0};hr(device->CreateQuery(&query,&fence),"Create AMF GPU fence");
     }
     void rates(uint32_t bitrate,uint32_t f){
-        if(bitrate<1000000 || bitrate>45000000 || f<1 || f>240)throw std::runtime_error("Invalid AMF bitrate/framerate");
-        property(av1?AMF_VIDEO_ENCODER_AV1_TARGET_BITRATE:AMF_VIDEO_ENCODER_HEVC_TARGET_BITRATE,amf_int64(bitrate),"Set AMF bitrate");
-        property(av1?AMF_VIDEO_ENCODER_AV1_FRAMERATE:AMF_VIDEO_ENCODER_HEVC_FRAMERATE,AMFConstructRate(f,1),"Set AMF framerate");
-        fps=f;
+        if(bitrate<64000 || bitrate>45000000 || f<1 || f>240)throw std::runtime_error("Invalid AMF bitrate/framerate");
+        if(applied_bitrate==bitrate && fps==f)return;
+        const auto target=av1?AMF_VIDEO_ENCODER_AV1_TARGET_BITRATE:AMF_VIDEO_ENCODER_HEVC_TARGET_BITRATE;
+        property(target,amf_int64(bitrate),"Set AMF bitrate");
+        if(!initialized || fps!=f)property(av1?AMF_VIDEO_ENCODER_AV1_FRAMERATE:AMF_VIDEO_ENCODER_HEVC_FRAMERATE,AMFConstructRate(f,1),"Set AMF framerate");
+        const auto vbv=av1?AMF_VIDEO_ENCODER_AV1_VBV_BUFFER_SIZE:AMF_VIDEO_ENCODER_HEVC_VBV_BUFFER_SIZE;
+        const amf_int64 budget=std::min<amf_int64>(45000000,std::max<amf_int64>(16000,(amf_int64(bitrate)*vbv_frames)/f));
+        AMF_RESULT buffer_result=encoder->SetProperty(vbv,budget);
+        if(buffer_result!=AMF_OK && !initialized)check(buffer_result,"Set AMF VBV");
+        vbv_runtime=buffer_result==AMF_OK;
+        amf_int64 actual_rate=0,actual_buffer=0;
+        check(encoder->GetProperty(target,&actual_rate),"Read AMF bitrate");
+        check(encoder->GetProperty(vbv,&actual_buffer),"Read AMF VBV");
+        if(actual_rate<64000 || actual_rate>bitrate || actual_buffer<0 || actual_buffer>45000000)
+            throw std::runtime_error("AMF rate exceeds requested network budget");
+        applied_bitrate=uint32_t(actual_rate);vbv_bits=uint32_t(actual_buffer);fps=f;
     }
     void wait_copy(){
         context->End(fence.Get());context->Flush();ULONGLONG start=GetTickCount64();
@@ -156,9 +172,13 @@ struct Encoder {
             check(nv12->SetProperty(av1?AMF_VIDEO_ENCODER_AV1_FORCE_FRAME_TYPE:AMF_VIDEO_ENCODER_HEVC_FORCE_PICTURE_TYPE,amf_int64(av1?AMF_VIDEO_ENCODER_AV1_FORCE_FRAME_TYPE_KEY:AMF_VIDEO_ENCODER_HEVC_PICTURE_TYPE_IDR)),"Force AMF keyframe");
             check(nv12->SetProperty(av1?AMF_VIDEO_ENCODER_AV1_FORCE_INSERT_SEQUENCE_HEADER:AMF_VIDEO_ENCODER_HEVC_INSERT_HEADER,true),"Force AMF stream headers");
         }
+        last_qp=-1;
+        const bool sample_stats=!av1 && submissions++%30==0;
+        if(sample_stats)nv12->SetProperty(AMF_VIDEO_ENCODER_HEVC_STATISTICS_FEEDBACK,true);
         check(encoder->SubmitInput(nv12),"Submit AMF GPU encode");
         auto data=output(encoder);amf::AMFBufferPtr buffer(data);
         if(!buffer || buffer->GetMemoryType()!=amf::AMF_MEMORY_HOST || !buffer->GetNative() || !buffer->GetSize() || buffer->GetSize()>capacity || data->GetPts()!=surface->GetPts())throw std::runtime_error("Invalid AMF compressed output/timestamp");
+        if(sample_stats){amf_int64 qp=-1;if(data->GetProperty(AMF_VIDEO_ENCODER_HEVC_STATISTIC_AVERAGE_QP,&qp)==AMF_OK && qp>=0 && qp<=51)last_qp=int(qp);}
         amf_int64 type=-1;check(data->GetProperty(av1?AMF_VIDEO_ENCODER_AV1_OUTPUT_FRAME_TYPE:AMF_VIDEO_ENCODER_HEVC_OUTPUT_DATA_TYPE,&type),"Read AMF keyframe metadata");
         is_key=av1?(type==AMF_VIDEO_ENCODER_AV1_OUTPUT_FRAME_TYPE_KEY || type==AMF_VIDEO_ENCODER_AV1_OUTPUT_FRAME_TYPE_INTRA_ONLY):(type==AMF_VIDEO_ENCODER_HEVC_OUTPUT_DATA_TYPE_IDR || type==AMF_VIDEO_ENCODER_HEVC_OUTPUT_DATA_TYPE_I);
         length=buffer->GetSize();std::memcpy(bytes,buffer->GetNative(),length);
@@ -176,13 +196,21 @@ void* hc_amf_open(void* device,uint32_t w,uint32_t h,uint32_t fps,uint32_t bitra
     try{auto value=std::make_unique<Encoder>();value->open(static_cast<ID3D11Device*>(device),w,h,fps,bitrate,av1!=0);return value.release();}
     catch(const std::exception& e){report(error,capacity,e.what());}catch(...){report(error,capacity,"Unknown AMF initialization error");}return nullptr;
 }
+// Profile is immutable for a session. Original ABI remains available to diagnostics.
+void* hc_amf_open_profile(void* device,uint32_t w,uint32_t h,uint32_t fps,uint32_t bitrate,uint32_t av1,uint32_t profile,char* error,size_t capacity) noexcept {
+    try{auto value=std::make_unique<Encoder>();value->open(static_cast<ID3D11Device*>(device),w,h,fps,bitrate,av1!=0,profile);return value.release();}
+    catch(const std::exception& e){report(error,capacity,e.what());}catch(...){report(error,capacity,"Unknown AMF initialization error");}return nullptr;
+}
+void hc_amf_feedback(void* handle,int32_t* qp,uint32_t* bitrate,uint32_t* vbv,uint32_t* fps,uint32_t* runtime) noexcept {
+    if(handle && qp && bitrate && vbv && fps && runtime){auto* e=static_cast<Encoder*>(handle);*qp=e->last_qp;*bitrate=e->applied_bitrate;*vbv=e->vbv_bits;*fps=e->fps;*runtime=e->vbv_runtime?1:0;}
+}
 int hc_amf_encode(void* handle,void* texture,uint64_t timestamp,uint32_t key,uint8_t* bytes,size_t capacity,size_t* length,uint32_t* is_key,char* error,size_t error_capacity) noexcept {
     try{if(!handle || !length || !is_key)throw std::runtime_error("Invalid AMF encode arguments");bool flag=false;*length=0;*is_key=0;static_cast<Encoder*>(handle)->encode(static_cast<ID3D11Texture2D*>(texture),timestamp,key!=0,bytes,capacity,*length,flag);*is_key=flag;return 0;}
     catch(const std::exception& e){report(error,error_capacity,e.what());}catch(...){report(error,error_capacity,"Unknown AMF encode error");}return -1;
 }
 int hc_amf_rates(void* handle,uint32_t bitrate,uint32_t fps,char* error,size_t capacity) noexcept {
     try{if(!handle)throw std::runtime_error("Invalid AMF handle");static_cast<Encoder*>(handle)->rates(bitrate,fps);return 0;}
-    catch(const std::exception& e){report(error,capacity,e.what());}catch(...){report(error,capacity,"Unknown AMF rate-control error");}return -1;
+    catch(const std::exception& e){report(error,capacity,e.what());}catch(...){report(error,capacity,"Unknown AMF rate-control error");}return 2;
 }
 void hc_amf_close(void* handle) noexcept {delete static_cast<Encoder*>(handle);}
 void* hc_amf_preview(void* handle) noexcept {try{return handle?static_cast<Encoder*>(handle)->preview():nullptr;}catch(...){return nullptr;}}

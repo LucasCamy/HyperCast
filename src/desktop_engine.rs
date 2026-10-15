@@ -1,5 +1,5 @@
 use crate::{
-    encoder::{Codec, HardwareEncoder},
+    encoder::{Codec, HardwareEncoder,AmdProfile},
     network::{self, EncodedPublisher},
     pacing::FramePacer,
     video_capture::{CaptureTarget,VideoCapture},
@@ -49,6 +49,7 @@ impl VideoFrame {
 #[derive(Default)]
 pub struct Shared {
     pub connected: bool,
+    pub encoder_stats:String,
     pub reception_resetting: bool,
     pub reception_restarts: u64,
     pub publishing: bool,
@@ -88,6 +89,7 @@ pub enum Command {
     ChangeSource(CaptureTarget),
     StopShare,
     SystemAudio(bool),
+    AmdProfile(AmdProfile),
     Disconnect,
 }
 pub struct Engine {
@@ -113,6 +115,10 @@ struct Cast {
     capture: VideoCapture,
     dimensions:(u32,u32),
     has_frame:bool,
+    profile:AmdProfile,
+    metrics:crate::video_metrics::EncodeWindow,
+    last_rate:(u64,u32),
+    rate_blocked:bool,
     device: windows::Win32::Graphics::Direct3D11::ID3D11Device,
     encoder: Option<HardwareEncoder>,
     publisher: Option<EncodedPublisher>,
@@ -140,18 +146,19 @@ impl Cast {
         codec: Codec,
         runtime: &tokio::runtime::Runtime,
         room: &Arc<Room>,
+        profile:AmdProfile,
     ) -> Result<Self> {
         let capture = VideoCapture::new(target)?;
         let device=capture.device().clone();
         let (width, height) = capture.dimensions();
         crate::diagnostics::write("capture", &format!("{width}x{height} target_fps=120 codec={codec:?}"), "");
-        let encoder = HardwareEncoder::new(
+        let encoder = HardwareEncoder::new_with_profile(
             capture.device(),
             width,
             height,
             120,
             40_000_000,
-            codec,
+            codec,profile,
         )?;
         crate::diagnostics::write("encoder",encoder.backend_name(),"");
         // No Desktop Duplication frame is held while waiting for publication acknowledgment.
@@ -166,7 +173,7 @@ impl Cast {
             codec == Codec::Av1,
         ))?;
         Ok(Self {
-            audio: None,
+            audio: None,profile,metrics:Default::default(),last_rate:(40_000_000,120),rate_blocked:false,
             selection: (target, codec),
             dimensions:(width,height),device,has_frame:false,
             capture,
@@ -187,7 +194,8 @@ impl Cast {
         if let Some(frame)=&frame {
             let mut desc=Default::default();unsafe{frame.texture().GetDesc(&mut desc);}
             if (desc.Width,desc.Height)!=self.dimensions {
-                self.encoder=Some(HardwareEncoder::new(&self.device,desc.Width,desc.Height,120,40_000_000,self.selection.1)?);
+                self.encoder=Some(HardwareEncoder::new_with_profile(&self.device,desc.Width,desc.Height,120,40_000_000,self.selection.1,self.profile)?);
+                if self.last_rate.0>0 {if let Some(encoder)=&mut self.encoder{self.rate_blocked=!encoder.reconfigure(self.last_rate.0.clamp(64000,40_000_000) as u32,self.fps)?;self.paused=self.rate_blocked;}}
                 self.dimensions=(desc.Width,desc.Height);
                 if let Some(p)=&mut self.publisher {let (w,h)=self.encoder.as_ref().unwrap().dimensions();p.set_resolution(w,h);}
             }
@@ -197,21 +205,24 @@ impl Cast {
         }
         self.has_frame |= frame.is_some();
         if let (Some(encoder), Some(publisher)) = (&mut self.encoder, &mut self.publisher) {
-            let mut key = self.count == 0 || publisher.take_keyframe_request();
-            if let Some(rate) = publisher.take_rate_control_request() {
-                self.paused = rate.target_bitrate_bps == 0;
+            let key_requested=publisher.take_keyframe_request();
+            let mut key=self.count==0 || key_requested;
+            if let Some(rate)=publisher.take_rate_control_request() {
+                let was_paused=self.paused;
+                let fps=if rate.framerate_fps.is_finite(){(rate.framerate_fps as u32).clamp(1,120)}else{self.fps};
+                self.last_rate=(rate.target_bitrate_bps,fps);self.paused=rate.target_bitrate_bps==0;
+                self.rate_blocked=false;
                 if !self.paused {
-                    self.fps = (rate.framerate_fps as u32).clamp(1, 120);
-                    encoder.reconfigure(
-                        rate.target_bitrate_bps.clamp(64_000, 40_000_000) as u32,
-                        self.fps,
-                    )?;
-                    key = true;
+                    let accepted=encoder.reconfigure(rate.target_bitrate_bps.clamp(64_000,40_000_000) as u32,fps)?;
+                    self.rate_blocked=!accepted;self.paused=!accepted;
+                    if accepted{self.fps=fps;}
                 }
+                if was_paused && !self.paused {key=true;publisher.restart_keyframe();}
             }
             if !self.paused {
                 let packet =
                     encoder.encode_texture(frame.as_ref().map(|f|f.texture()), self.start.elapsed().as_micros() as i64, key)?;
+                self.metrics.record(packet.encode_time,packet.bytes.len(),packet.keyframe,key,packet.qp);
                 if publisher.push(packet.bytes, packet.timestamp_us, packet.keyframe)? {
                     self.count += 1;
                 }
@@ -232,7 +243,8 @@ impl Cast {
         // Prepare and validate first; failures leave the original source intact.
         let capture=VideoCapture::new(target)?;
         let dimensions=capture.dimensions();let device=capture.device().clone();
-        let encoder=HardwareEncoder::new(&device,dimensions.0,dimensions.1,120,40_000_000,self.selection.1)?;
+        let mut encoder=HardwareEncoder::new_with_profile(&device,dimensions.0,dimensions.1,120,40_000_000,self.selection.1,self.profile)?;
+        if self.last_rate.0>0 {self.rate_blocked=!encoder.reconfigure(self.last_rate.0.clamp(64000,40_000_000) as u32,self.fps)?;self.paused=self.rate_blocked;}
         let send_size=encoder.dimensions();
         let change_audio=self.selection.0.process()!=target.process();
         if change_audio {if let Some(audio)=&self.audio{audio.set_process(target.process())?;}}
@@ -418,6 +430,7 @@ impl Engine {
                 let mut sinks = HashMap::<TrackSid, Sink>::new();
                 let mut audio_sinks = HashMap::<TrackSid, AudioReceiver>::new();
                 let mut audio_requested = false;
+                let mut amd_profile=AmdProfile::Fast;
                 let audio_volume = Arc::new(AtomicU64::new(80));
                 let audio_received = Arc::new(AtomicU64::new(0));
                 let mut pacer = FramePacer::new(120)?;
@@ -483,6 +496,7 @@ impl Engine {
                     }
                     while let Ok(command) = commands.try_recv() {
                         match command {
+                            Command::AmdProfile(profile)=>{if cast.is_none(){amd_profile=profile;}},
                             Command::Disconnect => {
                                 crate::diagnostics::write("connection", "User disconnected", "");
                                 break 'session;
@@ -509,7 +523,7 @@ impl Engine {
                                 recovery = None;
                                 recovery_attempts = 0;
                                 crate::diagnostics::write("publication", &format!("adapter={adapter} output={output} codec={codec:?}"), "");
-                                match Cast::new(target, codec, &runtime, &room) {
+                                match Cast::new(target, codec, &runtime, &room,amd_profile) {
                                     Ok(mut value) => {
                                         if let Err(error) = value.set_audio(audio_requested, &runtime, &room) {
                                             state.lock().unwrap().audio_status = format!("Áudio: {error}");
@@ -539,7 +553,7 @@ impl Engine {
                             Command::ShareWindow{adapter,hwnd,pid,codec} if cast.is_none()=>{
                                 recovery=None;recovery_attempts=0;
                                 let target=CaptureTarget::Window{adapter,hwnd,pid};
-                                match Cast::new(target,codec,&runtime,&room){
+                                match Cast::new(target,codec,&runtime,&room,amd_profile){
                                     Ok(mut value)=>{
                                         if let Err(e)=value.set_audio(audio_requested,&runtime,&room){state.lock().unwrap().audio_status=format!("Áudio: {e}");}
                                         let audio_status=if state.lock().unwrap().audio_status.starts_with("Áudio:"){None}else{Some(value.audio_status())};
@@ -674,8 +688,9 @@ impl Engine {
                             RoomEvent::Reconnected => {
                                 reconnect_attempt = 0;
                                 if let Some(c)=&mut cast {
-                                    c.paused=false;c.fps=120;
-                                    if let Some(e)=&mut c.encoder{e.reconfigure(40_000_000,120)?;}
+                                    // A replaced WebRTC encoder must see one bootstrap frame to bind
+                                    // its rate mailbox. Use only 64 kbps if the old sender was paused.
+                                    if let Some(e)=&mut c.encoder{c.rate_blocked=!e.reconfigure(c.last_rate.0.clamp(64000,40_000_000) as u32,c.fps)?;c.paused=c.rate_blocked;}
                                     if let Some(p)=&mut c.publisher {p.restart_keyframe();}
                                 }
                                 if reception_restart.is_none(){update_subscriptions(&room,&layout);}
@@ -696,7 +711,7 @@ impl Engine {
                         let (selection, _) = recovery.take().unwrap();
                         recovery_attempts += 1;
                         crate::diagnostics::write("recovery", &format!("Rebuilding GPU pipeline, attempt {recovery_attempts}/3"), "");
-                        match Cast::new(selection.0, selection.1, &runtime, &room) {
+                        match Cast::new(selection.0, selection.1, &runtime, &room,amd_profile) {
                             Ok(mut value) => {
                                 if let Err(error) = value.set_audio(audio_requested, &runtime, &room) {
                                     state.lock().unwrap().audio_status = format!("Áudio: {error}");
@@ -756,6 +771,8 @@ impl Engine {
                             if value.publisher.is_some() {
                                 state.status = if room.connection_state()!=ConnectionState::Connected {
                                     format!("Reconectando… tentativa {}/3", reconnect_attempt.max(1))
+                                } else if value.rate_blocked {
+                                    "Envio aguardando uma taxa aceita pelo driver AMD".into()
                                 } else if value.paused {
                                     "Compartilhamento ativo • envio pausado".into()
                                 } else {
@@ -819,6 +836,15 @@ impl Engine {
                         ctx.request_repaint();
                     }
                     if diagnostic_tick.elapsed() >= Duration::from_secs(5) {
+                        if let Some(value)=&mut cast {
+                            if let Some(encoder)=&value.encoder{
+                                let feedback=encoder.feedback();
+                                let summary=format!("backend={} profile={:?} applied_profile={:?} requested_bps={} applied_bps={} fps={} vbv_bits={:?} vbv_runtime={:?} rate_blocked={} {}",
+                                    encoder.backend_name(),value.profile,encoder.profile(),value.last_rate.0,feedback.bitrate,feedback.fps,feedback.vbv_bits,feedback.vbv_runtime,value.rate_blocked,value.metrics.summary_and_reset());
+                                crate::diagnostics::write("encoder_window",&summary,"");state.lock().unwrap().encoder_stats=summary;
+                            }
+                        }
+
                         let shared = state.lock().unwrap();
                         crate::diagnostics::write("media", &format!("sent={} received={} receivers={} publishing={}", shared.sent, shared.received, sinks.len(), shared.publishing), "");
                         crate::diagnostics::write("audio_stats", &format!("sent={} received={} receivers={}", cast.as_ref().and_then(|value| value.audio.as_ref()).map_or(0, |audio| audio.frames.load(Ordering::Relaxed)), audio_received.load(Ordering::Relaxed), audio_sinks.len()), "");
@@ -826,6 +852,7 @@ impl Engine {
                         let diagnostic_room = room.clone();
                         runtime.spawn(async move {
                             if let Ok(stats) = diagnostic_room.get_stats().await {
+                                for line in network::video_stats_lines(&stats.publisher_stats,&stats.subscriber_stats){crate::diagnostics::write("video_rtp",&line,"");}
                                 network::print_ice_path("publisher", &stats.publisher_stats);
                                 network::print_ice_path("subscriber", &stats.subscriber_stats);
                             }

@@ -1,3 +1,4 @@
+#include "livekit/codec_pump.h"
 /*
  * Copyright 2026 LiveKit, Inc.
  *
@@ -216,6 +217,7 @@ class PassthroughVideoEncoder final : public VideoEncoder {
 
   int32_t Release() override {
     encoded_image_callback_ = nullptr;
+    {webrtc::MutexLock lock(&rate_control_mutex_);rate_control_mailbox_.reset();latest_rate_control_request_.reset();}
     return WEBRTC_VIDEO_CODEC_OK;
   }
 
@@ -340,8 +342,13 @@ class PassthroughVideoEncoder final : public VideoEncoder {
 
   void SetRates(const RateControlParameters& parameters) override {
     webrtc::MutexLock lock(&rate_control_mutex_);
-    latest_rate_control_request_ = livekit::EncodedRateControlRequest{
-        true, parameters.bitrate.get_sum_bps(), parameters.framerate_fps};
+    if(auto mailbox=rate_control_mailbox_.lock()) {
+      mailbox->Store(parameters.bitrate.get_sum_bps(),parameters.framerate_fps);
+      latest_rate_control_request_.reset();
+    }else{
+      latest_rate_control_request_ = livekit::EncodedRateControlRequest{
+          true, parameters.bitrate.get_sum_bps(), parameters.framerate_fps};
+    }
   }
 
   EncoderInfo GetEncoderInfo() const override {
@@ -383,8 +390,9 @@ class PassthroughVideoEncoder final : public VideoEncoder {
   void ForwardPendingRateControl(
       EncodedVideoFrameBuffer* encoded_buffer) {
     std::optional<livekit::EncodedRateControlRequest> request;
+    webrtc::MutexLock lock(&rate_control_mutex_);
     {
-      webrtc::MutexLock lock(&rate_control_mutex_);
+      rate_control_mailbox_=encoded_buffer->rate_control_mailbox();
       request = latest_rate_control_request_;
       latest_rate_control_request_.reset();
     }
@@ -403,6 +411,9 @@ class PassthroughVideoEncoder final : public VideoEncoder {
   std::vector<uint8_t> cached_sequence_header_obu_;
   webrtc::Mutex rate_control_mutex_;
   std::optional<livekit::EncodedRateControlRequest> latest_rate_control_request_;
+  // Non-owning: the source owns the mailbox, never the encoder. Rates must reach
+  // it even when no new frame is encoded (pause/resume).
+  std::weak_ptr<livekit::EncodedRateControlState> rate_control_mailbox_;
   // Reference-chain state, see ContinuesChain(). Starts broken so the first
   // frame sent is a keyframe.
   bool chain_intact_ = false;
@@ -488,6 +499,49 @@ class RecordingCallback final : public EncodedImageCallback {
 };
 
 }  // namespace
+
+bool codec_backpressure_for_test() {
+  for(int cycle=0;cycle<100;++cycle){
+    int sends=0,drains=0;
+    int result=livekit::SendAndDrainCodec(-11,[&]{return ++sends==1?-11:0;},[&]{++drains;return 0;});
+    if(result || sends!=2 || drains!=2)return false;
+    sends=0;drains=0;
+    result=livekit::SendAndDrainCodec(-11,[&]{++sends;return -11;},[&]{++drains;return 0;});
+    if(result!=-11 || sends!=2 || drains!=1)return false;
+    sends=0;drains=0;
+    result=livekit::SendAndDrainCodec(-11,[&]{++sends;return -11;},[&]{++drains;return -22;});
+    if(result!=-22 || sends!=1 || drains!=1)return false;
+  }
+  return true;
+}
+bool passthrough_rate_lifecycle_for_test() {
+  for(int cycle=0;cycle<100;++cycle){
+    PassthroughVideoEncoder encoder(webrtc::CreateEnvironment(),SdpVideoFormat("H264"));
+    VideoCodec codec;codec.codecType=webrtc::kVideoCodecH264;codec.width=64;codec.height=64;
+    encoder.InitEncode(&codec,VideoEncoder::Settings(VideoEncoder::Capabilities(false),1,0));
+    RecordingCallback callback;encoder.RegisterEncodeCompleteCallback(&callback);
+    std::weak_ptr<livekit::EncodedRateControlState> weak;
+    {
+      auto mailbox=std::make_shared<livekit::EncodedRateControlState>();weak=mailbox;
+      const uint8_t payload[]={0,0,0,1,0x65,0x88};
+      auto buffer=webrtc::make_ref_counted<EncodedVideoFrameBuffer>(64,64,livekit::EncodedVideoCodec::kH264,livekit::EncodedFrameType::kKey,EncodedImageBuffer::Create(payload,sizeof(payload)),nullptr,mailbox);
+      buffer->set_stream_position(mailbox.get(),0);
+      auto frame=VideoFrame::Builder().set_video_frame_buffer(buffer).set_rtp_timestamp(3000).build();
+      encoder.Encode(frame,nullptr);
+      webrtc::VideoBitrateAllocation bitrate;
+      encoder.SetRates(VideoEncoder::RateControlParameters(bitrate,120));
+      auto paused=mailbox->Take();if(!paused.has_request || paused.target_bitrate_bps!=0)return false;
+      bitrate.SetBitrate(0,0,4000000);
+      encoder.SetRates(VideoEncoder::RateControlParameters(bitrate,120));
+      auto resumed=mailbox->Take();if(!resumed.has_request || resumed.target_bitrate_bps!=4000000)return false;
+    }
+    if(!weak.expired())return false; // Encoder cannot retain the source/mailbox.
+    encoder.Release();
+    webrtc::VideoBitrateAllocation bitrate;encoder.SetRates(VideoEncoder::RateControlParameters(bitrate,60));
+    encoder.Release(); // cancellation before any new source arrives
+  }
+  return true;
+}
 
 rust::Vec<uint8_t> passthrough_chain_guard_for_test(
     rust::Slice<const uint8_t> frames) {

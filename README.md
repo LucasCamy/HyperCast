@@ -1,5 +1,10 @@
 # HyperCast
 
+0.8.5 reduz quadros-chave desnecessários nas trocas de bitrate, ajusta o controle
+de taxa AMD e corrige o reenvio de pacotes quando o decoder precisa escoar quadros.
+Inclui estatísticas de qualidade e perfil AMD **Texto** experimental.
+[Perfis, diagnóstico e validação](docs/video-quality.md).
+
 0.8.4 mantém **Nesta sala** em uma linha, permite excluir salas vazias com
 confirmação e separa salas salvas das sessões de vídeo. Salvar uma sala não
 reserva mais uma das quatro vagas de vídeo no servidor.

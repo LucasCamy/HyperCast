@@ -412,3 +412,17 @@ mod tests {
         assert_eq!(address_scope("unavailable"), "unknown");
     }
 }
+
+/// Only numeric aggregate counters: no participant identifiers, addresses or content.
+pub fn video_stats_lines(publisher:&[livekit::webrtc::stats::RtcStats],subscriber:&[livekit::webrtc::stats::RtcStats])->Vec<String> {
+    use livekit::webrtc::stats::RtcStats;
+    let mut lines=Vec::new();
+    for entry in publisher.iter().chain(subscriber.iter()) {
+        match entry {
+            RtcStats::OutboundRtp(r) if r.stream.kind=="video"=>lines.push(format!("outbound cumulative frames={} bytes={} target_bps={:.0} nack={} pli={} fir={}",r.outbound.frames_sent,r.sent.bytes_sent,r.outbound.target_bitrate,r.outbound.nack_count,r.outbound.pli_count,r.outbound.fir_count)),
+            RtcStats::InboundRtp(r) if r.stream.kind=="video"=>lines.push(format!("inbound cumulative decoded={} dropped={} lost={} received={} jitter_ms={:.3} nack={} pli={} freeze_count={} decode_total_ms={:.3}",r.inbound.frames_decoded,r.inbound.frames_dropped,r.received.packets_lost,r.received.packets_received,r.received.jitter*1000.0,r.inbound.nack_count,r.inbound.pli_count,r.inbound.freeze_count,r.inbound.total_decode_time*1000.0)),
+            _=>{}
+        }
+    }
+    lines.truncate(8);lines
+}

@@ -12,6 +12,9 @@
 using Microsoft::WRL::ComPtr;
 extern "C" {
 void* hc_amf_open(void*,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,char*,size_t) noexcept;
+void* hc_amf_open_profile(void*,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,char*,size_t) noexcept;
+unsigned hc_amf_live_encoders() noexcept;
+void hc_amf_feedback(void*,int32_t*,uint32_t*,uint32_t*,uint32_t*,uint32_t*) noexcept;
 int hc_amf_encode(void*,void*,uint64_t,uint32_t,uint8_t*,size_t,size_t*,uint32_t*,char*,size_t) noexcept;
 int hc_amf_rates(void*,uint32_t,uint32_t,char*,size_t) noexcept;
 void hc_amf_close(void*) noexcept;
@@ -43,10 +46,19 @@ int main(int argc,char** argv){
         for(unsigned i=0;i<120;++i){
             float color[]{(i%30)/30.0f,0.25f,0.5f,1.0f};context->ClearRenderTargetView(target.Get(),color);
             context->ClearRenderTargetView(hdr_target.Get(),color);
-            if(i==60 && hc_amf_rates(handle,28000000,60,error,sizeof(error)))throw std::runtime_error(error);
+            if(i==61 || i==62 || i==63 || i==64){
+                const uint32_t rate=i==61?28000000:i==62?500000:i==63?64000:40000000;
+                if(hc_amf_rates(handle,rate,120,error,sizeof(error)))throw std::runtime_error(error);
+                if(hc_amf_rates(handle,rate,120,error,sizeof(error)))throw std::runtime_error("Duplicate rate failed");
+                int32_t qp;uint32_t actual,vbv,fps,runtime;
+                hc_amf_feedback(handle,&qp,&actual,&vbv,&fps,&runtime);
+                if(actual>rate || actual<64000 || fps!=120)throw std::runtime_error("AMF ignored network budget");
+                std::printf("Rate feedback: requested=%u actual=%u vbv=%u runtime=%u\n",rate,actual,vbv,runtime);
+            }
             size_t length=0;uint32_t key=0;
             if(hc_amf_encode(handle,i==119?nullptr:(i==30?hdr.Get():texture.Get()),uint64_t(i)*8333,i%30==0,bytes.data(),bytes.size(),&length,&key,error,sizeof(error)))throw std::runtime_error(error);
             if(i%30==0 && !key)throw std::runtime_error("AMF did not honor requested keyframe");
+            if(i>=61 && i<=64 && key)throw std::runtime_error("Rate-only update inserted a keyframe");
             keys+=key;file.write(reinterpret_cast<const char*>(bytes.data()),length);
         }
         ComPtr<ID3D11Texture2D> preview;preview.Attach(static_cast<ID3D11Texture2D*>(hc_amf_preview(handle)));
@@ -57,6 +69,21 @@ int main(int argc,char** argv){
         handle=hc_amf_open(device.Get(),1280,720,120,40000000,1,error,sizeof(error));
         if(handle){hc_amf_close(handle);handle=nullptr;std::puts("AV1 initializes on this AMD adapter; HEVC probe did not validate AV1 frames");}
         else std::puts("AV1 unavailable on this AMD adapter; HEVC remains available");
+        for(unsigned profile=0;profile<3;++profile){
+            for(unsigned cycle=0;cycle<3;++cycle){
+                handle=hc_amf_open_profile(device.Get(),1280,720,120,40000000,0,profile,error,sizeof(error));
+                if(!handle)throw std::runtime_error(error);
+                size_t length=0;uint32_t key=0;
+                if(hc_amf_encode(handle,texture.Get(),0,1,bytes.data(),bytes.size(),&length,&key,error,sizeof(error)) || !key)throw std::runtime_error("Profile first keyframe failed");
+                if(hc_amf_rates(handle,1,120,error,sizeof(error))!=2)throw std::runtime_error("Invalid rate must be recoverable");
+                if(hc_amf_rates(handle,40000000,120,error,sizeof(error)))throw std::runtime_error("Cannot recover rate after rejection");
+                hc_amf_close(handle);handle=nullptr;
+                if(hc_amf_live_encoders()!=0)throw std::runtime_error("AMF session leaked after profile teardown");
+            }
+        }
+        handle=hc_amf_open_profile(device.Get(),1280,720,120,40000000,0,99,error,sizeof(error));
+        if(handle || hc_amf_live_encoders()!=0)throw std::runtime_error("Partial AMF initialization leaked");
+        std::puts("PASS: all HEVC profiles, sub-Mbps rates, no rate-only IDR, rejected-rate recovery and lifecycle");
         return 0;
     }catch(const std::exception& e){if(handle)hc_amf_close(handle);std::fprintf(stderr,"%s\n",e.what());return 1;}
 }

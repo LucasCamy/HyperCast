@@ -40,11 +40,14 @@ def main():
         diagnostics=Path(os.environ['LOCALAPPDATA'])/'HyperCast/diagnostics'
         publisher=next(diagnostics.glob(f'gui-*-{children[2].pid}.log')).read_text(encoding='utf-8')
         assert ' encoder: AMF' in publisher,'Rust did not select the AMD encoder'
+        assert 'encoder_window' in publisher and 'applied_bps=' in publisher,'Missing encoder quality measurements'
+        assert 'video_rtp' in publisher,'Missing RTP quality counters'
         for file in files:file.close()
         viewer=(ROOT/'.tools/amf-window-viewer.log').read_text(encoding='utf-8')
         match=re.search(r'GUI smoke: (\d+) received, (\d+) GPU presentations',viewer)
         assert match and int(match[1])>10 and int(match[2])>10,'AMD stream did not decode/present'
         assert 'connected=true' in viewer
+        assert 'GUI shutdown: 0 retained GPU decoder surfaces' in viewer,'GPU decoder surfaces survived shutdown'
         print('PASS: synthetic WGC -> Rust AMD/AMF HEVC -> SFU -> GPU desktop presentation')
     finally:
         for child in children:

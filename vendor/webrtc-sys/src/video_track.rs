@@ -190,6 +190,8 @@ mod tests {
         unsafe extern "C++" {
             include!("livekit/passthrough_video_encoder.h");
 
+            fn codec_backpressure_for_test()->bool;
+            fn passthrough_rate_lifecycle_for_test()->bool;
             fn passthrough_chain_guard_for_test(frames: &[u8]) -> Vec<u8>;
 
             include!("livekit/video_track.h");
@@ -197,6 +199,9 @@ mod tests {
             fn encoded_capture_order_for_test(threads: u32, frames_per_thread: u32) -> Vec<u64>;
         }
     }
+
+    #[test]fn decoder_backpressure_retries_and_fails_bounded(){assert!(ffi_tests::codec_backpressure_for_test());}
+    #[test]fn rate_mailbox_resumes_without_frames_and_releases_owners(){assert!(ffi_tests::passthrough_rate_lifecycle_for_test());}
 
     // Frame kinds and result bits, mirrored from passthrough_video_encoder.h.
     const KEY: u8 = 0;

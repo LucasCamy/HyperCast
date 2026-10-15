@@ -10,6 +10,7 @@
 #include <string>
 #include <stdexcept>
 #include "livekit/hypercast_d3d11_decoder.h"
+#include "livekit/codec_pump.h"
 #include "api/make_ref_counted.h"
 #include "api/video_codecs/video_decoder.h"
 #include "rtc_base/time_utils.h"
@@ -142,24 +143,27 @@ class GPUDecoder : public webrtc::VideoDecoder {
     if (av_new_packet(packet, static_cast<int>(encoded.size())) < 0) { av_packet_free(&packet); return -1; }
     memcpy(packet->data, encoded.data(), encoded.size());
     packet->pts = encoded.RtpTimestamp();
-    int status = avcodec_send_packet(context_, packet);
-    av_packet_free(&packet);
-    if (status < 0 && status != AVERROR(EAGAIN)) { fprintf(stderr, "GPU decode packet error %d\n", status); return -1; }
     AVFrame* decoded = av_frame_alloc();
-    if (!decoded) return -1;
-    while (avcodec_receive_frame(context_, decoded) == 0) {
+    if (!decoded) {av_packet_free(&packet);return -1;}
+    auto drain=[&]()->int {
+    int received=0;
+    while ((received=avcodec_receive_frame(context_, decoded)) == 0) {
       if (decoded->format != AV_PIX_FMT_D3D11 || !decoded->data[0] || decoded->width <= 0 || decoded->height <= 0 || decoded->width > 8192 || decoded->height > 8192 || int64_t(decoded->width)*decoded->height > 33554432LL) {
-        av_frame_free(&decoded); return -1;
+        av_frame_unref(decoded); return -1;
       }
       try {
       auto buffer = webrtc::make_ref_counted<GPUBuffer>(decoded);
       auto frame = webrtc::VideoFrame::Builder().set_video_frame_buffer(buffer)
           .set_rtp_timestamp(static_cast<uint32_t>(decoded->pts)).set_timestamp_us(webrtc::TimeMicros()).build();
       callback_->Decoded(frame);
-      } catch (...) { av_frame_free(&decoded); return -1; }
+      } catch (...) { av_frame_unref(decoded); return -1; }
       av_frame_unref(decoded);
     }
-    av_frame_free(&decoded);
+    return received==AVERROR(EAGAIN) || received==AVERROR_EOF?0:received;
+    };
+    int status=livekit::SendAndDrainCodec(AVERROR(EAGAIN),[&]{return avcodec_send_packet(context_,packet);},drain);
+    av_packet_free(&packet);av_frame_free(&decoded);
+    if(status<0){fprintf(stderr,"GPU decode send/receive error %d\n",status);return -1;}
     return 0;
   }
   int32_t Release() override { if (context_) avcodec_free_context(&context_); if (device_) av_buffer_unref(&device_); return 0; }

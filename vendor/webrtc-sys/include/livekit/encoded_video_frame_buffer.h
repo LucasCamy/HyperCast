@@ -115,6 +115,8 @@ class EncodedVideoFrameBuffer : public webrtc::VideoFrameBuffer {
   void set_rate_control_request(uint64_t target_bitrate_bps,
                                 double framerate_fps) const;
 
+  std::weak_ptr<EncodedRateControlState> rate_control_mailbox() const { return rate_control_state_; }
+
   static EncodedVideoFrameBuffer* FromNative(webrtc::VideoFrameBuffer* buffer);
 
  private:
