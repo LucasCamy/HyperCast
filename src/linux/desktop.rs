@@ -128,6 +128,7 @@ impl App {
             let _ = engine.tx.send(command);
         }
     }
+    fn restart_reception(&self) {self.send(Command::RestartReception);}
     fn layout(&self) {
         self.send(Command::Layout(self.layout.clone()));
     }
@@ -269,6 +270,8 @@ impl eframe::App for App {
                 )
             })
             .unwrap_or_default();
+        let resetting=self.engine.as_ref().is_some_and(|e|e.state.lock().unwrap().reception_resetting);
+        if connected && !resetting && ctx.input(|i|i.key_pressed(egui::Key::F5)){self.restart_reception();}
         if ctx.input(|i| i.key_pressed(egui::Key::F11)) {
             self.fullscreen(ctx, !self.fullscreen);
         }
@@ -339,6 +342,10 @@ impl eframe::App for App {
             )
             .show(root, |ui| {
                 ui.horizontal(|ui| {
+                    let refresh=ui.add_enabled(connected&&!resetting,egui::Button::new("↻").corner_radius(6)).on_hover_text("Reconectar recepção · F5");
+                    refresh.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,connected&&!resetting,"Reconectar recepção"));
+                    if refresh.clicked(){self.restart_reception();}
+                    if resetting{ui.label("Reconectando recepção…");}
                     if !self.fullscreen {
                         if small(ui,if self.sidebar_open {"Recolher menu"}else{"Abrir menu"}).clicked(){self.sidebar_open=!self.sidebar_open;}
                         ui.heading("Telas da sala");

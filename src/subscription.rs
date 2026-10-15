@@ -68,3 +68,23 @@ mod tests {
         );
     }
 }
+
+/// Keep the receiver negotiated while the SFU pauses unwanted RTP. Only send
+/// subscription changes on transitions; repeated settings must be idempotent.
+#[cfg(feature="livekit-network")]
+pub fn keep_receiver(publication:&livekit::prelude::RemoteTrackPublication, enabled:bool) {
+    if !publication.is_desired() {publication.set_subscribed(true);}
+    if publication.is_subscribed() {publication.set_enabled(enabled);}
+}
+#[cfg(feature="livekit-network")]
+pub fn reset_receivers(room:&livekit::Room) {
+    use livekit::prelude::TrackSource;
+    for p in room.remote_participants().into_values() {
+        for publication in p.track_publications().into_values() {
+            if matches!(publication.source(),TrackSource::Screenshare|TrackSource::ScreenshareAudio)
+                && (publication.is_desired() || publication.is_subscribed()) {
+                publication.set_enabled(false);
+            }
+        }
+    }
+}

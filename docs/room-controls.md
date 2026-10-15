@@ -21,8 +21,8 @@ compartilha mesmo fora do foco. A borda selecionada e **Em destaque** identifica
 quem está sendo acompanhado. Recepção pausada não marca alguém como assistido.
 
 Duplo clique no cartão do participante ou no vídeo mostra só aquela transmissão.
-No Windows também oculta as miniaturas estáticas; a subscrição de destaque
-mantém apenas o vídeo remoto escolhido. No Linux o destaque já usa uma única
+No Windows também oculta as miniaturas estáticas; o modo de destaque
+recebe RTP apenas do vídeo remoto escolhido; as demais faixas ficam pausadas. No Linux o destaque já usa uma única
 transmissão. **Grid** restaura a visualização de múltiplas telas. Clique simples
 continua selecionando a tela em destaque. O limite do servidor permanece três
 publicadores ativos.

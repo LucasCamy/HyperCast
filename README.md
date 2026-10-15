@@ -1,5 +1,9 @@
 # HyperCast
 
+0.7.3 adiciona **Reconectar recepção** (↻ / F5), sem sair da sala ou interromper
+seu compartilhamento, e mantém os receptores negociados ao alternar o destaque.
+[Recuperação da recepção e testes](docs/reception.md).
+
 0.7.2 aceita telas e janelas ultrawide maiores que 3840 pixels. Prioriza a
 resolução nativa conforme a capacidade do encoder; dimensões ímpares são
 alinhadas sem cortar a imagem. [Limites e compatibilidade](docs/ultrawide.md).

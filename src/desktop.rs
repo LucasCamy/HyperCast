@@ -86,6 +86,17 @@ fn fullscreen_sound(ui: &mut egui::Ui, muted: bool) -> egui::Response {
     response.on_hover_text(label)
 }
 
+fn refresh_reception(ui:&mut egui::Ui,enabled:bool,size:f32)->egui::Response {
+    let response=ui.scope(|ui|{
+        ui.spacing_mut().button_padding=Vec2::ZERO;
+        ui.spacing_mut().interact_size=Vec2::splat(size);
+        ui.add_enabled(enabled,egui::Button::new(RichText::new("↻").size(if size>24.0{20.0}else{16.0}))
+            .min_size(Vec2::splat(size)).corner_radius(6).fill(SURFACE))
+    }).inner;
+    response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,enabled,"Reconectar recepção"));
+    response.on_hover_text("Reconectar vídeo e áudio recebidos · F5")
+}
+
 fn monitor_symbol(painter: &egui::Painter, center: egui::Pos2, color: Color32, size: f32) {
     let stroke = egui::Stroke::new(1.6, color);
     let screen = egui::Rect::from_center_size(center - Vec2::new(0.0, size * 0.08), Vec2::new(size, size * 0.62));
@@ -415,10 +426,16 @@ impl App {
             }
         }
         ui.horizontal(|ui|{
-            let exit_width=64.0;let pause_width=(ui.available_width()-exit_width-ui.spacing().item_spacing.x).max(100.0);
-            if ui.add_enabled(connected,egui::Button::new(if self.paused{"Retomar recepção"}else{"Pausar recepção"}).min_size(Vec2::new(pause_width,40.0)).corner_radius(8)).clicked(){self.paused=!self.paused;self.send_layout();}
+            let exit_width=56.0;let pause_width=(ui.available_width()-exit_width-36.0-ui.spacing().item_spacing.x*2.0).max(100.0);
+            if ui.add_enabled(connected,egui::Button::new(if self.paused{"Retomar vídeo"}else{"Pausar vídeo"}).min_size(Vec2::new(pause_width,40.0)).corner_radius(8)).clicked(){self.paused=!self.paused;self.send_layout();}
+            let resetting=self.engine.as_ref().is_some_and(|e|e.shared.lock().unwrap().reception_resetting);
+            if refresh_reception(ui,connected&&!resetting,36.0).clicked(){self.restart_reception();}
             if ui.add_enabled(self.engine.is_some(),egui::Button::new(RichText::new("Sair").color(DANGER)).min_size(Vec2::new(exit_width,40.0)).corner_radius(8)).clicked(){self.engine=None;self.presenters.clear();self.last_presented.clear();}
         });
+    }
+    fn restart_reception(&mut self) {
+        if let Some(engine)=&self.engine {let _=engine.commands.send(Command::RestartReception);}
+        self.presenters.clear();self.last_presented.clear();self.error.clear();
     }
     fn send_layout(&self) {
         if let Some(engine) = &self.engine {
@@ -448,11 +465,18 @@ impl App {
     }
 }
 impl Drop for App {
-    fn drop(&mut self) { let _ = crate::preferences::save_name(&self.name); }
+    fn drop(&mut self) {
+        let _ = crate::preferences::save_name(&self.name);
+        self.presenters.clear();self.last_presented.clear();self.engine=None;
+        if self.smoke_seconds.is_some(){println!("GUI shutdown: {} retained GPU decoder surfaces",livekit::webrtc::native::d3d11_live_surfaces());}
+    }
 }
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if ctx.input(|i|i.key_pressed(egui::Key::F5)) && self.engine.as_ref().is_some_and(|e|{let s=e.shared.lock().unwrap();s.connected&&!s.reception_resetting}) {
+            self.restart_reception();
+        }
         self.updater.poll();
         self.server_access.poll(&self.address,&self.client_id,ctx.clone());
         if let Some(created)=self.creator.poll() {
@@ -523,6 +547,7 @@ impl eframe::App for App {
             println!("GUI lifecycle: disconnected and restarted media engine");
         }
         let mut connected = false;
+        let mut reception_resetting=false;
         let mut publishing = false;
         let mut can_publish = false;
         let mut identity = String::new();
@@ -539,7 +564,7 @@ impl eframe::App for App {
         let mut sent = 0;
         if let Some(engine) = &self.engine {
             let state = engine.shared.lock().unwrap();
-            connected = state.connected;
+            connected = state.connected;reception_resetting=state.reception_resetting;
             publishing = state.publishing;
             can_publish = state.can_publish;
             identity = state.identity.clone();
@@ -630,6 +655,7 @@ impl eframe::App for App {
                 self.rendered, self.error
             );
             println!("GUI publisher: {sent} sent");
+            if let Some(e)=&self.engine {println!("GUI reception refreshes: {}",e.shared.lock().unwrap().reception_restarts);}
             println!("GUI preview: enabled={} local_surfaces={} rendered={}",self.self_preview,videos.iter().filter(|(_,f)|f.local()).count(),self.rendered);
             println!(
                 "GUI status: connected={connected}, can_publish={can_publish}; {}",
@@ -791,9 +817,11 @@ impl eframe::App for App {
                 if self.fullscreen {
                     ui.spacing_mut().item_spacing = Vec2::new(8.0, 4.0);
                     ui.horizontal(|ui|{
-                        ui.label(RichText::new("Tela em destaque").size(13.0).color(MUTED));
+                        ui.label(RichText::new(if reception_resetting{"Reconectando recepção…"}else{"Tela em destaque"}).size(13.0).color(MUTED));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if exit_fullscreen(ui).clicked(){self.set_fullscreen(&ctx,false);}
+                            let resetting=self.engine.as_ref().is_some_and(|e|e.shared.lock().unwrap().reception_resetting);
+                            if refresh_reception(ui,connected&&!resetting,20.0).clicked(){self.restart_reception();}
                             let muted = self.sound_muted || self.volume == 0;
                             if fullscreen_sound(ui, muted).clicked() {
                                 self.sound_muted = !muted;
@@ -821,9 +849,13 @@ impl eframe::App for App {
                                 if !self.sidebar_open {self.window_picker_open=false;egui::Popup::close_all(&ctx);}
                             }
                             ui.label(RichText::new("Telas da sala").size(26.0).strong());
+                        if !self.sidebar_open {
+                            let resetting=self.engine.as_ref().is_some_and(|e|e.shared.lock().unwrap().reception_resetting);
+                            if refresh_reception(ui,connected&&!resetting,26.0).clicked(){self.restart_reception();}
+                        }
                         });
                         ui.label(
-                            RichText::new("Escolha uma tela para acompanhar de perto.")
+                            RichText::new(if reception_resetting {"Reconectando vídeo e áudio recebidos…"}else{"Escolha uma tela para acompanhar de perto."})
                                 .size(13.0)
                                 .color(MUTED),
                         );

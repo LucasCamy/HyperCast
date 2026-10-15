@@ -1,4 +1,4 @@
-﻿param([int]$TargetPid,[string]$ExpectedExecutable,[string]$Name,[switch]$Double,[switch]$Read,[switch]$List)
+﻿param([int]$TargetPid,[string]$ExpectedExecutable,[string]$Name,[switch]$Double,[switch]$Read,[switch]$List,[string]$FocusSequence)
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false)
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
@@ -7,6 +7,15 @@ if([IO.Path]::GetFullPath($hcProcess.Path) -ne [IO.Path]::GetFullPath($ExpectedE
 $hcRoot=[System.Windows.Automation.AutomationElement]::FromHandle($hcProcess.MainWindowHandle)
 if($List){
 $hcRoot.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition) | ForEach-Object {if($_.Current.Name -like 'Transmissão de *'){$_.Current.Name}};exit
+}
+if($FocusSequence){
+    foreach($hcLabel in $FocusSequence.Split(',')){
+        $hcNodes=$hcRoot.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+        $hcFocus=$hcNodes | Where-Object {$_.Current.Name.StartsWith($hcLabel+': ')} | Select-Object -First 1
+        if(-not $hcFocus){throw 'Owned participant control unavailable'}
+        $hcFocus.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+        Start-Sleep -Milliseconds 60
+    };exit
 }
 $hcCondition=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,$Name)
 $hcNode=$hcRoot.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$hcCondition)
