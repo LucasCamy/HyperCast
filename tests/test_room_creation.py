@@ -55,6 +55,12 @@ class RoomCreationTests(unittest.TestCase):
         foreign=self.app.rooms.issue_creator('Other')['access_key'];foreign=self.app.rooms.login(foreign,'c'*32)['token']
         self.assertEqual(self.app.rooms.listing(foreign)['rooms'],[])
         with self.assertRaises(Rejected):self.app.rooms.keep(foreign,first['room'],False)
+        with self.assertRaises(Rejected) as error:self.app.rooms.join(foreign,first['room'],'Amigo','c'*32)
+        self.assertEqual(error.exception.status,404)
+        joined=self.app.rooms.join(other,first['room'],'Lucas','b'*32)
+        self.assertEqual(joined['room_name'],'Minha sala')
+        with self.assertRaises(Rejected):self.app.rooms.join('',first['room'],'Lucas','b'*32)
+        with self.assertRaises(Rejected):self.app.rooms.join(other,first['room'],'Lucas','c'*32)
 
     def test_legacy_code_and_short_collision(self):
         old=self.app.rooms.create(self.creator,'Antiga',uuid.uuid4().hex,short_code=False)

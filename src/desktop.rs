@@ -165,6 +165,7 @@ struct App {
     address: String,
     token: String,
     invite: String,
+    saved_room:Option<String>,
     name: String,
     sidebar_open: bool,
     self_preview: bool,
@@ -240,7 +241,7 @@ impl App {
             address: std::env::var("HYPERCAST_URL")
                 .unwrap_or_else(|_| "wss://hypercast.cloudlane.com.br".into()),
             token: std::env::var("HYPERCAST_ROOM_TOKEN").unwrap_or_default(),
-            invite: std::env::var("HYPERCAST_INVITE").unwrap_or_default(),
+            invite: std::env::var("HYPERCAST_INVITE").unwrap_or_default(),saved_room:None,
             name: crate::preferences::load_name(),
             sidebar_open: true, self_preview: true, single_view: false,
             client_id: crate::invitation::client_id(),
@@ -418,7 +419,7 @@ impl App {
         if ui.add_enabled(ready,egui::Button::new(RichText::new(if publishing{"Parar compartilhamento"}else{"Compartilhar tela"}).strong().color(if publishing{DANGER}else{BG}))
             .min_size(Vec2::new(ui.available_width(),46.0)).corner_radius(9)
             .fill(if publishing{Color32::from_rgb(59,34,34)}else{ACCENT}))
-            .on_hover_text(if can_publish{"Enviar a origem escolhida para a sala"}else{"Entre com um convite que permita compartilhar"}).clicked(){
+            .on_hover_text(if can_publish{"Enviar a origem escolhida para a sala"}else{"Sua sessão não permite compartilhar"}).clicked(){
             if let Some(engine)=&self.engine{
                 if publishing{let _=engine.commands.send(Command::StopShare);}
                 else if let Some(target)=self.target(){let command=match target{
@@ -454,6 +455,8 @@ impl App {
         let _ = crate::preferences::save_name(&self.name);
         let engine = if self.token_mode {
             Engine::connect(self.address.trim().to_owned(), self.token.trim().to_owned(), ctx, self.parent, self.relay_only)
+        } else if let Some(room)=&self.saved_room {
+            Engine::connect_room(self.address.trim().to_owned(),room.clone(),self.name.trim().to_owned(),self.client_id.clone(),self.server_access.token(),ctx,self.parent,self.relay_only)
         } else {
             Engine::connect_invite(self.address.trim().to_owned(), self.invite.trim().to_owned(), self.name.trim().to_owned(), self.client_id.clone(), self.server_access.token(), ctx, self.parent, self.relay_only)
         };
@@ -483,7 +486,7 @@ impl eframe::App for App {
         self.server_access.poll(&self.address,&self.client_id,ctx.clone());
         self.server_status.poll(&self.address,&ctx);
         if let Some(created)=self.creator.poll() {
-            self.invite=created.invite;self.token_mode=false;self.token.clear();
+            self.saved_room=Some(created.room);self.invite.clear();self.token_mode=false;self.token.clear();
             self.error.clear();
             self.engine=Some(self.join_room(ctx.clone()));
         }
@@ -700,10 +703,9 @@ impl eframe::App for App {
                         ui.add_space(8.0);
                         if connected {
                             ui.label(RichText::new(&room).size(15.0).strong());
-                            if !self.invite.is_empty() && ui.add_sized([ui.available_width(),34.0],
-                                egui::Button::new("Copiar convite").corner_radius(8)).clicked() {ctx.copy_text(self.invite.clone());}
 
-                            if self.server_access.authenticated() && compact_action(ui,"Salas salvas",true).clicked(){self.catalog.open(self.address.clone(),self.server_access.token(),ctx.clone());}
+
+                            if self.server_access.authenticated() && compact_action(ui,"Escolher sala",true).clicked(){self.catalog.open(self.address.clone(),self.server_access.token(),ctx.clone());}
                             ui.label(RichText::new(if can_publish { "Você pode assistir e compartilhar" } else { "Você está assistindo à sala" }).size(11.0).color(MUTED));
                         } else {
                         egui::CollapsingHeader::new("Servidor").show(ui, |ui| {
@@ -722,14 +724,12 @@ impl eframe::App for App {
                         } else {
                             ui.label("Seu nome");
                             if text_input(ui,&mut self.name,"Como quer aparecer na sala",false,64,self.engine.is_none() || self.engine.as_ref().is_some_and(|engine|engine.finished())).lost_focus() { let _ = crate::preferences::save_name(&self.name); }
-                            ui.label("Código da sala");
-                            text_input(ui,&mut self.invite,"Código de 8 letras ou convite",false,64,self.engine.is_none() || self.engine.as_ref().is_some_and(|engine|engine.finished()));
                         ui.horizontal(|ui| {
                             let width=(ui.available_width()-ui.spacing().item_spacing.x)/2.0;
                             let ready=(self.engine.is_none() || self.engine.as_ref().is_some_and(|engine|engine.finished())) && !self.creator.busy;
-                            if ui.add_enabled(ready && !self.invite.trim().is_empty() && !self.name.trim().is_empty(),
-                                egui::Button::new("Entrar na sala").min_size(Vec2::new(width,44.0)).corner_radius(9)).clicked() {
-                                self.token_mode=false;self.error.clear();self.engine=Some(self.join_room(ctx.clone()));
+                            if ui.add_enabled(ready,
+                                egui::Button::new("Escolher sala").min_size(Vec2::new(width,44.0)).corner_radius(9)).clicked() {
+                                self.creator.open=false;self.catalog.open(self.address.clone(),self.server_access.token(),ctx.clone());
                             }
                             if ui.add_enabled(self.server_access.authenticated() && !self.creator.busy && (self.engine.is_none() || !status.starts_with("Conectando")),
                                 egui::Button::new("Criar sala").min_size(Vec2::new(width,44.0)).corner_radius(9)).clicked() {
@@ -737,7 +737,6 @@ impl eframe::App for App {
                             }
                         });
                         if !self.server_access.status.is_empty(){ui.label(RichText::new(&self.server_access.status).size(11.0).color(MUTED));}
-                        if compact_action(ui,"Salas salvas",!self.creator.busy).clicked(){self.catalog.open(self.address.clone(),self.server_access.token(),ctx.clone());}
                         if compact_action(ui,"Trocar acesso ao servidor",!self.server_access.busy).clicked(){self.server_access.logout(&self.address);}
                         }
                         }
@@ -801,7 +800,7 @@ impl eframe::App for App {
                                 ui.set_min_width(ui.available_width());
                                 ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
                                 ui.label(RichText::new(if connected { "Aguardando seus amigos" } else { "Seus amigos aparecem aqui" }).size(13.0).color(TEXT));
-                                ui.label(RichText::new(if connected { "Compartilhe o convite da sala com eles." } else { "Entre na sala para acompanhar as telas." }).size(11.0).color(MUTED));
+                                ui.label(RichText::new(if connected { "Seus amigos podem entrar pela lista de salas." } else { "Entre na sala para acompanhar as telas." }).size(11.0).color(MUTED));
                             });
                         }
                         if audio_status.starts_with("Áudio:") { ui.colored_label(DANGER,&audio_status); }
@@ -1168,7 +1167,7 @@ impl eframe::App for App {
         }
         if !self.fullscreen {
             if let Some(selected)=self.catalog.show(&ctx,&self.address,self.server_access.token(),&mut self.name,connected) {
-                self.invite=selected.invite;self.token_mode=false;self.token.clear();self.error.clear();
+                self.saved_room=Some(selected.room);self.invite.clear();self.token_mode=false;self.token.clear();self.error.clear();
                 self.engine=Some(self.join_room(ctx.clone()));
             }
         }

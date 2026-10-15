@@ -3,12 +3,7 @@ use anyhow::{Result, ensure};
 use std::{io::Read, sync::mpsc};
 use eframe::egui;
 
-fn valid_invite(code:&str)->bool {
-    (code.len()==8 && code.bytes().all(|c|c.is_ascii_uppercase())) ||
-    ((32..=64).contains(&code.len()) && code.bytes().all(|c|c.is_ascii_alphanumeric()||c==b'-'||c==b'_'))
-}
-
-pub struct SavedRoom { pub room:String, pub title:String, pub invite:String, pub persistent:bool, pub expired:bool, pub participants:u64 }
+pub struct SavedRoom { pub room:String, pub title:String, pub persistent:bool, pub expired:bool, pub participants:u64 }
 #[derive(Default)]
 pub struct Catalog {
     pub open:bool, busy:bool, status:String, rooms:Vec<SavedRoom>, origin:String,
@@ -32,11 +27,11 @@ impl Catalog {
                 let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
                 rows.iter().map(|v| {
                     let text=|key:&str|->Result<String>{Ok(v[key].as_str().ok_or_else(||anyhow::anyhow!("Sala inválida"))?.to_owned())};
-                    let room=text("room")?;let title=text("room_name")?;let invite=text("invite")?;
-                    ensure!(room.len()<=64 && !title.is_empty() && title.chars().count()<=64 && !title.chars().any(char::is_control) && valid_invite(&invite),"Sala inválida");
+                    let room=text("room")?;let title=text("room_name")?;
+                    ensure!(room.len()<=64 && !title.is_empty() && title.chars().count()<=64 && !title.chars().any(char::is_control),"Sala inválida");
                     let persistent=v["persistent"].as_bool().ok_or_else(||anyhow::anyhow!("Sala inválida"))?;
                     let expires=v["expires_at"].as_u64().ok_or_else(||anyhow::anyhow!("Sala inválida"))?;
-                    Ok(SavedRoom{room,title,invite,persistent,expired:!persistent && expires<=now,participants:v["participants"].as_u64().unwrap_or(0).min(12)})
+                    Ok(SavedRoom{room,title,persistent,expired:!persistent && expires<=now,participants:v["participants"].as_u64().unwrap_or(0).min(12)})
                 }).collect()
             })();
             let _=tx.send((address,result));ctx.request_repaint();
@@ -53,26 +48,25 @@ impl Catalog {
         if self.origin!=address || session.is_empty(){self.open=false;self.rooms.clear();return None;}
         if !self.open{return None;}
         let mut open=true;let mut selected=None;let mut keep=None;let mut refresh=false;
-        egui::Window::new("Salas salvas").id(egui::Id::new("saved_rooms_window")).open(&mut open)
+        egui::Window::new("Escolher sala").id(egui::Id::new("saved_rooms_window")).open(&mut open)
             .frame(egui::Frame::window(&ctx.style_of(egui::Theme::Dark)).corner_radius(12).inner_margin(16))
-            .default_width(420.0).max_width(420.0).resizable(false).collapsible(false).show(ctx,|ui|{
+            .fixed_pos(egui::pos2(16.0,16.0)).default_width(440.0).max_width(440.0).resizable(false).collapsible(false).show(ctx,|ui|{
                 ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
                 ui.horizontal(|ui|{ui.label("Salas da sua chave de acesso");if ui.add_enabled(!self.busy,egui::Button::new("Atualizar lista").corner_radius(8)).clicked(){refresh=true;}});
                 ui.label("Seu nome");ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY).char_limit(64).margin(egui::Margin::symmetric(10,8)));
                 if self.busy {ui.horizontal(|ui|{ui.spinner();ui.label("Atualizando salas…");});}
                 if !self.status.is_empty(){ui.label(&self.status);}
                 if !self.busy && self.rooms.is_empty(){ui.label("Nenhuma sala salva. Crie uma para começar.");}
-                egui::ScrollArea::vertical().max_height(420.0).show(ui,|ui|{
+                let list_height=(ctx.content_rect().bottom()-ui.cursor().top()-64.0).max(160.0);
+                egui::ScrollArea::vertical().min_scrolled_height(list_height).max_height(list_height).auto_shrink([false,false]).show(ui,|ui|{
                     for entry in &self.rooms {
                         ui.push_id(&entry.room,|ui|{egui::Frame::group(ui.style()).corner_radius(10).inner_margin(12).show(ui,|ui|{
                             ui.set_min_width(ui.available_width());
                             ui.label(egui::RichText::new(&entry.title).strong().size(16.0));
                             ui.label(format!("{} · {} pessoa(s)",if entry.persistent{"Permanente"}else if entry.expired{"Expirada"}else{"Temporária · 24 h"},entry.participants));
-                            ui.label(egui::RichText::new(&entry.invite).monospace());
                             ui.horizontal(|ui|{
-                                if ui.button("Copiar código").clicked(){ctx.copy_text(entry.invite.clone());}
                                 let valid_name=!name.is_empty() && name.len()<=64 && name.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_');
-                                if ui.add_enabled(!self.busy && !entry.expired && !connected && valid_name,egui::Button::new("Entrar").corner_radius(8)).clicked(){selected=Some(CreatedRoom{invite:entry.invite.clone(),title:entry.title.clone()});}
+                                if ui.add_enabled(!self.busy && !entry.expired && !connected && valid_name,egui::Button::new("Entrar").corner_radius(8)).clicked(){selected=Some(CreatedRoom{room:entry.room.clone(),title:entry.title.clone()});}
                             });
                             let mut persistent=entry.persistent;
                             if ui.add_enabled(!self.busy,egui::Checkbox::new(&mut persistent,"Manter esta sala")).changed(){keep=Some((entry.room.clone(),persistent));}
@@ -97,7 +91,7 @@ fn catalog_post(address:&str,session:&str,path:&str,body:serde_json::Value)->Res
     Ok(serde_json::from_slice(&bytes)?)
 }
 
-pub struct CreatedRoom { pub invite: String, pub title: String }
+pub struct CreatedRoom { pub room: String, pub title: String }
 pub struct Creator {
     pub open: bool, pub title: String, pub persistent: bool, pub busy: bool, pub status: String,
     request_id: String, requested_title: String, requested_persistent:bool,
@@ -184,10 +178,10 @@ pub fn create(address:&str,code:&str,title:&str,request_id:&str,persistent:bool)
     let mut bytes=Vec::new();response.take(16385).read_to_end(&mut bytes)?;
     ensure!(bytes.len()<=16384,"Resposta de sala excedeu o limite");
     let value:serde_json::Value=serde_json::from_slice(&bytes)?;
-    let invite=value["invite"].as_str().ok_or_else(||anyhow::anyhow!("Resposta de sala inválida"))?;
+    let room=value["room"].as_str().ok_or_else(||anyhow::anyhow!("Resposta de sala inválida"))?;
     let title=value["room_name"].as_str().ok_or_else(||anyhow::anyhow!("Resposta de sala inválida"))?;
-    ensure!(valid_invite(invite) && title.chars().count()<=64,"Resposta de sala inválida");
-    Ok(CreatedRoom{invite:invite.to_owned(),title:title.to_owned()})
+    ensure!(!room.is_empty() && room.len()<=64 && title.chars().count()<=64,"Resposta de sala inválida");
+    Ok(CreatedRoom{room:room.to_owned(),title:title.to_owned()})
 }
 
 #[cfg(windows)]

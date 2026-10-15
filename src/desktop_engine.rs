@@ -97,7 +97,7 @@ pub struct Engine {
 }
 enum Access {
     Token(String),
-    Invite { code: String, name: String, request_id: String, session:String },
+    Invite { code: String, name: String, request_id: String, session:String, by_room:bool },
 }
 impl Drop for Engine {
     fn drop(&mut self) {
@@ -347,7 +347,10 @@ impl Engine {
         Self::connect_access(address, Access::Token(token), ctx, parent, relay_only)
     }
     pub fn connect_invite(address: String, code: String, name: String, request_id: String, session:String, ctx: egui::Context, parent: usize, relay_only: bool) -> Self {
-        Self::connect_access(address, Access::Invite { code, name, request_id, session }, ctx, parent, relay_only)
+        Self::connect_access(address, Access::Invite { code, name, request_id, session, by_room:false }, ctx, parent, relay_only)
+    }
+    pub fn connect_room(address:String,room:String,name:String,request_id:String,session:String,ctx:egui::Context,parent:usize,relay_only:bool)->Self {
+        Self::connect_access(address,Access::Invite{code:room,name,request_id,session,by_room:true},ctx,parent,relay_only)
     }
     fn connect_access(address: String, access: Access, ctx: egui::Context, parent: usize, relay_only: bool) -> Self {
         crate::diagnostics::write("connection", "Starting room connection", "");
@@ -360,8 +363,8 @@ impl Engine {
         let thread = std::thread::spawn(move || {
             let (token,room_title) = match access {
                 Access::Token(token) => (token,None),
-                Access::Invite { code, name, request_id, session } => {
-                    match crate::invitation::join_details(&address, &code, &name, &request_id, &session) {
+                Access::Invite { code, name, request_id, session, by_room } => {
+                    match if by_room {crate::invitation::join_room(&address,&code,&name,&request_id,&session)}else{crate::invitation::join_details(&address, &code, &name, &request_id, &session)} {
                         Ok(joined) => (joined.token,joined.title),
                         Err(error) => {
                             let message = error.to_string().replace(&code, "[invite]");

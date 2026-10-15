@@ -160,6 +160,9 @@ def main():
                 elif self.path=='/api/rooms/list':
                     if body:raise Rejected(400,'Unexpected fields')
                     data=admission.rooms.listing(self.headers.get('Authorization','').removeprefix('Bearer '))
+                elif self.path=='/api/rooms/join':
+                    if set(body)!={'room','name','request_id'}:raise Rejected(400,'Unexpected fields')
+                    data=admission.rooms.join(self.headers.get('Authorization','').removeprefix('Bearer '),body['room'],body['name'],body['request_id'])
                 elif self.path=='/api/rooms/keep':
                     if set(body)!={'room','persistent'}:raise Rejected(400,'Unexpected fields')
                     data=admission.rooms.keep(self.headers.get('Authorization','').removeprefix('Bearer '),body['room'],body['persistent'])

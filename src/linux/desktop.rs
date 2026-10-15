@@ -65,6 +65,7 @@ struct App {
     name: String,
     sidebar_open: bool,
     invite: String,
+    saved_room:Option<String>,
     device: String,
     access: ServerAccess,
     server_status: crate::server_status::ServerStatus,
@@ -99,7 +100,7 @@ impl App {
                 .unwrap_or("wss://hypercast.cloudlane.com.br".into()),
             name: crate::preferences::load_name(),
             sidebar_open: true,
-            invite: std::env::var("HYPERCAST_INVITE").unwrap_or_default(),
+            invite: std::env::var("HYPERCAST_INVITE").unwrap_or_default(),saved_room:None,
             device: crate::invitation::client_id(),
             access: ServerAccess::default(),
             server_status: crate::server_status::ServerStatus::default(),
@@ -150,14 +151,13 @@ impl App {
             self.device.clone(),
             self.access.token(),
         );
+        let saved_room=self.saved_room.clone();
         let (tx, rx) = mpsc::channel();
         let repaint = ctx.clone();
         self.joining = Some(rx);
         self.status = "Entrando na sala…".into();
         std::thread::spawn(move || {
-            let _ = tx.send(crate::invitation::join_details(
-                &address, &invite, &name, &device, &session,
-            ));
+            let _ = tx.send(if let Some(room)=saved_room{crate::invitation::join_room(&address,&room,&name,&device,&session)}else{crate::invitation::join_details(&address, &invite, &name, &device, &session)});
             repaint.request_repaint();
         });
     }
@@ -234,7 +234,7 @@ impl eframe::App for App {
         self.access.poll(&self.address, &self.device, ctx.clone());
         self.server_status.poll(&self.address,ctx);
         if let Some(room) = self.creator.poll() {
-            self.invite = room.invite;
+            self.saved_room=Some(room.room);self.invite.clear();
             self.status = format!("Sala criada: {}", room.title);
         }
         if let Some(rx) = &self.joining {
@@ -303,10 +303,8 @@ impl eframe::App for App {
                         ui.label(RichText::new(&self.access.status).size(12.0).color(MUTED));
                     }else if !connected{
                         if input(ui,&mut self.name,"Seu nome",false,32).lost_focus(){let _=crate::preferences::save_name(&self.name);}
-                        input(ui,&mut self.invite,"Código de 8 letras ou convite",false,64);
-                        if button(ui,"Entrar na sala",self.joining.is_none()&&!self.name.trim().is_empty()&&!self.invite.trim().is_empty(),true).clicked(){self.connect(ctx);}
+                        if button(ui,"Escolher sala",self.joining.is_none()&&!self.creator.busy,true).clicked(){self.creator.open=false;self.catalog.open(self.address.clone(),self.access.token(),ctx.clone());}
                         if button(ui,"Criar sala",!self.creator.busy,false).clicked(){self.creator.open(&self.address);}
-                        if small(ui,"Salas salvas").clicked(){self.catalog.open(self.address.clone(),self.access.token(),ctx.clone());}
                         if small(ui,"Trocar acesso ao servidor").clicked(){self.access.logout(&self.address);}
                     }else{
                         ui.label(RichText::new(&self.room_title).strong());
@@ -318,8 +316,7 @@ impl eframe::App for App {
                             let response=button(ui,&format!("{title} · {}",if live {if focused {"Em destaque · transmitindo"}else{"Transmitindo"}}else{"Assistindo"}),live,focused);
                             if response.clicked(){self.layout.focus=Some(id);if response.double_clicked(){self.layout.mode=ViewMode::Spotlight;}self.layout();}
                         }
-                        if small(ui,"Salas salvas").clicked(){self.catalog.open(self.address.clone(),self.access.token(),ctx.clone());}
-                        if !self.invite.is_empty()&&small(ui,"Copiar convite").clicked(){ctx.copy_text(self.invite.clone());}
+                        if small(ui,"Escolher sala").clicked(){self.catalog.open(self.address.clone(),self.access.token(),ctx.clone());}
                     }
                     ui.separator();ui.label(RichText::new("COMPARTILHAR").size(11.0).color(MUTED));
                     ui.add_enabled_ui(!sharing&&!selecting,|ui|{
@@ -440,7 +437,7 @@ impl eframe::App for App {
         }
         if !self.fullscreen {
             if let Some(selected)=self.catalog.show(ctx,&self.address,self.access.token(),&mut self.name,connected) {
-                self.invite=selected.invite;self.connect(ctx);
+                self.saved_room=Some(selected.room);self.invite.clear();self.connect(ctx);
             }
         }
         if self.debug {

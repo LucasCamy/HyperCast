@@ -49,7 +49,9 @@ def main():
         else:raise AssertionError('Short room code allowed unauthenticated access')
         joined=post('/api/join',{'invite':room['invite'].lower(),'name':'Tester','request_id':device},session)
         assert joined['room_name']==title
-        if os.environ.get('HYPERCAST_CATALOG_UI')=='1':gui(access['access_key'],title)
+        direct=post('/api/rooms/join',{'room':room['room'],'name':'Tester','request_id':device},session)
+        assert direct['room_name']==title
+        if os.environ.get('HYPERCAST_CATALOG_UI')=='1':gui(access['access_key'],title,room['invite'])
         print('PASS: permanent room, eight-letter code, catalog, duplicate recovery, authenticated join and friendly name')
     finally:
         if room and session:
@@ -61,7 +63,7 @@ def main():
             'nbf':int(time.time())-5,'exp':int(time.time())+60},secret)
         post('/api/admin/revoke-access',{'access_id':access['access_id']},admin)
 
-def gui(access_key,title):
+def gui(access_key,title,legacy_code):
     class Proxy(socketserver.BaseRequestHandler):
         def handle(self):
             try:
@@ -102,23 +104,26 @@ def gui(access_key,title):
                 time.sleep(.3)
             raise AssertionError('Owned GUI control unavailable: '+name)
         try:
-            wait('Salas salvas')
-            control('Salas salvas')
+            wait('Escolher sala')
+            control('Escolher sala')
             wait(title)
+            assert not control('Copiar código','-Read',check=False)
+            assert not control(legacy_code,'-Read',check=False)
             screenshot(app.pid,ROOT/'.tools/catalog-list.png')
             control('Manter esta sala','-Toggle')
             wait('Temporária · 24 h · 0 pessoa(s)')
             control('Manter esta sala','-Toggle')
             wait('Permanente · 0 pessoa(s)')
             control('Entrar')
-            wait('Copiar convite',20)
+            wait('Conectado',20)
             wait(title)
+            assert not control('Copiar convite','-Read',check=False)
             screenshot(app.pid,ROOT/'.tools/catalog-connected.png')
             control('Sair')
-            wait('Salas salvas')
-            control('Salas salvas')
+            wait('Escolher sala')
+            control('Escolher sala')
             wait(title)
-            print('PASS: GUI login, catalog retrieval, room entry with friendly name, leave and rediscovery')
+            print('PASS: GUI room picker without invitation controls, direct entry, leave and rediscovery')
         finally:
             if app.poll() is None:app.terminate()
             app.wait(timeout=10);server.shutdown();server.server_close();credential.unlink(missing_ok=True)

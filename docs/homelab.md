@@ -1,5 +1,11 @@
 # HyperCast no Cloudlane Homelab
 
+Entrada pela lista (15/10/2026, 0.8.1): novo `/api/rooms/join` aceita ID interno
+e valida acesso à sala pela mesma chave compartilhada. Clientes antigos e suas
+rotas permanecem compatíveis. Imagem de acesso instalada:
+`ghcr.io/lucascamy/hypercast-auth@sha256:6e593b1fe2e1f57f1103586953dd3d0c8cc3f1e1fd503e3c16f260e22f90a88a`.
+Backup SQLite antes do rollout; sem alteração em SFU, TURN ou portas.
+
 Salas salvas (15/10/2026, cliente 0.8.0): API de listagem e permanência,
 códigos de oito letras para novas salas e nome amigável retornado no join.
 Imagem de acesso instalada: `ghcr.io/lucascamy/hypercast-auth@sha256:c218239ca1c507f4713720ed02ce4a589ff8ceb8ea63f6ae9e907bf74dd059b4`.

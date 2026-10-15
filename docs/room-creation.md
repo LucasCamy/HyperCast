@@ -1,39 +1,40 @@
-# Acesso ao servidor, salas salvas e permanentes — 0.8.0
+# Acesso ao servidor, salas salvas e permanentes — 0.8.1
 
 Primeiro informe a **Chave de acesso** compartilhada e use **Entrar no servidor**.
-Essa chave autoriza usar o HyperCast: criar salas e entrar em salas por convite.
+Essa chave autoriza usar o HyperCast: criar salas e escolher as salas da sua lista.
 Não é a chave administrativa do LiveKit. Cada amigo usa seu próprio apelido.
 
-Depois use **Criar sala**, ao lado de **Entrar na sala**. A janela pede somente
-nome da sala, seu nome e a opção **Manter sala indefinidamente**. O nome da sala aceita espaços e acentos (1–64 caracteres);
-seu apelido aceita letras sem acentos, números, hífen e sublinhado.
-**Criar e entrar** abre a sessão automaticamente. **Copiar convite** permite
-convidar amigos, que precisam autenticar no servidor antes de usar esse convite.
-Todos podem compartilhar: até 12 pessoas e três telas simultâneas por sala.
+Depois use **Escolher sala**, ao lado de **Criar sala**. A lista mostra os nomes,
+a quantidade de participantes e a permanência. Clique **Entrar** no cartão da
+sala; não é necessário digitar nem copiar um código. A janela usa a altura útil
+do aplicativo e rola verticalmente para mostrar mais salas.
+
+Para criar, informe nome da sala, seu nome e a opção **Manter sala indefinidamente**.
+O nome da sala aceita espaços e acentos (1–64 caracteres); seu apelido aceita
+letras sem acentos, números, hífen e sublinhado. **Criar e entrar** abre a sessão
+automaticamente. Todos podem compartilhar: até 12 pessoas e três telas por sala.
 
 **Lembrar neste Windows** protege a chave com DPAPI do usuário, vinculada à origem
 do servidor, em LocalAppData/HyperCast/server-access-<hash>.bin. A sessão de acesso
 fica somente em memória, dura 15 minutos e é renovada automaticamente com a chave.
 **Trocar acesso ao servidor** remove a chave local e encerra essa autenticação;
-não revoga a chave compartilhada. Convites ficam em memória e na área de
-transferência quando copiados pelo usuário. Credenciais não entram nos logs.
+não revoga a chave compartilhada. Identificadores internos de sala não precisam
+ser copiados ou guardados pelo usuário. Credenciais não entram nos logs.
 
-## Salas salvas e códigos curtos
+## Entrada pela lista
 
-Use **Salas salvas** para listar as salas da chave compartilhada do servidor,
-inclusive as criadas em outro dispositivo com a mesma chave. Cada cartão mostra
-o nome escolhido, o código, a permanência e a quantidade de participantes.
-**Copiar código** e **Entrar** permitem recuperar uma sala sem guardar seu convite
-na área de transferência. Saia da sessão atual antes de entrar em outra.
+Use **Escolher sala** para listar as salas da chave compartilhada do servidor,
+inclusive as criadas em outro dispositivo com a mesma chave. Saia da sessão
+atual antes de entrar em outra. A interface não tem campo de código nem ações
+de copiar convite. A entrada usa o ID interno da sala e o servidor valida que
+a sala pertence à mesma chave de acesso. Sessão válida e vínculo ao dispositivo
+continuam obrigatórios.
 
-Novas salas criadas no 0.8.0 usam **oito letras maiúsculas**; é possível digitar
-minúsculas para entrar. O código identifica a sala, mas não substitui a chave de
-acesso ao servidor. Colisões são verificadas no banco e recebem outro código.
-Convites longos antigos continuam válidos e aparecem na lista sem serem trocados.
-Clientes anteriores também continuam criando convites longos pela API legada.
+Clientes antigos ainda podem usar os endpoints e convites anteriores por
+compatibilidade. O fluxo atual não depende de receber um código na listagem.
 
-Ao criar, marque **Manter sala indefinidamente** para não expirar o registro e o
-convite. A mesma opção está nos cartões da lista; desmarcar inicia um novo prazo
+Ao criar, marque **Manter sala indefinidamente** para não expirar o registro
+da sala. A mesma opção está nos cartões da lista; desmarcar inicia um novo prazo
 de 24 horas. Uma sala expirada pode ser reativada marcando essa opção. Criar com
 o mesmo nome, sem diferenciar maiúsculas e minúsculas, recupera o registro válido
 existente em vez de criar uma duplicata. Os dados ficam no SQLite persistente,
@@ -42,7 +43,7 @@ revogação pelo operador; a sala não é apagada quando uma sessão de acesso e
 
 Permanência não mantém um processo ou uma conexão de vídeo rodando para sempre.
 O SFU libera a sala vazia após dez minutos. A próxima entrada recria a sala com
-o mesmo nome, código e limites. A interface usa o nome retornado pela API de
+o mesmo nome, identificador e limites. A interface usa o nome retornado pela API de
 entrada, evitando exibir o identificador interno `hcr-...` por falta de metadata.
 
 ## Limites e validade
@@ -53,8 +54,8 @@ entrada, evitando exibir o identificador interno `hcr-...` por falta de metadata
   bloqueio de uma única sala aberta por dispositivo.
 - Até dez novas salas por chave compartilhada em 24 horas. Repetir o mesmo pedido
   não cria outra sala nem consome nova quota.
-- Sala temporária: 24 horas e até 12 dispositivos distintos por convite.
-- Sala permanente: registro/convite sem expiração; não bloqueia o 13º dispositivo
+- Sala temporária: 24 horas e até 12 dispositivos distintos durante sua validade.
+- Sala permanente: registro sem expiração; não bloqueia o 13º dispositivo
   usado ao longo do tempo. O limite continua sendo 12 pessoas simultâneas no SFU.
 
 A chave compartilhada não identifica pessoas individualmente. As quotas de
@@ -78,7 +79,9 @@ Arquivos privados ficam ignorados pelo Git e fora dos instaladores.
 JWT HS256 com audience hypercast-access, scope server:access e expiração de 900s.
 `POST /api/rooms` recebe esse JWT e `room_name`, `request_id` e `persistent` (booleano).
 `POST /api/rooms/list` recebe esse JWT e um objeto vazio; lista até 32 registros,
-priorizando permanentes e válidos. `POST /api/rooms/keep` recebe `room` (ID interno)
+priorizando permanentes e válidos. `POST /api/rooms/join` recebe `room`, `name` e `request_id`, e devolve JWT curto
+e nome amigável após verificar que a sala pertence à mesma chave.
+`POST /api/rooms/keep` recebe `room` (ID interno)
 e `persistent`; só altera salas da mesma chave de acesso.
 `POST /api/join` recebe o JWT, convite, apelido e request_id igual ao device_id.
 O servidor verifica assinatura, escopo, prazo, revogação e vínculo ao dispositivo.

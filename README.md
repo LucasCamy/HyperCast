@@ -1,5 +1,9 @@
 # HyperCast
 
+0.8.1 permite **Escolher sala** pelo nome, sem digitar ou copiar códigos. A lista
+ocupa a altura útil da janela e mantém entrada protegida pela chave do servidor.
+[Como usar](docs/room-creation.md).
+
 0.8.0 adiciona **Salas salvas**, salas permanentes e códigos de **oito letras**.
 Reencontre salas sem guardar o convite, mantenha o nome escolhido e altere a
 permanência pela lista. [Como usar](docs/room-creation.md).

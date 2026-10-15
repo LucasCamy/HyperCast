@@ -136,6 +136,18 @@ class RoomCreation:
         return {'rooms':[dict(self.result(r),active=r['room'] in live,
             participants=int(live.get(r['room'],{}).get('num_participants',0))) for r in rows]}
 
+    def join(self,session,room,name,request_id):
+        access=self.authorize(session)
+        if not isinstance(room,str) or not rt.NAME.fullmatch(room):self.reject(400,'Invalid room')
+        with closing(self.admission.db()) as db:
+            record=db.execute('SELECT * FROM room_catalog WHERE room=? AND (creator=? OR creator LIKE ?)',
+                (room,access['id'],access['id']+':%')).fetchone()
+        if record is None:self.reject(404,'Room not found')
+        # Preserve existing membership/expiry/admission checks; no invitation
+        # code needs to be supplied by the client using the room catalog.
+        code=self.invite_code(room,record['code_version'],record['code_nonce'])
+        return self.admission.join(code,name,request_id,session)
+
     def keep(self,session,room,persistent):
         access=self.authorize(session)
         if not isinstance(room,str) or not rt.NAME.fullmatch(room) or type(persistent) is not bool:

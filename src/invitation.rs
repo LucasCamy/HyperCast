@@ -34,21 +34,26 @@ pub fn join(address:&str,invite:&str,name:&str,request_id:&str,session:&str)->Re
     Ok(join_details(address,invite,name,request_id,session)?.token)
 }
 pub fn join_details(address: &str, invite: &str, name: &str, request_id: &str, session: &str) -> Result<JoinedRoom> {
-    let endpoint = endpoint(address,"/api/join")?;
+    join_request(address,session,"/api/join",serde_json::json!({"invite":invite,"name":name,"request_id":request_id}))
+}
+pub fn join_room(address:&str,room:&str,name:&str,request_id:&str,session:&str)->Result<JoinedRoom> {
+    join_request(address,session,"/api/rooms/join",serde_json::json!({"room":room,"name":name,"request_id":request_id}))
+}
+fn join_request(address:&str,session:&str,path:&str,body:serde_json::Value)->Result<JoinedRoom> {
+    let endpoint=endpoint(address,path)?;
     let client = reqwest::blocking::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(12))
         .user_agent("HyperCast-Desktop/0.1")
         .build()?;
-    let response = client.post(endpoint).bearer_auth(session).json(&serde_json::json!({
-        "invite": invite, "name": name, "request_id": request_id,
-    })).send()?;
+    let response = client.post(endpoint).bearer_auth(session).json(&body).send()?;
     match response.status().as_u16() {
         200 => {},
-        401 | 403 => anyhow::bail!("Convite inválido, expirado ou sem vagas de uso"),
-        409 => anyhow::bail!("A sala atingiu o limite de publicadores ativos ou reservados"),
+        401 | 403 => anyhow::bail!("Sala indisponível ou sessão expirada; entre no servidor novamente"),
+        404 => anyhow::bail!("Sala não encontrada nesta chave de acesso"),
+        409 => anyhow::bail!("O servidor atingiu o limite de salas abertas"),
         400 => anyhow::bail!("Use nome com letras sem acentos, números, hífen ou sublinhado"),
-        _ => anyhow::bail!("Serviço de convites indisponível; tente novamente"),
+        _ => anyhow::bail!("Não foi possível entrar na sala; tente novamente"),
     }
     let mut bytes = Vec::new(); response.take(16385).read_to_end(&mut bytes)?;
     ensure!(bytes.len() <= 16384, "Invitation response exceeded size limit");
