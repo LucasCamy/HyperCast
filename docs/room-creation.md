@@ -1,4 +1,4 @@
-# Acesso ao servidor, salas salvas e permanentes — 0.8.2
+# Acesso ao servidor, salas salvas e permanentes — 0.8.3
 
 Primeiro informe a **Chave de acesso** compartilhada e use **Entrar no servidor**.
 Essa chave autoriza usar o HyperCast: criar salas e escolher as salas da sua lista.
@@ -45,6 +45,24 @@ Permanência não mantém um processo ou uma conexão de vídeo rodando para sem
 O SFU libera a sala vazia após dez minutos. A próxima entrada recria a sala com
 o mesmo nome, identificador e limites. A interface usa o nome retornado pela API de
 entrada, evitando exibir o identificador interno `hcr-...` por falta de metadata.
+
+## Trocar de sala
+
+Use **Escolher sala** sem sair da sala atual. O cartão atual mostra **Nesta sala**
+e os demais continuam disponíveis. Escolher outra sala encerra o compartilhamento,
+o áudio enviado e a recepção anteriores; aguarda a conexão anterior fechar e só
+então pede entrada na próxima. O envio não é retomado automaticamente na nova sala.
+Se a nova entrada falhar, o erro é mostrado e você pode tentar novamente pela lista.
+
+A espera ocorre fora da interface no Windows e Linux. Durante a troca, novas
+entradas ficam desativadas para evitar sessões sobrepostas. O modo de visualização
+e o volume são preservados; destaque anterior e pausa são limpos.
+
+No Linux, a interface usa uma cópia do último estado disponível quando a mídia
+está ocupada. Erros continuam visíveis no menu, com quebra de linha; a interface
+não precisa esperar por um mutex de mídia ou pelo encerramento da conexão para
+desenhar. Testes simulam rejeição atrasada do servidor e mídia bloqueada, além de
+realizar duas trocas de sala usando credenciais temporárias de teste.
 
 ## Limpeza automática
 

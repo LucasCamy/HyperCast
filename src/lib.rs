@@ -15,6 +15,8 @@ pub mod invitation;
 #[cfg(feature = "desktop")]
 pub mod desktop_ui;
 #[cfg(feature = "desktop")]
+pub mod room_transition;
+#[cfg(feature = "desktop")]
 pub mod server_status;
 #[cfg(feature = "desktop")]
 pub mod preferences;

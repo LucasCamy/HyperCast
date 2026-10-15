@@ -63,7 +63,16 @@ def main():
         assert joined['room_name']==title
         direct=post('/api/rooms/join',{'room':room['room'],'name':'Tester','request_id':device},session)
         assert direct['room_name']==title
-        if os.environ.get('HYPERCAST_CATALOG_UI')=='1':gui(access['access_key'],title,room['invite'])
+        if os.environ.get('HYPERCAST_CATALOG_UI')=='1':
+            def moved(old,new):
+                operator=rt.sign({'iss':key,'sub':'catalog-switch-check','nbf':int(time.time())-5,'exp':int(time.time())+60,'video':{'roomList':True}},secret)
+                until=time.monotonic()+12
+                while time.monotonic()<until:
+                    live={r['name']:r.get('num_participants',0) for r in post('/twirp/livekit.RoomService/ListRooms',{'names':[old,new]},operator).get('rooms',[])}
+                    if live.get(old,0)==0 and live.get(new,0)==1:return
+                    time.sleep(.2)
+                raise AssertionError('Room switch did not leave exactly one connected session')
+            gui(access['access_key'],title,room['invite'],extras[1]['room_name'],lambda:moved(room['room'],extras[1]['room']))
         print('PASS: permanent room, eight-letter code, catalog, duplicate recovery, authenticated join and friendly name')
     finally:
         if room and session:
@@ -75,7 +84,7 @@ def main():
             'nbf':int(time.time())-5,'exp':int(time.time())+60},secret)
         post('/api/admin/revoke-access',{'access_id':access['access_id']},admin)
 
-def gui(access_key,title,legacy_code):
+def gui(access_key,title,legacy_code,other_title,assert_moved):
     class Proxy(socketserver.BaseRequestHandler):
         def handle(self):
             try:
@@ -131,11 +140,18 @@ def gui(access_key,title,legacy_code):
             wait(title)
             assert not control('Copiar convite','-Read',check=False)
             screenshot(app.pid,ROOT/'.tools/catalog-connected.png')
+            control('Escolher sala')
+            wait(other_title)
+            control('Entrar em '+other_title)
+            wait('Conectado',25)
+            wait(other_title)
+            assert_moved()
+            screenshot(app.pid,ROOT/'.tools/catalog-switched.png')
             control('Sair')
             wait('Escolher sala')
             control('Escolher sala')
             wait(title)
-            print('PASS: GUI room picker without invitation controls, direct entry, leave and rediscovery')
+            print('PASS: GUI catalog entry, automatic room switch with exactly one session, leave and rediscovery')
         finally:
             if app.poll() is None:app.terminate()
             app.wait(timeout=10);server.shutdown();server.server_close();credential.unlink(missing_ok=True)

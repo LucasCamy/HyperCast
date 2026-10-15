@@ -33,7 +33,7 @@ pub struct Screen {
     pub owner: String,
     pub name: String,
 }
-#[derive(Default)]
+#[derive(Default,Clone)]
 pub struct State {
     pub connected: bool,
     pub reception_resetting: bool,
@@ -82,6 +82,10 @@ pub struct Engine {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 impl Engine {
+    #[cfg(test)]
+    pub fn fixture(state:Arc<Mutex<State>>)->Self {let(tx,_rx)=tokio::sync::mpsc::unbounded_channel();Self{state,tx,thread:None}}
+
+    pub fn finished(&self)->bool {self.thread.as_ref().is_none_or(|t|t.is_finished())}
     pub fn start(address: String, token: String, ctx: egui::Context) -> Self {
         let state = Arc::new(Mutex::new(State {
             status: "Conectando…".into(),

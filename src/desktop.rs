@@ -174,6 +174,8 @@ struct App {
     updater:crate::updater::Updater,
     creator:crate::room_creation::Creator,
     catalog:crate::room_creation::Catalog,
+    departure:Option<crate::room_transition::Departure>,
+    pending_join:bool,
     server_access:crate::room_creation::ServerAccess,
     server_status:crate::server_status::ServerStatus,
     before_fullscreen_mode:ViewMode,
@@ -242,7 +244,7 @@ impl App {
             sound_muted: false,
             displays: crate::screen_capture::displays().unwrap_or_default(),
             selected_display: 0,
-            window_mode:false,windows:crate::video_capture::windows(),selected_window:None,window_picker_open:false,window_previews:HashMap::new(),fullscreen:false,debug_open:false,updater:crate::updater::Updater::default(),creator:crate::room_creation::Creator::default(),catalog:crate::room_creation::Catalog::default(),server_access:crate::room_creation::ServerAccess::default(),server_status:crate::server_status::ServerStatus::default(),before_fullscreen_mode:ViewMode::Spotlight,
+            window_mode:false,windows:crate::video_capture::windows(),selected_window:None,window_picker_open:false,window_previews:HashMap::new(),fullscreen:false,debug_open:false,updater:crate::updater::Updater::default(),creator:crate::room_creation::Creator::default(),catalog:crate::room_creation::Catalog::default(),departure:None,pending_join:false,server_access:crate::room_creation::ServerAccess::default(),server_status:crate::server_status::ServerStatus::default(),before_fullscreen_mode:ViewMode::Spotlight,
             codec: if std::env::var("HYPERCAST_CODEC").as_deref() == Ok("av1") {
                 crate::encoder::Codec::Av1
             } else {
@@ -417,7 +419,7 @@ impl App {
             if ui.add_enabled(connected,egui::Button::new(if self.paused{"Retomar vídeo"}else{"Pausar vídeo"}).min_size(Vec2::new(pause_width,40.0)).corner_radius(8)).clicked(){self.paused=!self.paused;self.send_layout();}
             let resetting=self.engine.as_ref().is_some_and(|e|e.shared.lock().unwrap().reception_resetting);
             if refresh_reception(ui,connected&&!resetting,36.0).clicked(){self.restart_reception();}
-            if ui.add_enabled(self.engine.is_some(),egui::Button::new(RichText::new("Sair").color(DANGER)).min_size(Vec2::new(exit_width,40.0)).corner_radius(8)).clicked(){self.engine=None;self.presenters.clear();self.last_presented.clear();}
+            if ui.add_enabled(self.engine.is_some(),egui::Button::new(RichText::new("Sair").color(DANGER)).min_size(Vec2::new(exit_width,40.0)).corner_radius(8)).clicked(){self.leave_room(ui.ctx(),false);}
         });
     }
     fn restart_reception(&mut self) {
@@ -434,6 +436,13 @@ impl App {
                 paused: self.paused,
             }));
         }
+    }
+    fn leave_room(&mut self,ctx:&egui::Context,join_next:bool) {
+        self.presenters.clear();self.last_presented.clear();self.window_previews.clear();
+        self.focus=None;self.single_view=false;self.paused=false;
+        self.pending_join=join_next;
+        self.departure=Some(crate::room_transition::Departure::start(self.engine.take(),ctx.clone()));
+        self.error.clear();
     }
     fn join_room(&self, ctx: egui::Context) -> Engine {
         let _ = crate::preferences::save_name(&self.name);
@@ -469,10 +478,14 @@ impl eframe::App for App {
         self.updater.poll();
         self.server_access.poll(&self.address,&self.client_id,ctx.clone());
         self.server_status.poll(&self.address,&ctx);
+        if self.departure.as_ref().is_some_and(|d|d.ready()) {
+            self.departure=None;
+            if std::mem::take(&mut self.pending_join){self.engine=Some(self.join_room(ctx.clone()));}
+        }
         if let Some(created)=self.creator.poll() {
             self.saved_room=Some(created.room);self.invite.clear();self.token_mode=false;self.token.clear();
             self.error.clear();
-            self.engine=Some(self.join_room(ctx.clone()));
+            self.leave_room(&ctx,true);
         }
         if ctx.input(|i|i.key_pressed(egui::Key::F11)){self.set_fullscreen(&ctx,!self.fullscreen);}
         if self.fullscreen && ctx.input(|i|i.key_pressed(egui::Key::Escape)){self.set_fullscreen(&ctx,false);}
@@ -542,7 +555,7 @@ impl eframe::App for App {
         let mut can_publish = false;
         let mut identity = String::new();
         let mut room = "Sua sala de trabalho".to_owned();
-        let mut status = "Pronto para conectar".to_owned();
+        let mut status = if self.departure.is_some(){if self.pending_join{"Trocando de sala…"}else{"Saindo da sala…"}}else{"Pronto para conectar"}.to_owned();
         let mut audio_status = String::new();
         let mut active_target=None;
         let mut source_error=String::new();
@@ -710,12 +723,12 @@ impl eframe::App for App {
                             if text_input(ui,&mut self.name,"Como quer aparecer na sala",false,64,self.engine.is_none() || self.engine.as_ref().is_some_and(|engine|engine.finished())).lost_focus() { let _ = crate::preferences::save_name(&self.name); }
                         ui.horizontal(|ui| {
                             let width=(ui.available_width()-ui.spacing().item_spacing.x)/2.0;
-                            let ready=(self.engine.is_none() || self.engine.as_ref().is_some_and(|engine|engine.finished())) && !self.creator.busy;
+                            let ready=self.departure.is_none() && (self.engine.is_none() || self.engine.as_ref().is_some_and(|engine|engine.finished())) && !self.creator.busy;
                             if ui.add_enabled(ready,
                                 egui::Button::new("Escolher sala").min_size(Vec2::new(width,44.0)).corner_radius(9)).clicked() {
                                 self.creator.open=false;self.catalog.open(self.address.clone(),self.server_access.token(),ctx.clone());
                             }
-                            if ui.add_enabled(self.server_access.authenticated() && !self.creator.busy && (self.engine.is_none() || !status.starts_with("Conectando")),
+                            if ui.add_enabled(self.departure.is_none() && self.server_access.authenticated() && !self.creator.busy && (self.engine.is_none() || !status.starts_with("Conectando")),
                                 egui::Button::new("Criar sala").min_size(Vec2::new(width,44.0)).corner_radius(9)).clicked() {
                                 self.window_picker_open=false;egui::Popup::close_all(&ctx);self.creator.open(&self.address);self.debug_open=false;self.updater.open=false;
                             }
@@ -1150,9 +1163,9 @@ impl eframe::App for App {
             self.creator.open=open || self.creator.busy;
         }
         if !self.fullscreen {
-            if let Some(selected)=self.catalog.show(&ctx,&self.address,self.server_access.token(),&mut self.name,connected) {
+            if let Some(selected)=self.catalog.show(&ctx,&self.address,self.server_access.token(),&mut self.name,if connected{self.saved_room.as_deref()}else{None},self.departure.is_some() || self.engine.as_ref().is_some_and(|e|!connected && !e.finished())) {
                 self.saved_room=Some(selected.room);self.invite.clear();self.token_mode=false;self.token.clear();self.error.clear();
-                self.engine=Some(self.join_room(ctx.clone()));
+                self.leave_room(&ctx,true);
             }
         }
         if !self.fullscreen && self.debug_open {

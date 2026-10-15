@@ -39,7 +39,7 @@ impl Catalog {
             let _=tx.send((address,session,result));ctx.request_repaint();
         });
     }
-    pub fn show(&mut self,ctx:&egui::Context,address:&str,session:String,name:&mut String,connected:bool)->Option<CreatedRoom> {
+    pub fn show(&mut self,ctx:&egui::Context,address:&str,session:String,name:&mut String,current_room:Option<&str>,transitioning:bool)->Option<CreatedRoom> {
         if let Some(rx)=&self.receiver {
             match rx.try_recv() {
                 Ok((origin,requested_session,result))=>{self.receiver=None;self.busy=false;if origin==address && requested_session==session && !session.is_empty(){match result {Ok(rooms)=>self.rooms=rooms,Err(e)=>self.status=e.to_string()}}},
@@ -63,7 +63,7 @@ impl Catalog {
                     });
                 });
                 let name_label=ui.label("Seu nome").id;
-                controls::input(ui,name,"Como quer aparecer na sala",false,64,!connected).labelled_by(name_label);
+                controls::input(ui,name,"Como quer aparecer na sala",false,64,current_room.is_none() && !transitioning).labelled_by(name_label);
                 if !self.status.is_empty(){ui.label(&self.status);}
                 if !self.busy && self.rooms.is_empty(){ui.label("Nenhuma sala salva. Crie uma para começar.");}
                 let list_height=(ctx.content_rect().bottom()-ui.cursor().top()-64.0).max(160.0);
@@ -83,8 +83,9 @@ impl Catalog {
                                             ui.label(egui::RichText::new(format!("{} · {} pessoa(s)",if entry.expired{"Expirada"}else if entry.persistent{"Permanente"}else{"Temporária · 24 h"},entry.participants)).size(12.0).color(controls::MUTED));
                                         });
                                         let valid_name=!name.is_empty() && name.len()<=64 && name.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_');
-                                        let enabled=!self.busy && !entry.expired && !connected && valid_name;
-                                        let enter=controls::primary(ui,"Entrar",enabled,egui::vec2(88.0,36.0));
+                                        let current=current_room==Some(entry.room.as_str());
+                                        let enabled=!self.busy && !transitioning && !entry.expired && !current && valid_name;
+                                        let enter=controls::primary(ui,if current{"Nesta sala"}else{"Entrar"},enabled,egui::vec2(88.0,36.0));
                                         enter.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,enabled,format!("Entrar em {}",entry.title)));
                                         if enter.clicked(){selected=Some(CreatedRoom{room:entry.room.clone(),title:entry.title.clone()});}
                                     });
@@ -97,7 +98,8 @@ impl Catalog {
                         });
                     }
                 });
-                if connected{ui.small("Saia da sala atual para entrar em outra.");}
+                if transitioning{ui.small("Aguarde a troca de sala…");}
+                else if current_room.is_some(){ui.small("Ao entrar em outra sala, seu compartilhamento atual será encerrado.");}
             });
         self.open=open && selected.is_none();
         if refresh || keep.is_some(){self.request(address.to_owned(),session,keep,ctx.clone());}

@@ -1,5 +1,10 @@
 # HyperCast
 
+0.8.3 permite trocar de sala diretamente pela lista, encerrando a conexão e o
+compartilhamento anteriores automaticamente. No Linux, a interface continua
+desenhando enquanto aguarda respostas, acesso ao estado de mídia e encerramento
+da conexão. [Troca de sala e mensagens](docs/room-creation.md#trocar-de-sala).
+
 0.8.2 padroniza a lista de salas: cartões ocupam toda a largura, botões alinhados
 e campo de nome igual ao restante do aplicativo. Salas temporárias expiradas e
 vazias são removidas automaticamente; permanentes e ocupadas são preservadas.

@@ -8,11 +8,11 @@ GStreamer ou codecs manualmente para executar o AppImage.
 
 ## Abrir no Bazzite
 
-Baixe `HyperCast-0.8.2-linux-x86_64.AppImage` na página de versões e abra pelo
+Baixe `HyperCast-0.8.3-linux-x86_64.AppImage` na página de versões e abra pelo
 Gear Lever. Se preferir abrir diretamente, habilite a permissão de execução nas
 propriedades do arquivo. Sem suporte a FUSE, use `--appimage-extract-and-run`.
 
-Entre com a mesma chave do servidor, informe seu nome e convite, ou crie uma sala.
+Entre com a mesma chave do servidor, informe seu nome e use **Escolher sala**, ou crie uma sala.
 Nesta primeira versão Linux a chave permanece somente na memória da sessão;
 ainda não há integração com o cofre de credenciais do desktop.
 
@@ -24,6 +24,13 @@ Seu nome é salvo em `$XDG_STATE_HOME/hypercast/display-name` ou
 Duplo clique na transmissão ou no participante que transmite seleciona uma única
 tela; **Grid** volta a mostrar várias. A versão Linux já não renderiza prévia local.
 A marca **Transmitindo** indica quem envia, independentemente da tela em destaque.
+
+Para trocar, abra **Escolher sala** durante a sessão e entre em outra. O aplicativo
+encerra o envio e a conexão anteriores em segundo plano antes de conectar à nova
+sala. O compartilhamento precisa ser iniciado novamente na sala de destino.
+Respostas atrasadas e estado de mídia ocupado não bloqueiam o desenho da interface.
+Os testes dessa recuperação usam Ubuntu/WSL; a confirmação visual com NVIDIA e
+Wayland no Bazzite ainda depende do PC do colega.
 
 ## Tela, janela, vídeo e áudio
 
