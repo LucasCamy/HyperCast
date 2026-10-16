@@ -36,6 +36,7 @@ pub struct Screen {
 #[derive(Default,Clone)]
 pub struct State {
     pub connected: bool,
+    pub quality:crate::video_metrics::QualitySnapshot,
     pub reception_resetting: bool,
     pub reception_restarts: u64,
     pub reconnecting: bool,
@@ -348,6 +349,8 @@ async fn session(
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut last_refresh = Instant::now() - Duration::from_secs(1);
     let mut reception_restart:Option<Instant>=None;
+    let(mut send_meter,mut receive_meter)=(crate::video_metrics::TrafficMeter::default(),crate::video_metrics::TrafficMeter::default());
+    let mut sent_bytes=0u64;
     let outcome=async {
         loop {
             tokio::select!{
@@ -458,7 +461,7 @@ async fn session(
                                 if p.take_keyframe_request(){cap.request_keyframe();if !packet.keyframe{continue;}}
                                 p.set_resolution_if_changed(packet.width,packet.height);
                                 if let Some(rate)=p.take_rate_control_request(){cap.bitrate(rate.target_bitrate_bps as u32);}
-                                if p.push(&packet.bytes,started.elapsed().as_micros() as i64,packet.keyframe)?{shared.lock().unwrap().sent+=1;}
+                                if p.push(&packet.bytes,started.elapsed().as_micros() as i64,packet.keyframe)?{let mut state=shared.lock().unwrap();state.sent+=1;sent_bytes+=packet.bytes.len() as u64;state.quality.resolution=Some((packet.width,packet.height));}
                             },
                             Ok(None)=>{},
                             Err(error)=>{shared.lock().unwrap().status=error.to_string();cap.stop().await;capture=None;if let Some(p)=publisher.take(){let _=p.stop().await;}if let Some(a)=audio.take(){a.stop(&room).await;}
@@ -473,6 +476,12 @@ async fn session(
                     if let Some(a)=&mut audio {if let Err(e)=a.tick().await{shared.lock().unwrap().status=e.to_string();if let Some(a)=audio.take(){a.stop(&room).await;}wants_audio=false;}}
                     if audio.is_none(){volume.store(layout.volume,Ordering::Relaxed);}
                 }
+            }
+            {
+                let now=Instant::now();let mut state=shared.lock().unwrap();
+                if capture.is_some(){if let Some(sample)=send_meter.sample(now,state.sent,sent_bytes){state.quality.send=Some(sample);}}
+                else{send_meter=Default::default();state.quality.send=None;state.quality.resolution=None;}
+                if let Some(sample)=receive_meter.sample(now,state.received,0){state.quality.receive=Some(sample);}
             }
             ctx.request_repaint();
         }

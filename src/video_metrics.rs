@@ -1,5 +1,25 @@
 //! Bounded, content-free video measurements. Window-local timings, cumulative RTP counters.
 use std::time::Duration;
+#[derive(Clone,Copy,Debug,Default)]
+pub struct Throughput {pub fps:f64,pub mbps:f64}
+#[derive(Clone,Debug,Default)]
+pub struct QualitySnapshot {
+    pub send:Option<Throughput>,pub receive:Option<Throughput>,
+    pub resolution:Option<(u32,u32)>,pub send_paused:bool,
+}
+/// Samples real counter deltas, never the configured target FPS or bitrate.
+#[derive(Default)]
+pub struct TrafficMeter {previous:Option<(std::time::Instant,u64,u64)>}
+impl TrafficMeter {
+    pub fn sample(&mut self,now:std::time::Instant,frames:u64,bytes:u64)->Option<Throughput>{
+        let Some((at,old_frames,old_bytes))=self.previous else{self.previous=Some((now,frames,bytes));return None;};
+        if frames<old_frames || bytes<old_bytes{self.previous=Some((now,frames,bytes));return None;}
+        let elapsed=now.saturating_duration_since(at).as_secs_f64();
+        if elapsed<1.0{return None;}
+        self.previous=Some((now,frames,bytes));
+        Some(Throughput{fps:(frames-old_frames) as f64/elapsed,mbps:(bytes-old_bytes) as f64*8.0/elapsed/1_000_000.0})
+    }
+}
 #[derive(Default)]
 pub struct EncodeWindow {
     durations:Vec<u64>,frames:u64,bytes:u64,keys:u64,requested_keys:u64,max_bytes:usize,qp_sum:u64,qp_samples:u64,
@@ -22,6 +42,16 @@ impl EncodeWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]fn throughput_uses_elapsed_time_and_handles_stop_and_counter_reset(){
+        let mut meter=TrafficMeter::default();let now=std::time::Instant::now();
+        assert!(meter.sample(now,20,1000).is_none());
+        assert!(meter.sample(now+Duration::from_millis(100),30,2000).is_none());
+        let rate=meter.sample(now+Duration::from_secs(2),140,1_001_000).unwrap();
+        assert_eq!(rate.fps,60.0);assert_eq!(rate.mbps,4.0);
+        let idle=meter.sample(now+Duration::from_secs(3),140,1_001_000).unwrap();assert_eq!(idle.fps,0.0);
+        assert!(meter.sample(now+Duration::from_secs(4),1,100).is_none());
+        assert_eq!(meter.sample(now+Duration::from_secs(5),61,500100).unwrap().fps,60.0);
+    }
     #[test]fn bounded_windows_reset_and_missing_qp_is_not_zero(){
         let mut window=EncodeWindow::default();
         for _ in 0..1500{window.record(Duration::from_micros(1000),20,false,false,None);}

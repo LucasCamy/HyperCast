@@ -1,5 +1,24 @@
 # Qualidade de vídeo — 0.8.5
 
+## Indicadores na interface
+
+A partir de 0.8.6, a barra abaixo do cabeçalho da sala é igual no Windows e Linux:
+
+- **Envio:** resolução codificada, quadros por segundo e Mbps calculados das
+  diferenças dos contadores, com janela mínima de um segundo e duração real.
+  São quadros/bytes de vídeo aceitos pelo publicador; excluem overhead RTP/TURN e
+  não comprovam entrega ao espectador. Não são os alvos configurados do encoder.
+- **Recepção:** total de quadros decodificados por segundo em todas as telas.
+  Não é FPS de apresentação ou FPS individual quando várias telas estão ativas.
+- **Estado da sala:** conectada, reconectando, envio pausado e recepção pausada.
+  Esse estado é separado do indicador de acesso ao servidor.
+
+Antes da primeira amostra aparece **medindo…**. O contador é reiniciado ao
+encerrar o envio; a reconexão e a pausa têm prioridade sobre valores anteriores.
+A barra fica oculta em tela cheia. Não se atribui nota de qualidade: FPS/bitrate
+não medem pixelização, fidelidade ou latência fim a fim. Os detalhes técnicos
+continuam no Debug.
+
 ## Perfis AMD HEVC
 
 Em **Formato de vídeo → Perfil AMD · HEVC**, antes de compartilhar:

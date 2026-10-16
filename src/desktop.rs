@@ -25,34 +25,15 @@ fn compact_action(ui:&mut egui::Ui,label:&str,enabled:bool)->egui::Response {
 }
 
 fn utility_window_frame(style:&egui::Style)->egui::Frame {
-    egui::Frame::window(style).fill(PANEL).inner_margin(12).corner_radius(12)
-        .stroke(egui::Stroke::new(1.0,BORDER))
+    crate::desktop_ui::utility_frame(style)
 }
 
 fn update_action(ui: &mut egui::Ui, label: &str, primary: bool) -> egui::Response {
-    ui.add_sized(
-        [ui.available_width(), 40.0],
-        egui::Button::new(RichText::new(label).size(13.0).color(if primary { ACCENT } else { TEXT }))
-            .corner_radius(8)
-            .fill(if primary { ACCENT.gamma_multiply(0.16) } else { SURFACE })
-            .stroke(egui::Stroke::new(1.0, if primary { ACCENT.gamma_multiply(0.45) } else { BORDER })),
-    )
+    crate::desktop_ui::action(ui,label,true,primary)
 }
 
 fn exit_fullscreen(ui: &mut egui::Ui) -> egui::Response {
-    let response = ui.scope(|ui| {
-        ui.spacing_mut().button_padding = Vec2::ZERO;
-        ui.spacing_mut().interact_size = Vec2::splat(20.0);
-        ui.add_sized([20.0, 20.0], egui::Button::new("").corner_radius(5).fill(SURFACE))
-    }).inner;
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Sair da tela cheia"));
-    let center = response.rect.center();
-    let stroke = egui::Stroke::new(1.5, if response.hovered() || response.has_focus() { TEXT } else { MUTED });
-    for direction in [-1.0, 1.0] {
-        let offset = Vec2::new(3.5, 3.5 * direction);
-        ui.painter().line_segment([center - offset, center + offset], stroke);
-    }
-    response.on_hover_text("Sair da tela cheia · Esc / F11")
+    crate::desktop_ui::exit_fullscreen(ui)
 }
 
 fn fullscreen_sound(ui: &mut egui::Ui, muted: bool) -> egui::Response {
@@ -562,6 +543,7 @@ impl eframe::App for App {
             println!("GUI lifecycle: disconnected and restarted media engine");
         }
         let mut connected = false;
+        let mut quality=crate::video_metrics::QualitySnapshot::default();let mut reconnecting=false;
         let mut reception_resetting=false;
         let mut publishing = false;
         let mut can_publish = false;
@@ -580,6 +562,7 @@ impl eframe::App for App {
         if let Some(engine) = &self.engine {
             let state = engine.shared.lock().unwrap();
             connected = state.connected;reception_resetting=state.reception_resetting;
+            quality=state.quality.clone();reconnecting=state.reconnecting;
             publishing = state.publishing;
             can_publish = state.can_publish;
             identity = state.identity.clone();
@@ -676,6 +659,7 @@ impl eframe::App for App {
                 "GUI status: connected={connected}, can_publish={can_publish}; {}",
                 if self.token.is_empty() { status.clone() } else { status.replace(&self.token, "[token]") }
             );
+            println!("GUI throughput: sent_fps={:.1} sent_mbps={:.3} received_fps={:.1}",quality.send.map_or(0.0,|r|r.fps),quality.send.map_or(0.0,|r|r.mbps),quality.receive.map_or(0.0,|r|r.fps));
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
@@ -766,17 +750,7 @@ impl eframe::App for App {
                             });
                             label.id
                         }).inner;
-                        let changed = ui.scope(|ui| {
-                            ui.spacing_mut().slider_width = ui.available_width();
-                            ui.spacing_mut().slider_rail_height = 6.0;
-                            // The global inactive fill matches the sidebar, hiding the rail.
-                            ui.visuals_mut().widgets.inactive.bg_fill = Color32::from_rgb(65, 78, 73);
-                            ui.visuals_mut().widgets.inactive.fg_stroke = egui::Stroke::new(1.5, ACCENT);
-                            ui.visuals_mut().selection.bg_fill = ACCENT;
-                            ui.add(egui::Slider::new(&mut self.volume, 0..=100).show_value(false)
-                                .trailing_fill(true).handle_shape(egui::style::HandleShape::Circle))
-                                .labelled_by(volume_label).changed()
-                        }).inner;
+                        let changed=crate::desktop_ui::volume_slider(ui,&mut self.volume).labelled_by(volume_label).changed();
                         if changed { self.send_layout(); }
                         ui.label(RichText::new(if self.mode == ViewMode::Grid { "Som das telas visíveis" } else { "Som da tela em destaque" }).size(11.0).color(MUTED));
 
@@ -891,7 +865,8 @@ impl eframe::App for App {
                         }
                     });
                 });
-                ui.add_space(24.0);
+                if connected{crate::desktop_ui::quality_strip(ui,&quality,reconnecting,publishing,self.paused);}
+                ui.add_space(16.0);
                 }
                 let available = ui.available_size();
                 let rect = ui.allocate_space(available).1;

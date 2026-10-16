@@ -48,6 +48,8 @@ def main():
         assert match and int(match[1])>10 and int(match[2])>10,'AMD stream did not decode/present'
         assert 'connected=true' in viewer
         assert 'GUI shutdown: 0 retained GPU decoder surfaces' in viewer,'GPU decoder surfaces survived shutdown'
+        rates=re.findall(r'Receive throughput: ([0-9.]+)',viewer)
+        assert rates and max(map(float,rates))>5,'Receiver throughput indicator did not measure live frames'
         print('PASS: synthetic WGC -> Rust AMD/AMF HEVC -> SFU -> GPU desktop presentation')
     finally:
         for child in children:

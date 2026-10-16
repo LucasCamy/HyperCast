@@ -5,6 +5,54 @@ pub const BORDER:Color32=Color32::from_rgb(42,50,50);
 pub const MUTED:Color32=Color32::from_rgb(154,167,161);
 pub const ACCENT:Color32=Color32::from_rgb(191,239,121);
 pub const SURFACE:Color32=Color32::from_rgb(28,35,36);
+pub const TEXT:Color32=Color32::from_rgb(234,239,234);
+pub fn volume_slider(ui:&mut egui::Ui,volume:&mut u32)->egui::Response {
+    ui.scope(|ui|{
+        ui.spacing_mut().slider_width=ui.available_width();ui.spacing_mut().slider_rail_height=6.0;
+        ui.visuals_mut().widgets.inactive.bg_fill=Color32::from_rgb(65,78,73);
+        ui.visuals_mut().widgets.inactive.fg_stroke=egui::Stroke::new(1.5,ACCENT);
+        ui.visuals_mut().selection.bg_fill=ACCENT;
+        ui.add(egui::Slider::new(volume,0..=100).show_value(false).trailing_fill(true).handle_shape(egui::style::HandleShape::Circle))
+    }).inner
+}
+
+pub fn utility_frame(style:&egui::Style)->egui::Frame {
+    egui::Frame::window(style).fill(PANEL).inner_margin(12).corner_radius(12)
+        .stroke(egui::Stroke::new(1.0,BORDER))
+}
+pub fn action(ui:&mut egui::Ui,label:&str,enabled:bool,primary:bool)->egui::Response {
+    let width=ui.available_width();
+    ui.add_enabled_ui(enabled,|ui|ui.add_sized([width,40.0],
+        egui::Button::new(RichText::new(label).size(13.0).color(if primary{ACCENT}else{TEXT}))
+            .wrap_mode(egui::TextWrapMode::Extend).corner_radius(8)
+            .fill(if primary{ACCENT.gamma_multiply(0.16)}else{SURFACE})
+            .stroke(egui::Stroke::new(1.0,if primary{ACCENT.gamma_multiply(0.45)}else{BORDER})))).inner
+}
+pub fn exit_fullscreen(ui:&mut egui::Ui)->egui::Response {
+    let response=ui.scope(|ui|{
+        ui.spacing_mut().button_padding=Vec2::ZERO;ui.spacing_mut().interact_size=Vec2::splat(20.0);
+        ui.add_sized([20.0,20.0],egui::Button::new("").corner_radius(5).fill(SURFACE))
+    }).inner;
+    response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,true,"Sair da tela cheia"));
+    let center=response.rect.center();let stroke=egui::Stroke::new(1.5,if response.hovered()||response.has_focus(){TEXT}else{MUTED});
+    for direction in [-1.0,1.0]{let offset=Vec2::new(3.5,3.5*direction);ui.painter().line_segment([center-offset,center+offset],stroke);}
+    response.on_hover_text("Sair da tela cheia · Esc / F11")
+}
+pub fn quality_strip(ui:&mut egui::Ui,value:&crate::video_metrics::QualitySnapshot,reconnecting:bool,publishing:bool,reception_paused:bool){
+    ui.horizontal_wrapped(|ui|{
+        ui.spacing_mut().item_spacing.x=16.0;
+        ui.label(RichText::new(if reconnecting{"Sala · reconectando…"}else{"Sala · conectada"}).size(11.0).color(if reconnecting{Color32::from_rgb(236,190,105)}else{ACCENT}));
+        if publishing {
+            let text=if reconnecting{"Envio aguardando conexão".into()}else if value.send_paused{"Envio pausado".into()}else if let Some(rate)=value.send{
+                let size=value.resolution.map(|(w,h)|format!("{w}×{h} · ")).unwrap_or_default();
+                format!("Envio · {size}{:.0} FPS · {:.1} Mbps",rate.fps,rate.mbps)
+            }else{"Envio · medindo…".into()};
+            ui.label(RichText::new(text).size(11.0).color(MUTED)).on_hover_text("Quadros e bytes de vídeo enviados na última janela, sem overhead da rede. Não medem fidelidade da imagem nem latência fim a fim.");
+        }
+        let receive=if reception_paused{"Recepção pausada".into()}else if reconnecting{"Recepção aguardando conexão".into()}else if let Some(rate)=value.receive{format!("Recepção · {:.0} quadros/s no total",rate.fps)}else{"Recepção · medindo…".into()};
+        ui.label(RichText::new(receive).size(11.0).color(MUTED)).on_hover_text("Soma dos quadros decodificados de todas as transmissões recebidas; não é FPS de uma única tela nem FPS de apresentação.");
+    });
+}
 
 /// Embedded brand asset, decoded once per UI context and shared by both desktops.
 pub fn brand_mark(ui:&mut egui::Ui,size:f32)->egui::Response {

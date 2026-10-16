@@ -1,11 +1,11 @@
-﻿$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Stop'
 $hcRoot = Split-Path -Parent $PSScriptRoot
 $hcTest = [IO.Path]::GetFullPath((Join-Path $hcRoot '.tools/install-test'))
 if (-not $hcTest.StartsWith([IO.Path]::GetFullPath($hcRoot) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Install-test target escaped workspace' }
 $hcRegistry = 'HKCU:/Software/Microsoft/Windows/CurrentVersion/Uninstall/{34FA3F08-63D0-4A64-9E61-F79E7078B39D}_is1'
 if (Test-Path $hcRegistry) { throw 'Existing HyperCast installation found; do not overwrite it for a test' }
 if (Get-Process hypercast -ErrorAction SilentlyContinue) { throw 'Close HyperCast before testing its installer' }
-$hcInstaller = "$hcRoot/dist/HyperCast-0.8.5-windows-x64-setup.exe"
+$hcInstaller = "$hcRoot/dist/HyperCast-0.8.6-windows-x64-setup.exe"
 $hcProcess = Start-Process -FilePath $hcInstaller -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/DIR=`"$hcTest`"","/LOG=`"$hcRoot/.tools/install.log`"") -WindowStyle Hidden -Wait -PassThru
 if ($hcProcess.ExitCode -ne 0) { throw "Installer failed ($($hcProcess.ExitCode))" }
 $hcPreviousExe = $env:HYPERCAST_TEST_EXE

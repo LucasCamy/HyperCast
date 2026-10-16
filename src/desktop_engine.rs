@@ -49,6 +49,8 @@ impl VideoFrame {
 #[derive(Default)]
 pub struct Shared {
     pub connected: bool,
+    pub reconnecting:bool,
+    pub quality:crate::video_metrics::QualitySnapshot,
     pub encoder_stats:String,
     pub reception_resetting: bool,
     pub reception_restarts: u64,
@@ -118,6 +120,7 @@ struct Cast {
     profile:AmdProfile,
     metrics:crate::video_metrics::EncodeWindow,
     last_rate:(u64,u32),
+    sent_bytes:u64,
     rate_blocked:bool,
     device: windows::Win32::Graphics::Direct3D11::ID3D11Device,
     encoder: Option<HardwareEncoder>,
@@ -173,7 +176,7 @@ impl Cast {
             codec == Codec::Av1,
         ))?;
         Ok(Self {
-            audio: None,profile,metrics:Default::default(),last_rate:(40_000_000,120),rate_blocked:false,
+            audio: None,profile,metrics:Default::default(),last_rate:(40_000_000,120),sent_bytes:0,rate_blocked:false,
             selection: (target, codec),
             dimensions:(width,height),device,has_frame:false,
             capture,
@@ -225,6 +228,7 @@ impl Cast {
                 self.metrics.record(packet.encode_time,packet.bytes.len(),packet.keyframe,key,packet.qp);
                 if publisher.push(packet.bytes, packet.timestamp_us, packet.keyframe)? {
                     self.count += 1;
+                    self.sent_bytes+=packet.bytes.len() as u64;
                 }
             }
         }
@@ -441,9 +445,12 @@ impl Engine {
                 let trace_reception=std::env::var_os("HYPERCAST_SMOKE_SECONDS").is_some();
                 let mut info_tick = Instant::now();
                 let mut diagnostic_tick = Instant::now();
+                let(mut send_meter,mut receive_meter)=(crate::video_metrics::TrafficMeter::default(),crate::video_metrics::TrafficMeter::default());
+                let mut send_origin=None;
                 'session: loop {
                     if trace_reception && reception_trace.elapsed()>=Duration::from_secs(1) {
                         let shared=state.lock().unwrap();println!("Receive progress: {}",serde_json::to_string(&shared.received_streams).unwrap_or_default());
+                        println!("Receive throughput: {:.1}",shared.quality.receive.map_or(0.0,|r|r.fps));
                         reception_trace=Instant::now();
                     }
                     if reception_restart.is_some_and(|until|Instant::now()>=until) {
@@ -681,11 +688,13 @@ impl Engine {
                                 crate::diagnostics::write("connection", &format!("Reconnect attempt {attempt}/{maximum}"), "");
                             }
                             RoomEvent::Reconnecting => {
+                                state.lock().unwrap().reconnecting=true;
                                 state.lock().unwrap().status=format!("Reconectando… tentativa {}/3", reconnect_attempt.max(1));
                                 if let Some(c)=&mut cast {if let Some(p)=&mut c.publisher {p.restart_keyframe();}}
                                 crate::diagnostics::write("connection","Reconnecting; publication retained","");
                             }
                             RoomEvent::Reconnected => {
+                                state.lock().unwrap().reconnecting=false;
                                 reconnect_attempt = 0;
                                 if let Some(c)=&mut cast {
                                     // A replaced WebRTC encoder must see one bootstrap frame to bind
@@ -834,6 +843,16 @@ impl Engine {
                         drop(shared);
                         info_tick = Instant::now();
                         ctx.request_repaint();
+                    }
+                    {
+                        let now=Instant::now();let mut shared=state.lock().unwrap();
+                        if let Some(value)=&cast {
+                            if send_origin!=Some(value.start){send_origin=Some(value.start);send_meter=Default::default();shared.quality.send=None;}
+                            if let Some(sample)=send_meter.sample(now,value.count,value.sent_bytes){shared.quality.send=Some(sample);}
+                            shared.quality.resolution=value.encoder.as_ref().map(|e|e.dimensions());
+                            shared.quality.send_paused=value.paused;
+                        }else{send_origin=None;send_meter=Default::default();shared.quality.send=None;shared.quality.resolution=None;shared.quality.send_paused=false;}
+                        if let Some(sample)=receive_meter.sample(now,shared.received,0){shared.quality.receive=Some(sample);}
                     }
                     if diagnostic_tick.elapsed() >= Duration::from_secs(5) {
                         if let Some(value)=&mut cast {

@@ -19,7 +19,7 @@ Os cabeçalhos Windows e Linux usam a mesma imagem por meio de `brand_mark`, com
 cache da textura no contexto egui. O monograma não é uma letra dependente da
 fonte instalada. Não há animação nem decodificação PNG a cada quadro.
 
-## Próximas melhorias identificadas
+## Revisão e evolução
 
 1. **Diagnóstico Linux:** registrar as etapas portal, abertura PipeWire, negociação
    e primeiro quadro. Um erro Rust pode virar mensagem na interface, mas uma
@@ -33,6 +33,9 @@ fonte instalada. Não há animação nem decodificação PNG a cada quadro.
    reconexão com linguagem simples, mantendo QP, VBV, NACK e detalhes técnicos no
    Debug. A média de QP não identifica sozinha a queda nos quadros-chave.
 
-Esses itens são a revisão de prioridades; não são funcionalidades implementadas
-por esta alteração visual. A identidade atualizada entra no próximo pacote;
-os downloads já publicados não são substituídos.
+Na versão 0.8.6, botões principais, volume, saída da tela cheia e molduras de
+Diagnóstico/Atualização compartilham componentes. O Linux também organiza o
+formato de vídeo em seção recolhível. A barra comum da sala mostra resolução,
+FPS/bitrate do envio e total de quadros decodificados na recepção. Veja as
+[definições das medições](video-quality.md#indicadores-na-interface).
+O diagnóstico do encerramento de captura no Bazzite permanece pendente do log.

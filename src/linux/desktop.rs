@@ -14,27 +14,10 @@ use std::{
 };
 const BG: Color32 = Color32::from_rgb(14, 18, 19);
 const PANEL: Color32 = Color32::from_rgb(21, 27, 28);
-const SURFACE: Color32 = Color32::from_rgb(28, 35, 36);
-const BORDER: Color32 = Color32::from_rgb(42, 50, 50);
 const MUTED: Color32 = Color32::from_rgb(154, 167, 161);
 const ACCENT: Color32 = Color32::from_rgb(191, 239, 121);
 fn button(ui: &mut egui::Ui, label: &str, enabled: bool, primary: bool) -> egui::Response {
-    ui.add_enabled(
-        enabled,
-        egui::Button::new(RichText::new(label).color(if primary {
-            ACCENT
-        } else {
-            Color32::from_rgb(234, 239, 234)
-        }))
-        .min_size(Vec2::new(ui.available_width(), 40.0))
-        .corner_radius(8)
-        .fill(if primary {
-            Color32::from_rgb(40, 51, 40)
-        } else {
-            SURFACE
-        })
-        .stroke(egui::Stroke::new(1.0, BORDER)),
-    )
+    crate::desktop_ui::action(ui,label,enabled,primary)
 }
 fn small(ui:&mut egui::Ui,label:&str)->egui::Response {crate::desktop_ui::compact(ui,label,true)}
 fn input(ui:&mut egui::Ui,value:&mut String,hint:&str,password:bool,limit:usize)->egui::Response {
@@ -66,6 +49,7 @@ struct App {
     audio: bool,
     fullscreen: bool,
     debug: bool,
+    updates:bool,
     textures: HashMap<String, (u64, egui::TextureHandle)>,
     started: Instant,
 }
@@ -100,6 +84,7 @@ impl App {
             audio: false,
             fullscreen: false,
             debug: false,
+            updates:false,
             textures: HashMap::new(),
             started: Instant::now(),
         };
@@ -263,7 +248,7 @@ impl App {
                 ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
                 egui::ScrollArea::vertical().auto_shrink([false,false]).show(ui,|ui|{
                     ui.horizontal(|ui|{crate::desktop_ui::brand_mark(ui,28.0);ui.label(RichText::new("HYPERCAST").size(16.0).strong());
-                        if small(ui,"Atualizar").clicked(){ctx.open_url(egui::OpenUrl::new_tab("https://github.com/LucasCamy/HyperCast/releases"));}
+                        if small(ui,"Atualizar").clicked(){self.updates=true;}
                     });
                     ui.label(RichText::new(self.server_status.label()).size(11.0).color(if self.server_status.status==crate::server_status::Status::Online{ACCENT}else{MUTED})).on_hover_text(format!("Servidor: {}",self.server_status.detail));
                     if reconnecting {ui.label(RichText::new("Sala: reconectando…").size(11.0).color(MUTED));}
@@ -292,13 +277,17 @@ impl App {
                         if small(ui,"Escolher sala").clicked(){self.catalog.open(self.address.clone(),self.access.token(),ctx.clone());}
                     }
                     ui.separator();ui.label(RichText::new("COMPARTILHAR").size(11.0).color(MUTED));
+                    egui::CollapsingHeader::new(format!("Formato de vídeo · {}",if self.codec==Codec::Hevc{"HEVC"}else{"AV1"})).id_salt("linux_video_format").show(ui,|ui|{
                     ui.add_enabled_ui(!sharing&&!selecting,|ui|{
-                        egui::ComboBox::from_id_salt("codec").width(ui.available_width()).selected_text(if self.codec==Codec::Hevc{"HEVC / H.265"}else{"AV1"}).show_ui(ui,|ui|{
-                            ui.selectable_value(&mut self.codec,Codec::Hevc,"HEVC / H.265");ui.selectable_value(&mut self.codec,Codec::Av1,"AV1");
+                        ui.columns(2,|columns|{
+                            if crate::desktop_ui::action(&mut columns[0],"HEVC / H.265",true,self.codec==Codec::Hevc).clicked(){self.codec=Codec::Hevc;}
+                            if crate::desktop_ui::action(&mut columns[1],"AV1",self.encoder!=Encoder::Software,self.codec==Codec::Av1).clicked(){self.codec=Codec::Av1;}
                         });
                         egui::ComboBox::from_id_salt("encoder").width(ui.available_width()).selected_text(if self.encoder==Encoder::Auto{"GPU · NVENC / VA-API"}else{"Compatível · HEVC 30 FPS"}).show_ui(ui,|ui|{
                             ui.selectable_value(&mut self.encoder,Encoder::Auto,"GPU · NVENC / VA-API");ui.selectable_value(&mut self.encoder,Encoder::Software,"Compatível · HEVC 30 FPS");
                         });
+                        if self.encoder==Encoder::Software{self.codec=Codec::Hevc;}
+                    });
                     });
                     if button(ui,if sharing{"Trocar tela ou janela"}else{"Compartilhar tela/janela"},connected&&can_publish&&!selecting,true).clicked(){self.send(Command::Share(Source::Portal,self.codec,self.encoder));}
                     if std::env::var("WAYLAND_DISPLAY").is_err()&&!sharing&&button(ui,"Tela inteira (X11)",connected&&can_publish&&!selecting,false).clicked(){self.send(Command::Share(Source::X11,self.codec,self.encoder));}
@@ -308,7 +297,11 @@ impl App {
                     if self.access.busy || self.joining.is_some() || self.departure.is_some(){ui.spinner();}
                     ui.label(RichText::new(&state_status).size(12.0).color(MUTED));ui.label(RichText::new(&self.status).size(12.0).color(MUTED));
                     ui.separator();
-                    if ui.add(egui::Slider::new(&mut self.layout.volume,0..=100).text("Volume")).changed(){self.layout();}
+                    egui::CollapsingHeader::new(format!("Som recebido · {}%",self.layout.volume)).show(ui,|ui|{
+                        let label=ui.label("Volume da transmissão").id;
+                        if crate::desktop_ui::volume_slider(ui,&mut self.layout.volume).labelled_by(label).changed(){self.layout();}
+                        ui.label(RichText::new(if self.layout.mode==ViewMode::Grid{"Som das telas visíveis"}else{"Som da tela em destaque"}).size(11.0).color(MUTED));
+                    });
                     if button(ui,if self.layout.paused{"Retomar recepção"}else{"Pausar recepção"},connected,false).clicked(){self.layout.paused=!self.layout.paused;self.layout();}
                     ui.horizontal(|ui|{
                         if small(ui,"Debug").clicked(){self.debug=true;}
@@ -335,7 +328,7 @@ impl App {
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if self.fullscreen {
-                            if small(ui, "×").clicked() {
+                            if crate::desktop_ui::exit_fullscreen(ui).clicked() {
                                 self.fullscreen(ctx, false);
                             }
                             ui.menu_button("Volume", |ui| {
@@ -367,7 +360,8 @@ impl App {
                         }
                     });
                 });
-                ui.add_space(18.0);
+                if connected&&!self.fullscreen{crate::desktop_ui::quality_strip(ui,&self.snapshot.quality,reconnecting,sharing,self.layout.paused);}
+                ui.add_space(16.0);
                 if screens.is_empty() {
                     ui.centered_and_justified(|ui| {
                         ui.label(RichText::new("Um lugar para trabalhar juntos.").size(24.0));
@@ -416,13 +410,22 @@ impl App {
             }
         }
         if self.debug {
-            egui::Window::new("Diagnóstico").open(&mut self.debug).collapsible(false).resizable(false).default_width(360.0).show(ctx,|ui|{
+            egui::Window::new("Diagnóstico").open(&mut self.debug).collapsible(false).resizable(false).default_width(360.0).frame(crate::desktop_ui::utility_frame(root.style())).show(ctx,|ui|{
                 ui.label(format!("HyperCast {} · Linux",env!("CARGO_PKG_VERSION")));
                 ui.label(format!("Decodificadores ativos: {}",super::media::decoder_count()));
                 ui.label(format!("Quadros enviados: {} · recebidos: {}",self.snapshot.sent,self.snapshot.received));
                 ui.label("A chave de acesso fica somente na memória desta sessão.");
                 ui.label("Renderização portátil com transferência para RAM; desempenho QHD 120 FPS ainda requer validação.");
             });
+        }
+        if self.updates {
+            egui::Window::new("Atualização").open(&mut self.updates).collapsible(false).resizable(false).default_width(320.0)
+                .frame(crate::desktop_ui::utility_frame(root.style())).show(ctx,|ui|{
+                    ui.label(format!("Versão atual: {}",env!("CARGO_PKG_VERSION")));
+                    ui.label(RichText::new("Linux · AppImage portátil").size(11.0).color(MUTED));
+                    ui.label("Confira a versão disponível na página de downloads. Para atualizar, substitua o AppImage.");
+                    if crate::desktop_ui::action(ui,"Abrir página de downloads",true,true).clicked(){ctx.open_url(egui::OpenUrl::new_tab("https://github.com/LucasCamy/HyperCast/releases"));}
+                });
         }
         if let Ok(seconds) = std::env::var("HYPERCAST_SMOKE_SECONDS")
             .unwrap_or_default()
@@ -439,6 +442,7 @@ impl App {
                         s.connected,
                         s.audio_received
                     );
+                    println!("Linux throughput: sent_fps={:.1} sent_mbps={:.3} received_fps={:.1}",s.quality.send.map_or(0.0,|r|r.fps),s.quality.send.map_or(0.0,|r|r.mbps),s.quality.receive.map_or(0.0,|r|r.fps));
                 }
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }

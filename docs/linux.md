@@ -8,7 +8,7 @@ GStreamer ou codecs manualmente para executar o AppImage.
 
 ## Abrir no Bazzite
 
-Baixe `HyperCast-0.8.4-linux-x86_64.AppImage` na página de versões e abra pelo
+Baixe `HyperCast-0.8.6-linux-x86_64.AppImage` na página de versões e abra pelo
 Gear Lever. Se preferir abrir diretamente, habilite a permissão de execução nas
 propriedades do arquivo. Sem suporte a FUSE, use `--appimage-extract-and-run`.
 
@@ -49,6 +49,15 @@ registrados pelo driver. O perfil usa P1, tuning ultra-low-latency, CBR, GOP cur
 primeira opção para testar compatibilidade. AV1 requer suporte de codificação e
 decodificação em todos os clientes que assistirem. **Compatível · HEVC 30 FPS**
 usa x265 em CPU, explicitamente, e não equivale ao modo GPU.
+
+Formato de vídeo e volume ficam em seções recolhíveis, com o mesmo padrão de
+botões e controles do Windows. Atualização e Diagnóstico usam janelas com bordas
+e espaçamento comuns. No Linux, Atualização abre o download do AppImage; não
+instala um pacote nem declara automaticamente que há uma versão mais recente.
+A barra da sala mostra [indicadores medidos](video-quality.md#indicadores-na-interface).
+
+O encerramento após escolher uma tela no Bazzite ainda precisa do log do PC
+afetado; as mudanças visuais de 0.8.6 não constituem uma correção dessa falha.
 
 **Áudio do sistema** captura o monitor de reprodução via PulseAudio/PipeWire,
 com Opus estéreo. Não usa microfone. Durante esse envio, o áudio recebido fica

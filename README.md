@@ -1,5 +1,9 @@
 # HyperCast
 
+0.8.6 padroniza controles Windows/Linux, atualiza o monograma e exibe resolução,
+FPS e bitrate medidos no envio, com taxa total de quadros na recepção.
+[Indicadores de transmissão](docs/video-quality.md#indicadores-na-interface).
+
 0.8.5 reduz quadros-chave desnecessários nas trocas de bitrate, ajusta o controle
 de taxa AMD e corrige o reenvio de pacotes quando o decoder precisa escoar quadros.
 Inclui estatísticas de qualidade e perfil AMD **Texto** experimental.
