@@ -6,6 +6,17 @@ pub const MUTED:Color32=Color32::from_rgb(154,167,161);
 pub const ACCENT:Color32=Color32::from_rgb(191,239,121);
 pub const SURFACE:Color32=Color32::from_rgb(28,35,36);
 pub const TEXT:Color32=Color32::from_rgb(234,239,234);
+pub fn upload_selector(ui:&mut egui::Ui,profile:&mut crate::bandwidth::UploadProfile,enabled:bool)->bool {
+    let previous=*profile;
+    ui.add_enabled_ui(enabled,|ui|{
+        ui.label(RichText::new("Limite de upload · vídeo").size(11.0).color(MUTED));
+        egui::ComboBox::from_id_salt("upload_profile").width(ui.available_width()).selected_text(profile.label()).show_ui(ui,|ui|{
+            for choice in crate::bandwidth::UploadProfile::ALL{ui.selectable_value(profile,choice,choice.label());}
+        });
+        ui.label(RichText::new(if enabled{"Mantém resolução e FPS. Menos Mbps pode reduzir os detalhes."}else{"Pare o compartilhamento para alterar o limite."}).size(11.0).color(MUTED));
+    });
+    previous!=*profile
+}
 pub fn volume_slider(ui:&mut egui::Ui,volume:&mut u32)->egui::Response {
     ui.scope(|ui|{
         ui.spacing_mut().slider_width=ui.available_width();ui.spacing_mut().slider_rail_height=6.0;

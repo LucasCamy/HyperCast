@@ -27,6 +27,7 @@ pub mod network;
 #[cfg(feature = "livekit-network")]
 pub mod video_metrics;
 pub mod pacing;
+pub mod bandwidth;
 pub mod resolution;
 #[cfg(all(windows, feature = "desktop"))]
 pub mod presenter;

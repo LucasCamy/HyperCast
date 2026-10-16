@@ -8,7 +8,7 @@ GStreamer ou codecs manualmente para executar o AppImage.
 
 ## Abrir no Bazzite
 
-Baixe `HyperCast-0.8.6-linux-x86_64.AppImage` na página de versões e abra pelo
+Baixe `HyperCast-0.8.7-linux-x86_64.AppImage` na página de versões e abra pelo
 Gear Lever. Se preferir abrir diretamente, habilite a permissão de execução nas
 propriedades do arquivo. Sem suporte a FUSE, use `--appimage-extract-and-run`.
 
@@ -33,6 +33,10 @@ Os testes dessa recuperação usam Ubuntu/WSL; a confirmação visual com NVIDIA
 Wayland no Bazzite ainda depende do PC do colega.
 
 ## Tela, janela, vídeo e áudio
+
+Em **Formato de vídeo**, escolha o limite **12, 25 ou 40 Mbps** antes de iniciar;
+o padrão é 25 Mbps. O modo Compatível permanece limitado a 12 Mbps/30 FPS.
+Resolução e alvo de FPS do modo GPU são preservados. Veja [limites e overhead](video-quality.md#limite-de-upload).
 
 **Compartilhar tela/janela** abre o seletor do desktop via XDG Desktop Portal.
 Wayland exige PipeWire e um backend de portal que ofereça ScreenCast; KDE/GNOME

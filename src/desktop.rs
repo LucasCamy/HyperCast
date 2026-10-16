@@ -162,6 +162,7 @@ struct App {
     before_fullscreen_mode:ViewMode,
     codec: crate::encoder::Codec,
     amd_profile:crate::encoder::AmdProfile,
+    upload:crate::bandwidth::UploadProfile,
     parent: usize,
     presenters: HashMap<String, Presenter>,
     error: String,
@@ -228,6 +229,7 @@ impl App {
             selected_display: 0,
             window_mode:false,windows:crate::video_capture::windows(),selected_window:None,window_picker_open:false,window_previews:HashMap::new(),fullscreen:false,debug_open:false,updater:crate::updater::Updater::default(),creator:crate::room_creation::Creator::default(),catalog:crate::room_creation::Catalog::default(),departure:None,pending_join:false,server_access:crate::room_creation::ServerAccess::default(),server_status:crate::server_status::ServerStatus::default(),before_fullscreen_mode:ViewMode::Spotlight,
             amd_profile:crate::encoder::AmdProfile::Fast,
+            upload:crate::bandwidth::UploadProfile::initial(),
             codec: if std::env::var("HYPERCAST_CODEC").as_deref() == Ok("av1") {
                 crate::encoder::Codec::Av1
             } else {
@@ -354,6 +356,7 @@ impl App {
         if self.window_mode && compact_action(ui,"Atualizar janelas",true).clicked(){self.windows=crate::video_capture::windows();}
         ui.label(RichText::new(if publishing{"Troque a origem sem parar o envio"}else if self.window_mode{"Apenas a janela escolhida"}else{"Seu monitor inteiro será compartilhado"}).size(11.0).color(MUTED));
         egui::CollapsingHeader::new(format!("Formato de vídeo · {}",if self.codec==crate::encoder::Codec::H265{"HEVC"}else{"AV1"})).id_salt("video_format").show(ui,|ui|{
+            if crate::desktop_ui::upload_selector(ui,&mut self.upload,!publishing){if let Some(engine)=&self.engine{let _=engine.commands.send(Command::UploadProfile(self.upload));}}
             ui.horizontal(|ui|{
                 let width=(ui.available_width()-ui.spacing().item_spacing.x)/2.0;
                 for (codec,title) in [(crate::encoder::Codec::H265,"HEVC / H.265"),(crate::encoder::Codec::Av1,"AV1")]{
@@ -361,15 +364,18 @@ impl App {
                     if ui.add_enabled(!publishing,egui::Button::new(title).selected(selected).min_size(Vec2::new(width,38.0))).clicked(){self.codec=codec;}
                 }
             });
-            ui.add_enabled_ui(!publishing,|ui|{
+            let vendor=self.displays.get(self.selected_display).map(|d|d.vendor_id);
+            let amd_hevc=vendor==Some(0x1002)&&self.codec==crate::encoder::Codec::H265;
+            ui.add_enabled_ui(!publishing&&amd_hevc,|ui|{
                 let previous=self.amd_profile;
                 ui.label(RichText::new("Perfil AMD · HEVC").size(11.0).color(MUTED));
-                egui::ComboBox::from_id_salt("amd_profile").width(ui.available_width()).selected_text(self.amd_profile.label()).show_ui(ui,|ui|{
+                let selected=if amd_hevc{self.amd_profile.label()}else if vendor==Some(0x10de){"NVIDIA · preset automático"}else if vendor==Some(0x1002){"AV1 · perfil automático"}else{"AMF indisponível nesta origem"};
+                egui::ComboBox::from_id_salt("amd_profile").width(ui.available_width()).selected_text(selected).show_ui(ui,|ui|{
                     for profile in [crate::encoder::AmdProfile::Fast,crate::encoder::AmdProfile::Text,crate::encoder::AmdProfile::Compatibility]{ui.selectable_value(&mut self.amd_profile,profile,profile.label());}
                 });
                 if previous!=self.amd_profile {if let Some(engine)=&self.engine{let _=engine.commands.send(Command::AmdProfile(self.amd_profile));}}
-                ui.label(RichText::new("Texto é experimental; aplicado apenas ao envio HEVC pela AMD.").size(11.0).color(MUTED));
             });
+            ui.label(RichText::new(if amd_hevc{"Texto é experimental; aplicado ao envio HEVC pela AMD."}else{"Perfis AMD disponíveis apenas para uma origem AMD em HEVC."}).size(11.0).color(MUTED));
             ui.label(RichText::new(if publishing{"Pare o envio para trocar o formato"}else if self.codec==crate::encoder::Codec::Av1{"Envio e recepção exigem GPU compatível com AV1"}else{"NVIDIA e AMD com suporte HEVC por hardware"}).size(11.0).color(MUTED));
         });
         if publishing && self.target()!=old_target{
@@ -446,6 +452,7 @@ impl App {
             Engine::connect_invite(self.address.trim().to_owned(), self.invite.trim().to_owned(), self.name.trim().to_owned(), self.client_id.clone(), self.server_access.token(), ctx, self.parent, self.relay_only)
         };
         let _ = engine.commands.send(Command::AmdProfile(self.amd_profile));
+        let _ = engine.commands.send(Command::UploadProfile(self.upload));
         let _ = engine.commands.send(Command::SystemAudio(self.system_audio));
         let _ = engine.commands.send(Command::Layout(Layout {
                 self_preview: self.self_preview,
@@ -564,6 +571,7 @@ impl eframe::App for App {
             connected = state.connected;reception_resetting=state.reception_resetting;
             quality=state.quality.clone();reconnecting=state.reconnecting;
             publishing = state.publishing;
+            if publishing{self.upload=state.upload;}
             can_publish = state.can_publish;
             identity = state.identity.clone();
             if !state.room.is_empty() {

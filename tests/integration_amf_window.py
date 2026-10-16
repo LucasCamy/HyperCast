@@ -11,7 +11,8 @@ from tests.integration_room_creation import cleanup
 ROOT=Path(__file__).resolve().parent.parent
 
 def main():
-    adapter=os.environ['HYPERCAST_TEST_AMD_ADAPTER']
+    expected=os.environ.get('HYPERCAST_TEST_ENCODER','AMF');assert expected in {'AMF','NVENC'}
+    adapter=os.environ.get('HYPERCAST_TEST_CAPTURE_ADAPTER',os.environ.get('HYPERCAST_TEST_AMD_ADAPTER','1'))
     assert adapter.isdigit() and int(adapter)<16
     key,secret=rt.load_env(ROOT/'.tools/homelab.env');room='amf-'+uuid.uuid4().hex[:12]
     now=int(time.time())
@@ -20,7 +21,8 @@ def main():
             'video':{'room':room,'roomJoin':True,'canPublish':pub,'canSubscribe':True,
             'canPublishData':False,'canPublishSources':['screen_share','screen_share_audio']}},secret)
     env={k:v for k,v in os.environ.items() if not k.startswith(('LIVEKIT_','HYPERCAST_','GH_','GITHUB_'))}
-    env.update(HYPERCAST_URL='wss://hypercast.cloudlane.com.br',HYPERCAST_AUTO_CONNECT='1',HYPERCAST_CODEC='h265')
+    budget=os.environ.get('HYPERCAST_TEST_UPLOAD_MBPS','25');assert budget in {'12','25','40'}
+    env.update(HYPERCAST_URL='wss://hypercast.cloudlane.com.br',HYPERCAST_AUTO_CONNECT='1',HYPERCAST_CODEC='h265',HYPERCAST_SMOKE_UPLOAD_MBPS=budget)
     exe=Path(os.environ.get('HYPERCAST_TEST_EXE',str(ROOT/'target/x86_64-pc-windows-msvc/debug/hypercast.exe')))
     children=[];files=[]
     try:
@@ -39,9 +41,12 @@ def main():
         for child in children[1:]:assert child.wait(timeout=25)==0
         diagnostics=Path(os.environ['LOCALAPPDATA'])/'HyperCast/diagnostics'
         publisher=next(diagnostics.glob(f'gui-*-{children[2].pid}.log')).read_text(encoding='utf-8')
-        assert ' encoder: AMF' in publisher,'Rust did not select the AMD encoder'
+        assert f' encoder: {expected}' in publisher,'Rust did not select the expected GPU encoder'
         assert 'encoder_window' in publisher and 'applied_bps=' in publisher,'Missing encoder quality measurements'
         assert 'video_rtp' in publisher,'Missing RTP quality counters'
+        assert f'bandwidth: video_limit_bps={int(budget)*1_000_000}' in publisher,'Selected video budget was not applied'
+        applied=list(map(int,re.findall(r'applied_bps=(\d+)',publisher)))
+        assert applied and max(applied)<=int(budget)*1_000_000,'Encoder exceeded selected bitrate target'
         for file in files:file.close()
         viewer=(ROOT/'.tools/amf-window-viewer.log').read_text(encoding='utf-8')
         match=re.search(r'GUI smoke: (\d+) received, (\d+) GPU presentations',viewer)
@@ -50,7 +55,7 @@ def main():
         assert 'GUI shutdown: 0 retained GPU decoder surfaces' in viewer,'GPU decoder surfaces survived shutdown'
         rates=re.findall(r'Receive throughput: ([0-9.]+)',viewer)
         assert rates and max(map(float,rates))>5,'Receiver throughput indicator did not measure live frames'
-        print('PASS: synthetic WGC -> Rust AMD/AMF HEVC -> SFU -> GPU desktop presentation')
+        print(f'PASS: synthetic WGC -> Rust {expected} HEVC -> SFU -> GPU desktop presentation')
     finally:
         for child in children:
             if child.poll() is None:child.terminate();child.wait(timeout=10)

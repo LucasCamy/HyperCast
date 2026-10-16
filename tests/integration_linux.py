@@ -32,7 +32,7 @@ def main():
             file=(ROOT/'.tools/linux-windows-gui.log').open('wb');logs.append(file)
             viewer=subprocess.Popen([str(windows),'--gui'],env={**base,'HYPERCAST_ROOM_TOKEN':token(False),'HYPERCAST_URL':'wss://hypercast.cloudlane.com.br','HYPERCAST_AUTO_CONNECT':'1','HYPERCAST_SMOKE_SECONDS':'15','HYPERCAST_SMOKE_RECONNECT':'1','HYPERCAST_NAME':'SyntheticViewer'},stdout=file,stderr=subprocess.STDOUT);children.append(viewer)
         time.sleep(3)
-        pub=launch_linux('publisher',command('--linux-publish-test-url','wss://hypercast.cloudlane.com.br','--seconds','11'),{n:os.environ[n] for n in ('HYPERCAST_LINUX_TEST_GPU','HYPERCAST_LINUX_TEST_CODEC','HYPERCAST_LINUX_TEST_SIZE') if n in os.environ})
+        pub=launch_linux('publisher',command('--linux-publish-test-url','wss://hypercast.cloudlane.com.br','--seconds','11'),{n:os.environ[n] for n in ('HYPERCAST_LINUX_TEST_GPU','HYPERCAST_LINUX_TEST_CODEC','HYPERCAST_LINUX_TEST_SIZE','HYPERCAST_LINUX_TEST_UPLOAD_MBPS') if n in os.environ})
         for child in children:
             code=child.wait(timeout=55);assert code==0,f'A media client failed with exit {code}; inspect local logs without credentials'
         for file in logs:file.close()
@@ -44,6 +44,10 @@ def main():
         windows_log=(ROOT/'.tools/linux-windows.log').read_text(encoding='utf-8',errors='replace')
         assert int(re.search(r'Receiver GPU: (\d+) D3D11 texture frames',windows_log)[1])>100,'Windows did not receive Linux HEVC in GPU'
         assert int(re.search(r'Linux synthetic publisher: (\d+) frames',read('publisher'))[1])>100,'Linux publication failed'
+        if os.environ.get('HYPERCAST_LINUX_TEST_UPLOAD_MBPS'):
+            budget=int(os.environ['HYPERCAST_LINUX_TEST_UPLOAD_MBPS'])*1_000_000
+            if os.environ.get('HYPERCAST_LINUX_TEST_GPU')!='1':budget=min(budget,12_000_000)
+            assert f'Linux video budget: {budget} bps' in read('publisher'),'Linux ignored selected upload profile'
         if os.environ.get('HYPERCAST_LINUX_TEST_SIZE'):
             output=(ROOT/'.tools/linux-windows-gui.log').read_text(encoding='utf-8',errors='replace')
             match=re.search(r'GUI smoke: (\d+) received, (\d+) GPU presentations',output)

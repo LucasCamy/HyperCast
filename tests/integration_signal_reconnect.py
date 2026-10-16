@@ -62,7 +62,7 @@ def main():
         time.sleep(2);owned_window(app.pid)
         env={k:v for k,v in os.environ.items() if not k.startswith('LIVEKIT_') and not k.startswith('HYPERCAST_SMOKE_')}
         env.update(HYPERCAST_URL=f'ws://127.0.0.1:{address[0]}',HYPERCAST_ROOM_TOKEN=token,HYPERCAST_AUTO_CONNECT='1',
-            HYPERCAST_SMOKE_SECONDS='27',HYPERCAST_SMOKE_SHARE='1',HYPERCAST_SMOKE_SOURCE_SWITCH='1',
+            HYPERCAST_SMOKE_SECONDS='27',HYPERCAST_SMOKE_SHARE='1',HYPERCAST_SMOKE_SOURCE_SWITCH=os.environ.get('HYPERCAST_TEST_SOURCE_SWITCH','1'),
             HYPERCAST_SMOKE_WINDOW_PID=str(app.pid),HYPERCAST_SYSTEM_AUDIO='1')
         exe=os.environ.get('HYPERCAST_TEST_EXE',str(ROOT/'target/x86_64-pc-windows-msvc/debug/hypercast.exe'))
         viewer_token=rt.sign({'iss':key,'sub':'hc-member-'+uuid.uuid4().hex,'nbf':now-5,'exp':now+300,
@@ -105,6 +105,9 @@ def main():
             print('PASS: persistent outage closes after exactly three attempts')
             return
         assert 'Reconnected; requesting keyframe' in text,'SDK did not reconnect'
+        limits=list(map(int,re.findall(r'bandwidth: video_limit_bps=(\d+)',text)))
+        rates=list(map(int,re.findall(r'applied_bps=(\d+)',text)))
+        if limits:assert rates and max(rates)<=max(limits),'Encoder lost video budget during recovery'
         after=text.split('Reconnected; requesting keyframe',1)[1]
         before=text.split('Reconnecting; publication retained',1)[0]
         before_count=max(map(int,re.findall(r'media: sent=(\d+)',before)),default=0)

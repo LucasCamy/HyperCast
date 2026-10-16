@@ -71,7 +71,7 @@ impl Default for Layout {
 pub enum Command {
     RestartReception,
     Layout(Layout),
-    Share(Source, Codec, Encoder),
+    Share(Source, Codec, Encoder,crate::bandwidth::UploadProfile),
     Stop,
     CancelSelection,
     Audio(bool),
@@ -344,6 +344,7 @@ async fn session(
     let mut wants_audio = false;
     let mut pending: Option<tokio::task::JoinHandle<Result<(Capture, Codec)>>> = None;
     let mut current_codec = Codec::Hevc;
+    let mut transmit_paused=false;
     let started = Instant::now();
     let mut ticks = tokio::time::interval(Duration::from_millis(8));
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -366,9 +367,9 @@ async fn session(
                         }
                     },
                     Command::Layout(value)=>{layout=value;volume.store(layout.volume,Ordering::Relaxed);last_refresh=Instant::now()-Duration::from_secs(1);},
-                    Command::Share(source,codec,encoder)=>{
+                    Command::Share(source,codec,encoder,upload)=>{
                         if pending.is_none() && room.local_participant().permission().is_some_and(|grant|grant.can_publish){
-                            pending=Some(tokio::spawn(async move{let cap=Capture::open(source,codec,encoder).await?;Ok((cap,codec))}));
+                            pending=Some(tokio::spawn(async move{let cap=Capture::open_with_profile(source,codec,encoder,upload).await?;Ok((cap,codec))}));
                             let mut s=shared.lock().unwrap();s.selecting=true;s.status="Selecione a tela ou janela no diálogo do sistema".into();
                         }
                     },
@@ -448,11 +449,19 @@ async fn session(
                         last_refresh=Instant::now();
                     }
                     if let Some(cap)=&mut capture {
+                        if let Some(p)=&mut publisher {
+                            if let Some(rate)=p.take_rate_control_request(){
+                                let was_paused=transmit_paused;transmit_paused=rate.target_bitrate_bps==0;
+                                if !transmit_paused {cap.bitrate(rate.target_bitrate_bps.min(cap.bitrate_limit as u64) as u32);}
+                                if was_paused&&!transmit_paused{p.restart_keyframe();cap.request_keyframe();}
+                            }
+                        }else{transmit_paused=false;}
                         match cap.poll(){
+                            Ok(Some(_)) if transmit_paused=>{},
                             Ok(Some(packet))=>{
                                 if publisher.is_none(){
                                     if !packet.keyframe{cap.request_keyframe();continue;}
-                                    match EncodedPublisher::in_room(room.clone(),packet.width,packet.height,cap.fps,if cap.fps==30{12_000_000}else{40_000_000},current_codec==Codec::Av1).await{
+                                    match EncodedPublisher::in_room(room.clone(),packet.width,packet.height,cap.fps,cap.bitrate_limit,current_codec==Codec::Av1).await{
                                         Ok(p)=>{publisher=Some(p);shared.lock().unwrap().sharing=true;},
                                         Err(error)=>{shared.lock().unwrap().status=format!("Publicação rejeitada: {error}");cap.stop().await;capture=None;shared.lock().unwrap().sharing=false;continue;}
                                     }
@@ -460,7 +469,6 @@ async fn session(
                                 let p=publisher.as_mut().unwrap();
                                 if p.take_keyframe_request(){cap.request_keyframe();if !packet.keyframe{continue;}}
                                 p.set_resolution_if_changed(packet.width,packet.height);
-                                if let Some(rate)=p.take_rate_control_request(){cap.bitrate(rate.target_bitrate_bps as u32);}
                                 if p.push(&packet.bytes,started.elapsed().as_micros() as i64,packet.keyframe)?{let mut state=shared.lock().unwrap();state.sent+=1;sent_bytes+=packet.bytes.len() as u64;state.quality.resolution=Some((packet.width,packet.height));}
                             },
                             Ok(None)=>{},
@@ -481,6 +489,7 @@ async fn session(
                 let now=Instant::now();let mut state=shared.lock().unwrap();
                 if capture.is_some(){if let Some(sample)=send_meter.sample(now,state.sent,sent_bytes){state.quality.send=Some(sample);}}
                 else{send_meter=Default::default();state.quality.send=None;state.quality.resolution=None;}
+                state.quality.send_paused=capture.is_some()&&transmit_paused;
                 if let Some(sample)=receive_meter.sample(now,state.received,0){state.quality.receive=Some(sample);}
             }
             ctx.request_repaint();

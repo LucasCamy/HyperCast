@@ -46,6 +46,7 @@ struct App {
     layout: Layout,
     codec: Codec,
     encoder: Encoder,
+    upload:crate::bandwidth::UploadProfile,
     audio: bool,
     fullscreen: bool,
     debug: bool,
@@ -81,6 +82,7 @@ impl App {
             layout: Layout::default(),
             codec: Codec::Hevc,
             encoder: Encoder::Auto,
+            upload:crate::bandwidth::UploadProfile::initial(),
             audio: false,
             fullscreen: false,
             debug: false,
@@ -278,6 +280,7 @@ impl App {
                     }
                     ui.separator();ui.label(RichText::new("COMPARTILHAR").size(11.0).color(MUTED));
                     egui::CollapsingHeader::new(format!("Formato de vídeo · {}",if self.codec==Codec::Hevc{"HEVC"}else{"AV1"})).id_salt("linux_video_format").show(ui,|ui|{
+                    crate::desktop_ui::upload_selector(ui,&mut self.upload,!sharing&&!selecting);
                     ui.add_enabled_ui(!sharing&&!selecting,|ui|{
                         ui.columns(2,|columns|{
                             if crate::desktop_ui::action(&mut columns[0],"HEVC / H.265",true,self.codec==Codec::Hevc).clicked(){self.codec=Codec::Hevc;}
@@ -289,8 +292,8 @@ impl App {
                         if self.encoder==Encoder::Software{self.codec=Codec::Hevc;}
                     });
                     });
-                    if button(ui,if sharing{"Trocar tela ou janela"}else{"Compartilhar tela/janela"},connected&&can_publish&&!selecting,true).clicked(){self.send(Command::Share(Source::Portal,self.codec,self.encoder));}
-                    if std::env::var("WAYLAND_DISPLAY").is_err()&&!sharing&&button(ui,"Tela inteira (X11)",connected&&can_publish&&!selecting,false).clicked(){self.send(Command::Share(Source::X11,self.codec,self.encoder));}
+                    if button(ui,if sharing{"Trocar tela ou janela"}else{"Compartilhar tela/janela"},connected&&can_publish&&!selecting,true).clicked(){self.send(Command::Share(Source::Portal,self.codec,self.encoder,self.upload));}
+                    if std::env::var("WAYLAND_DISPLAY").is_err()&&!sharing&&button(ui,"Tela inteira (X11)",connected&&can_publish&&!selecting,false).clicked(){self.send(Command::Share(Source::X11,self.codec,self.encoder,self.upload));}
                     if (sharing||selecting)&&button(ui,if selecting{"Cancelar seleção"}else{"Parar compartilhamento"},true,false).clicked(){self.send(if selecting{Command::CancelSelection}else{Command::Stop});}
                     if ui.checkbox(&mut self.audio,"Áudio do sistema").changed(){self.send(Command::Audio(self.audio));}
                     if self.audio{ui.label(RichText::new("O áudio recebido fica silenciado durante o envio para evitar eco.").size(11.0).color(MUTED));}

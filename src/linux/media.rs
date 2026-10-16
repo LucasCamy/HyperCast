@@ -76,10 +76,14 @@ pub struct Capture {
     _fd: Option<OwnedFd>,
     pub backend: String,
     pub fps: u32,
+    pub bitrate_limit:u32,
     ready: Option<Packet>,
 }
 impl Capture {
     pub async fn open(source: Source, codec: Codec, encoder: Encoder) -> Result<Self> {
+        Self::open_with_profile(source,codec,encoder,crate::bandwidth::UploadProfile::Maximum).await
+    }
+    pub async fn open_with_profile(source:Source,codec:Codec,encoder:Encoder,upload:crate::bandwidth::UploadProfile)->Result<Self>{
         gst::init()?;
         let (description, lease, fd) = match source {
             Source::Portal => {
@@ -167,6 +171,8 @@ impl Capture {
         } else {
             120
         };
+        let bitrate_limit=if encoder==Encoder::Software{upload.bps().min(12_000_000)}else{upload.bps()};
+        let kbps=bitrate_limit/1000;
         let chain=match (encoder,codec) {
             (Encoder::Software,Codec::Hevc)=>"x265enc name=encoder tune=zerolatency speed-preset=ultrafast bitrate=12000 key-int-max=30 option-string=bframes=0:rc-lookahead=0:pools=1:frame-threads=1".to_string(),
             (Encoder::Software,Codec::Av1)=>anyhow::bail!("O modo compatível usa HEVC; AV1 exige encoder de hardware"),
@@ -175,9 +181,9 @@ impl Capture {
                 let nvidia=candidates.into_iter().find(|name|gst::ElementFactory::find(name).is_some());
                 let va=if codec==Codec::Av1{"vaav1enc"}else{"vah265enc"};
                 if let Some(nvidia)=nvidia{
-                    format!("{nvidia} name=encoder bitrate=40000 gop-size=120 rc-mode=cbr")
+                    format!("{nvidia} name=encoder bitrate={kbps} gop-size=120 rc-mode=cbr")
                 }else if gst::ElementFactory::find(va).is_some(){
-                    format!("{va} name=encoder bitrate=40000 key-int-max=120 rate-control=cbr")
+                    format!("{va} name=encoder bitrate={kbps} key-int-max=120 rate-control=cbr")
                 }else{anyhow::bail!("Encoder de hardware indisponível. Instale os plugins nvcodec/VA-API ou selecione HEVC compatível (30 FPS)");}
             }
         };
@@ -249,6 +255,7 @@ impl Capture {
             _fd: fd,
             backend: chain.split_whitespace().next().unwrap_or("encoder").into(),
             fps,
+            bitrate_limit,
             ready: None,
         };
         if let Err(e) = result.pipeline.set_state(gst::State::Playing) {
@@ -326,7 +333,7 @@ impl Capture {
     pub fn bitrate(&self, bits: u32) {
         if self.encoder.find_property("bitrate").is_some() {
             self.encoder
-                .set_property("bitrate", bits.clamp(1_000_000, 40_000_000) / 1000);
+                .set_property("bitrate", bits.clamp(64_000, self.bitrate_limit) / 1000);
         }
     }
     pub async fn stop(&mut self) {
@@ -523,7 +530,13 @@ pub async fn publish_self_test(address: &str, seconds: u32) -> Result<()> {
     } else {
         Encoder::Software
     };
-    let mut capture = Capture::open(Source::Test, codec, encoder).await?;
+    let upload=match std::env::var("HYPERCAST_LINUX_TEST_UPLOAD_MBPS"){
+        Ok(value)=>crate::bandwidth::UploadProfile::from_mbps(value.parse()?).context("Invalid synthetic video budget")?,
+        Err(_)=>crate::bandwidth::UploadProfile::Maximum,
+    };
+    let mut capture = Capture::open_with_profile(Source::Test, codec, encoder,upload).await?;
+    ensure!(capture.encoder.property::<u32>("bitrate")<=capture.bitrate_limit/1000,"Encoder ignored video budget");
+    println!("Linux video budget: {} bps",capture.bitrate_limit);
     let fps = capture.fps;
     let (room, mut events) =
         crate::network::connect(address, &crate::network::token_from_env()?).await?;
@@ -535,7 +548,7 @@ pub async fn publish_self_test(address: &str, seconds: u32) -> Result<()> {
             640,
             360,
             fps,
-            if gpu { 40_000_000 } else { 12_000_000 },
+            capture.bitrate_limit,
             codec == Codec::Av1,
         )
         .await?;

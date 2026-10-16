@@ -1,5 +1,36 @@
 # Qualidade de vídeo — 0.8.5
 
+## Limite de upload
+
+Em **Formato de vídeo → Limite de upload · vídeo**, antes de compartilhar:
+
+| Perfil | Teto de vídeo |
+| --- | ---: |
+| Econômico | 12 Mbps |
+| Balanceado, padrão | 25 Mbps |
+| Máxima qualidade | 40 Mbps |
+
+A opção funciona em NVIDIA/AMD no Windows e nos encoders GPU do Linux. Ela não
+altera a resolução nativa nem o alvo de até 120 FPS. No Linux, o modo Compatível
+continua em HEVC 30 FPS e tem teto próprio de 12 Mbps, mesmo selecionando 25/40.
+A escolha fica na sessão do aplicativo; ao reabrir, o padrão é 25 Mbps.
+
+O orçamento é usado na inicialização do encoder e no `max_bitrate` da publicação
+WebRTC. Reduções solicitadas pela rede continuam valendo abaixo desse teto.
+Troca de monitor/janela, recriação do encoder e reconexão preservam o limite.
+Para alterar o perfil de upload, pare o envio e inicie novamente. O controle fica
+bloqueado enquanto a transmissão ou seleção de captura está ativa.
+
+São limites de bitrate de vídeo, não um limitador de tráfego total do sistema:
+áudio, RTP/UDP/TURN e retransmissões acrescentam consumo e pode haver picos.
+Menos Mbps pode aumentar a compressão visível em movimento e telas complexas;
+o aplicativo não promete manter a mesma fidelidade em todos os perfis.
+
+**Perfil AMD · HEVC** é uma opção independente. O Windows verifica o VendorId
+DXGI da GPU da origem selecionada, não apenas a presença de uma GPU no PC.
+Esse controle só fica disponível para AMD + HEVC, e fica bloqueado para NVIDIA,
+AV1 e GPUs não suportadas. Os limites de upload continuam disponíveis para todos.
+
 ## Indicadores na interface
 
 A partir de 0.8.6, a barra abaixo do cabeçalho da sala é igual no Windows e Linux:
