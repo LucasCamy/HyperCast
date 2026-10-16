@@ -6,6 +6,24 @@ pub const MUTED:Color32=Color32::from_rgb(154,167,161);
 pub const ACCENT:Color32=Color32::from_rgb(191,239,121);
 pub const SURFACE:Color32=Color32::from_rgb(28,35,36);
 pub const TEXT:Color32=Color32::from_rgb(234,239,234);
+/// A 32px target around a small 10px X, closing its enclosing Window.
+pub fn modal_header(ui:&mut egui::Ui,title:&str) {
+    ui.horizontal(|ui|{
+        ui.label(RichText::new(title).size(16.0).strong().color(TEXT));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
+            let response=ui.scope(|ui|{
+                ui.spacing_mut().button_padding=Vec2::ZERO;
+                ui.spacing_mut().interact_size=Vec2::splat(32.0);
+                ui.add_sized([32.0,32.0],egui::Button::new("").corner_radius(8)
+                    .fill(if ui.is_enabled(){SURFACE}else{Color32::TRANSPARENT}).stroke(egui::Stroke::NONE))
+            }).inner;
+            response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,true,format!("Fechar {title}")));
+            let stroke=egui::Stroke::new(1.5,if response.hovered()||response.has_focus(){TEXT}else{MUTED});
+            for direction in [-1.0,1.0]{let offset=Vec2::new(5.0,5.0*direction);ui.painter().line_segment([response.rect.center()-offset,response.rect.center()+offset],stroke);}
+            if response.clicked(){ui.close_kind(egui::UiKind::Window);}
+        });
+    });
+}
 pub fn upload_selector(ui:&mut egui::Ui,profile:&mut crate::bandwidth::UploadProfile,enabled:bool)->bool {
     let previous=*profile;
     ui.add_enabled_ui(enabled,|ui|{
@@ -110,6 +128,29 @@ pub fn primary(ui:&mut egui::Ui,label:&str,enabled:bool,size:Vec2)->egui::Respon
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn modal_closes_from_target_corners_outside_the_small_x(){
+        for (offset,closes) in [(Vec2::new(-13.0,-13.0),true),(Vec2::new(13.0,-13.0),true),(Vec2::new(-13.0,13.0),true),(Vec2::new(13.0,13.0),true),(Vec2::new(22.0,0.0),false)]{
+            let ctx=egui::Context::default();let mut open=true;
+            let render=|ui:&mut egui::Ui,open:&mut bool|{
+                egui::Window::new("Teste").title_bar(false).open(open).resizable(false).collapsible(false)
+                    .fixed_pos(egui::pos2(40.0,40.0)).fixed_size([260.0,120.0]).show(ui.ctx(),|ui|modal_header(ui,"Teste"));
+            };
+            let mut center=None;
+            for _ in 0..3{
+                let output=ctx.run_ui(Default::default(),|ui|render(ui,&mut open));
+                for s in output.shapes{if let egui::Shape::LineSegment{points,..}=s.shape{
+                    if ((points[1].x-points[0].x).abs()-10.0).abs()<0.1 && ((points[1].y-points[0].y).abs()-10.0).abs()<0.1{center=Some(points[0]+(points[1]-points[0])*0.5);}
+                }}
+            }
+            let pos=center.expect("Visible X")+offset;
+            for pressed in [true,false]{
+                let input=egui::RawInput{events:vec![egui::Event::PointerMoved(pos),egui::Event::PointerButton{pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()}],..Default::default()};
+                let _=ctx.run_ui(input,|ui|render(ui,&mut open));
+            }
+            assert_eq!(!open,closes,"Unexpected close state at {offset:?}");
+        }
+    }
     #[test]
     fn current_room_label_stays_on_one_line_inside_the_button() {
         let ctx=egui::Context::default();let mut button=egui::Rect::NOTHING;

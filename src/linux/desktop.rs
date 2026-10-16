@@ -390,12 +390,13 @@ impl App {
             });
         if self.creator.open {
             let mut open = true;
-            egui::Window::new("Criar sala")
+            egui::Window::new("Criar sala").title_bar(false)
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
                 .default_width(360.0).max_width(360.0)
                 .show(ctx, |ui| {
+                    crate::desktop_ui::modal_header(ui,"Criar sala");
                     ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
                     input(ui, &mut self.creator.title, "Nome da sala", false, 64);
                     ui.checkbox(&mut self.creator.persistent,"Manter sala indefinidamente");
@@ -413,7 +414,8 @@ impl App {
             }
         }
         if self.debug {
-            egui::Window::new("Diagnóstico").open(&mut self.debug).collapsible(false).resizable(false).default_width(360.0).frame(crate::desktop_ui::utility_frame(root.style())).show(ctx,|ui|{
+            egui::Window::new("Diagnóstico").title_bar(false).open(&mut self.debug).collapsible(false).resizable(false).default_width(360.0).frame(crate::desktop_ui::utility_frame(root.style())).show(ctx,|ui|{
+                crate::desktop_ui::modal_header(ui,"Diagnóstico");
                 ui.label(format!("HyperCast {} · Linux",env!("CARGO_PKG_VERSION")));
                 ui.label(format!("Decodificadores ativos: {}",super::media::decoder_count()));
                 ui.label(format!("Quadros enviados: {} · recebidos: {}",self.snapshot.sent,self.snapshot.received));
@@ -422,8 +424,9 @@ impl App {
             });
         }
         if self.updates {
-            egui::Window::new("Atualização").open(&mut self.updates).collapsible(false).resizable(false).default_width(320.0)
+            egui::Window::new("Atualização").title_bar(false).open(&mut self.updates).collapsible(false).resizable(false).default_width(320.0)
                 .frame(crate::desktop_ui::utility_frame(root.style())).show(ctx,|ui|{
+                    crate::desktop_ui::modal_header(ui,"Atualização");
                     ui.label(format!("Versão atual: {}",env!("CARGO_PKG_VERSION")));
                     ui.label(RichText::new("Linux · AppImage portátil").size(11.0).color(MUTED));
                     ui.label("Confira a versão disponível na página de downloads. Para atualizar, substitua o AppImage.");

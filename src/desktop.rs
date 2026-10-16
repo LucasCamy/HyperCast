@@ -1136,10 +1136,11 @@ impl eframe::App for App {
         if !self.window_picker_open || self.fullscreen || self.debug_open || self.updater.open {self.window_previews.clear();}
         if !self.fullscreen && self.creator.open {
             let mut open=true;
-            egui::Window::new("Criar sala").id(egui::Id::new("create_room_window"))
+            egui::Window::new("Criar sala").id(egui::Id::new("create_room_window")).title_bar(false)
                 .frame(utility_window_frame(ui.style()))
                 .open(&mut open).fixed_pos(egui::pos2(16.0,48.0)).default_width(260.0).max_width(260.0)
                 .resizable(false).collapsible(false).show(&ctx,|ui| {
+                    crate::desktop_ui::modal_header(ui,"Criar sala");
                     ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
                     let title_label=ui.label("Nome da sala").id;
                     text_input(ui,&mut self.creator.title,"Jogos com amigos",false,64,!self.creator.busy).labelled_by(title_label);
@@ -1165,11 +1166,12 @@ impl eframe::App for App {
         }
         if !self.fullscreen && self.debug_open {
             let mut open=self.debug_open;
-            egui::Window::new("Diagnóstico").id(egui::Id::new("debug_window"))
+            egui::Window::new("Diagnóstico").id(egui::Id::new("debug_window")).title_bar(false)
                 .frame(utility_window_frame(ui.style()))
                 .open(&mut open).fixed_pos(egui::pos2(16.0,48.0))
                 .default_width(260.0).max_width(260.0).resizable(false).collapsible(false)
                 .show(&ctx,|ui|{
+                    crate::desktop_ui::modal_header(ui,"Diagnóstico");
                     ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
                     ui.label(RichText::new(&status).size(12.0));
                     if let Some(engine)=&self.engine{let stats=engine.shared.lock().unwrap().encoder_stats.clone();if !stats.is_empty(){ui.collapsing("Estatísticas do encoder",|ui|{ui.small(stats);});}}
@@ -1202,10 +1204,11 @@ impl eframe::App for App {
         if !self.fullscreen && self.updater.open {
             let mut open=self.updater.open;
             let mut install=false;
-            egui::Window::new("Atualização").id(egui::Id::new("update_window"))
+            egui::Window::new("Atualização").id(egui::Id::new("update_window")).title_bar(false)
                 .frame(utility_window_frame(ui.style()))
                 .open(&mut open).fixed_pos(egui::pos2(16.0,48.0)).default_width(260.0).max_width(260.0)
                 .resizable(false).collapsible(false).show(&ctx,|ui|{
+                    crate::desktop_ui::modal_header(ui,"Atualização");
                     ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
                     ui.label(format!("Versão atual: {}",env!("CARGO_PKG_VERSION")));
                     ui.label(RichText::new(match &self.updater.installation{

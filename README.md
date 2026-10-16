@@ -1,5 +1,8 @@
 # HyperCast
 
+0.8.8 amplia para **32×32 pixels** a área clicável dos botões de fechar de
+Escolher sala, Criar sala, Diagnóstico e Atualização, mantendo o X pequeno.
+
 0.8.7 permite limitar o vídeo a **12, 25 ou 40 Mbps** no Windows e Linux,
 com 25 Mbps como padrão. Os perfis AMD HEVC ficam bloqueados nas demais GPUs
 e no AV1. [Limites de upload](docs/video-quality.md#limite-de-upload).

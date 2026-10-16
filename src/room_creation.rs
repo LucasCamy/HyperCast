@@ -56,9 +56,10 @@ impl Catalog {
         if !self.open{return None;}
         if !self.busy && self.last_refresh.is_none_or(|at|at.elapsed()>=std::time::Duration::from_secs(30)) {self.request(address.to_owned(),session.clone(),None,ctx.clone());}
         let mut open=true;let mut selected=None;let mut action=None;let mut refresh=false;
-        egui::Window::new("Escolher sala").id(egui::Id::new("saved_rooms_window")).open(&mut open)
+        egui::Window::new("Escolher sala").id(egui::Id::new("saved_rooms_window")).title_bar(false).open(&mut open)
             .frame(egui::Frame::window(&ctx.style_of(egui::Theme::Dark)).fill(controls::PANEL).stroke(egui::Stroke::new(1.0,controls::BORDER)).corner_radius(12).inner_margin(16))
             .fixed_pos(egui::pos2(16.0,16.0)).default_width(440.0).max_width(440.0).resizable(false).collapsible(false).show(ctx,|ui|{
+                controls::modal_header(ui,"Escolher sala");
                 ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
                 ui.spacing_mut().item_spacing=egui::vec2(10.0,10.0);
                 ui.horizontal(|ui|{
