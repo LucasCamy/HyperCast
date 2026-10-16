@@ -262,7 +262,7 @@ impl App {
             egui::Panel::left("sidebar").exact_size(310.0).frame(egui::Frame::new().fill(PANEL).inner_margin(20)).show(root,|ui|{
                 ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
                 egui::ScrollArea::vertical().auto_shrink([false,false]).show(ui,|ui|{
-                    ui.horizontal(|ui|{ui.label(RichText::new("HYPERCAST").size(16.0));
+                    ui.horizontal(|ui|{crate::desktop_ui::brand_mark(ui,28.0);ui.label(RichText::new("HYPERCAST").size(16.0).strong());
                         if small(ui,"Atualizar").clicked(){ctx.open_url(egui::OpenUrl::new_tab("https://github.com/LucasCamy/HyperCast/releases"));}
                     });
                     ui.label(RichText::new(self.server_status.label()).size(11.0).color(if self.server_status.status==crate::server_status::Status::Online{ACCENT}else{MUTED})).on_hover_text(format!("Servidor: {}",self.server_status.detail));

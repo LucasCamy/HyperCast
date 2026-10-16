@@ -698,7 +698,7 @@ impl eframe::App for App {
                         ui.spacing_mut().item_spacing=Vec2::new(8.0,8.0);
                         ui.spacing_mut().button_padding=Vec2::new(12.0,6.0);
                         ui.horizontal(|ui|{
-                            ui.label(RichText::new("H").size(24.0).strong().color(ACCENT));
+                            crate::desktop_ui::brand_mark(ui,28.0);
                             ui.label(RichText::new("HYPERCAST").size(16.0).strong());
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
                                 ui.label(RichText::new(self.server_status.label()).size(10.0).color(if self.server_status.status==crate::server_status::Status::Online{ACCENT}else{MUTED})).on_hover_text(format!("Servidor: {}",self.server_status.detail));

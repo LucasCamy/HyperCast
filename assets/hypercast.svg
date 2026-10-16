@@ -1,4 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-  <rect width="128" height="128" rx="24" fill="#151b1c"/>
-  <path d="M36 28h12v30h32V28h12v72H80V70H48v30H36z" fill="#bfef79"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 128 128" role="img" aria-label="HyperCast">
+  <rect width="128" height="128" rx="28" fill="#151b1c"/>
+  <!-- Paired, chamfered pillars joined by an ascending transmission bridge. -->
+  <path d="M38 28h12v65l-7 7H30V36z M85 28h13v64l-8 8H78V35z" fill="#bfef79"/>
+  <path d="M46 59l36-12v22L46 81z" fill="#bfef79"/>
 </svg>
