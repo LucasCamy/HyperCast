@@ -8,7 +8,7 @@ GStreamer ou codecs manualmente para executar o AppImage.
 
 ## Abrir no Bazzite
 
-Baixe `HyperCast-0.8.9-linux-x86_64.AppImage` na página de versões e abra pelo
+Baixe `HyperCast-0.8.10-linux-x86_64.AppImage` na página de versões e abra pelo
 Gear Lever. Se preferir abrir diretamente, habilite a permissão de execução nas
 propriedades do arquivo. Sem suporte a FUSE, use `--appimage-extract-and-run`.
 
@@ -98,6 +98,19 @@ Se o aplicativo fechar, envie o log completo dessa execução, incluindo as linh
 encerrar também o lançador (por exemplo, falta de memória), a linha de saída
 pode não existir; nesse caso é necessário consultar o journal do sistema.
 Um aviso sobre `libnvrtc.so` sozinho não comprova a causa do fechamento.
+
+A 0.8.10 corrige uma falha de empacotamento que podia fechar o aplicativo ao
+iniciar qualquer captura pelo portal, inclusive no modo HEVC por software.
+O `client.conf` incorporado exigia os módulos PipeWire `client-device` e
+`session-manager`, que não estavam no AppImage. O plugin PipeWire 1.0.5 não
+tratava o contexto nulo e causava SIGSEGV. O pacote inclui os seis módulos
+obrigatórios e recusa a geração se algum estiver ausente.
+
+O teste `python3 -m tests.integration_pipewire_appimage --appimage /caminho/AppImage`
+usa um daemon PipeWire privado, sem dispositivos, e abre/fecha três conexões por
+descritor de arquivo, como no portal. Ele reproduz a falha no pacote 0.8.9 e
+verifica a inicialização/limpeza do pacote corrigido. Não captura tela nem áudio;
+a seleção real no portal do Bazzite ainda depende de validação nessa máquina.
 
 ## Desenvolver
 

@@ -5,6 +5,10 @@ ROOT=Path(__file__).resolve().parent.parent
 TOOL_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
 TOOL_SHA256="95cbe7cce9717fce90c484e34052ee7c7f1d7635b33c12525b4776826a7d29b6"
 PLUGIN_NAMES=("coreelements","app","audioconvert","audioresample","videoconvertscale","videorate","videoparsersbad","nvcodec","va","x265","pulseaudio","pipewire","ximagesrc","videotestsrc","audiotestsrc","typefindfunctions")
+# All mandatory modules in the bundled PipeWire client.conf must be present.
+# Missing client-device/session-manager makes pw_context_new fail, and the
+# 1.0.5 GStreamer PipeWire plugin subsequently dereferences that null context.
+PIPEWIRE_CLIENT_MODULES=frozenset(("libpipewire-module-protocol-native.so","libpipewire-module-client-node.so","libpipewire-module-client-device.so","libpipewire-module-adapter.so","libpipewire-module-metadata.so","libpipewire-module-session-manager.so"))
 HOST_LIBS=re.compile(r"^(ld-linux.*|lib(c|m|dl|pthread|rt|resolv|util|nss_.*)\.so\..*|lib(GL|EGL|GLX|OpenGL|GLdispatch|vulkan|drm|gbm|glapi).*|lib(nvidia|cuda|nvcuvid|nvidia-encode).*)$")
 def run(*args,**kwargs):return subprocess.run(args,check=True,text=True,**kwargs)
 def sha(path):return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -70,10 +74,12 @@ def main():
             if not directory.exists():continue
             destination=libdir/relative;destination.mkdir(parents=True,exist_ok=True)
             for source in directory.glob("*.so"):
-                if relative=="pipewire-0.3" and source.name not in {"libpipewire-module-protocol-native.so","libpipewire-module-client-node.so","libpipewire-module-adapter.so","libpipewire-module-metadata.so"}:continue
+                if relative=="pipewire-0.3" and source.name not in PIPEWIRE_CLIENT_MODULES:continue
                 bundle_binary(source,libdir,seen,packages)
                 if (libdir/source.name).exists():shutil.move(libdir/source.name,destination/source.name)
         pipewire=Path("/usr/share/pipewire")
+        missing=[name for name in PIPEWIRE_CLIENT_MODULES if not (libdir/"pipewire-0.3"/name).is_file()]
+        if missing:raise RuntimeError(f"Mandatory PipeWire client modules missing: {sorted(missing)}")
         if pipewire.exists():shutil.copytree(pipewire,stage/"usr/share/pipewire")
         for package in sorted(packages):
             package_name=package.split(":",1)[0];copyright=Path("/usr/share/doc")/package_name/"copyright"
