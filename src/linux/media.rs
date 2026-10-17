@@ -171,6 +171,9 @@ impl Capture {
                 (format!("videotestsrc is-live=true pattern=ball ! video/x-raw,width={w},height={h}"),None,None)
             },
         };
+        Self::open_pipeline(description,lease,fd,codec,encoder,upload).await
+    }
+    async fn open_pipeline(description:String,lease:Option<PortalLease>,fd:Option<OwnedFd>,codec:Codec,encoder:Encoder,upload:crate::bandwidth::UploadProfile)->Result<Self>{
         let fps = if encoder == Encoder::Software {
             30
         } else {
@@ -217,7 +220,19 @@ impl Capture {
             .unwrap();
         let encoder_element = pipeline.by_name("encoder").unwrap();
         let supported=encoder_element.static_pad("sink").context("Encoder input missing")?.query_caps(None);
-        let scaled=pipeline.by_name("scaled").unwrap().downgrade();
+        // Negotiate bounds before starting PipeWire. Changing capsfilter from a
+        // downstream CAPS probe sends RECONFIGURE upstream and can reconnect or
+        // deadlock the PipeWire stream while its state transition is in flight.
+        // videoconvertscale fixates these ranges to the nearest supported size,
+        // preserving aspect ratio through square pixels and even YUV dimensions.
+        let bounds=gst::Caps::builder("video/x-raw")
+            .field("format",raw_format)
+            .field("width",gst::IntRange::<i32>::with_step(2,8192,2))
+            .field("height",gst::IntRange::<i32>::with_step(2,8192,2))
+            .field("pixel-aspect-ratio",gst::Fraction::new(1,1)).build();
+        let bounds=bounds.intersect(&supported);
+        ensure!(!bounds.is_empty(),"No compatible encoder resolution");
+        pipeline.by_name("scaled").unwrap().set_property("caps",bounds);
         pipeline.by_name("source_bounds").unwrap().static_pad("src").unwrap().add_probe(gst::PadProbeType::EVENT_DOWNSTREAM,move |pad,info| {
             let Some(gst::PadProbeData::Event(event))=&info.data else{return gst::PadProbeReturn::Ok;};
             let gst::EventView::Caps(event)=event.view() else{return gst::PadProbeReturn::Ok;};
@@ -227,16 +242,19 @@ impl Capture {
                 return gst::PadProbeReturn::Drop;
             };
             eprintln!("Linux capture: stage=source_caps width={w} height={h}");
-            for (max_w,max_h) in [(8192,8192),(4096,4096),(3840,2160),(3440,1440),(2560,1440),(1920,1080)] {
-                let (w,h)=crate::resolution::fit(w as u32,h as u32,max_w,max_h).unwrap();
-                let caps=gst::Caps::builder("video/x-raw").field("format",raw_format).field("width",w as i32).field("height",h as i32).field("pixel-aspect-ratio",gst::Fraction::new(1,1)).build();
-                if caps.can_intersect(&supported) {
-                    if let Some(scaled)=scaled.upgrade(){scaled.set_property("caps",caps);}
-                    return gst::PadProbeReturn::Ok;
+            gst::PadProbeReturn::Ok
+        });
+        pipeline.by_name("scaled").unwrap().static_pad("src").unwrap().add_probe(gst::PadProbeType::EVENT_DOWNSTREAM,|_,info| {
+            if let Some(gst::PadProbeData::Event(event))=&info.data {
+                if let gst::EventView::Caps(event)=event.view() {
+                    if let Some(s)=event.caps().structure(0) {
+                        if let (Ok(w),Ok(h))=(s.get::<i32>("width"),s.get::<i32>("height")) {
+                            eprintln!("Linux capture: stage=output_caps width={w} height={h}");
+                        }
+                    }
                 }
             }
-            if let Some(element)=pad.parent_element(){gst::element_error!(element,gst::StreamError::Format,["No compatible encoder resolution"]);}
-            gst::PadProbeReturn::Drop
+            gst::PadProbeReturn::Ok
         });
         if chain.starts_with("nv") {
             ensure!(
@@ -269,6 +287,10 @@ impl Capture {
         };
         eprintln!("Linux capture: stage=pipeline_start");
         if let Err(e) = result.pipeline.set_state(gst::State::Playing) {
+            eprintln!("Linux capture: stage=pipeline_state_failed error={e}");
+            // Drain the capture bus before stopping so driver/format failures
+            // aren't lost behind the generic state-change error.
+            if let Err(detail)=result.poll(){eprintln!("Linux capture: stage=pipeline_error error={detail:#}");}
             result.stop().await;
             return Err(e.into());
         }
@@ -359,6 +381,42 @@ impl Capture {
 impl Drop for Capture {
     fn drop(&mut self) {
         let _ = self.pipeline.set_state(gst::State::Null);
+    }
+}
+
+#[cfg(test)]
+mod pipewire_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires the isolated synthetic PipeWire test daemon"]
+    fn pipewire_first_encoded_frames() -> Result<()> {
+        gst::init()?;
+        let socket=std::os::unix::net::UnixStream::connect(std::env::var("HYPERCAST_TEST_PIPEWIRE_SOCKET")?)?;
+        let fd:OwnedFd=socket.into();
+        let size=std::env::var("HYPERCAST_TEST_PIPEWIRE_SIZE").unwrap_or_else(|_|"3440x1440".into());
+        let (w,h)=size.split_once('x').context("Invalid test size")?;
+        let (w,h)=(w.parse::<u32>()?,h.parse::<u32>()?);
+        ensure!(crate::resolution::valid(w,h),"Invalid test size");
+        let encoder=if std::env::var("HYPERCAST_TEST_PIPEWIRE_ENCODER").as_deref()==Ok("GPU"){Encoder::Auto}else{Encoder::Software};
+        let codec=if std::env::var("HYPERCAST_TEST_PIPEWIRE_CODEC").as_deref()==Ok("av1"){Codec::Av1}else{Codec::Hevc};
+        tokio::runtime::Runtime::new()?.block_on(async move {
+            let description=format!("pipewiresrc fd={} target-object=HyperCastTest client-name=HyperCastProbe do-timestamp=true ! video/x-raw,width={w},height={h}",fd.as_raw_fd());
+            let mut capture=Capture::open_pipeline(description,None,Some(fd),codec,encoder,crate::bandwidth::UploadProfile::Economic).await?;
+            let mut frames=0;
+            let deadline=std::time::Instant::now()+Duration::from_secs(15);
+            while frames<10 && std::time::Instant::now()<deadline {
+                if let Some(packet)=capture.poll()? {
+                    ensure!(packet.width.abs_diff(w)<=1 && packet.height.abs_diff(h)<=1,"Unexpected synthetic size: {}x{}",packet.width,packet.height);
+                    frames+=1;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            capture.stop().await;
+            ensure!(frames>=10,"PipeWire produced {frames}/10 encoded frames");
+            eprintln!("PASS: PipeWire FD -> production capture -> {codec:?} {encoder:?} {w}x{h}: {frames} frames");
+            Ok(())
+        })
     }
 }
 

@@ -25,7 +25,12 @@ mostra a dimensão efetiva; o diagnóstico registra origem e saída.
 
 No Linux as capacidades negociadas do plugin determinam o tamanho aceito;
 `videoconvertscale` ajusta as dimensões antes do encoder. O caminho portátil
-continua permitindo conversões por CPU. A documentação do elemento explica
+continua permitindo conversões por CPU. A partir da 0.8.11, dimensões pares são
+negociadas antes de iniciar a origem, sem forçar uma renegociação no callback do
+PipeWire. Uma origem ímpar pode ser reamostrada para o par mais próximo: o teste
+de 4587×1920 negociou 4586×1920, preservando a imagem inteira. O alinhamento por
+replicação de borda descrito acima é específico do Windows.
+A documentação do elemento explica
 sua negociação de tamanho e proporção:
 https://gstreamer.freedesktop.org/documentation/videoconvertscale/videoconvertscale.html
 

@@ -62,8 +62,8 @@ def main():
             assert match and int(match[2])>50,'Windows did not present ultrawide D3D11 frames'
             assert 'GUI lifecycle: 0 retained GPU decoder surfaces after disconnect' in output,'Windows decoder surfaces survived teardown'
         if os.environ.get('HYPERCAST_LINUX_TEST_SIZE')=='4587x1920':
-            assert '4588x1920' in windows_log,'Windows did not decode the native ultrawide size'
-            assert '4588x1920' in (read('receiver')+read('gui')),'Linux did not decode the native ultrawide size'
+            assert any(size in windows_log for size in ('4586x1920','4588x1920')),'Windows did not decode the nearest even ultrawide size'
+            assert any(size in (read('receiver')+read('gui')) for size in ('4586x1920','4588x1920')),'Linux did not decode the nearest even ultrawide size'
         print(f'PASS: Linux {os.environ.get("HYPERCAST_LINUX_TEST_CODEC","hevc").upper()} publishing, Linux decoded reception/audio and GUI textures, Windows GPU reception through SFU')
     finally:
         for child in children:

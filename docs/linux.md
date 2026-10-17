@@ -8,7 +8,7 @@ GStreamer ou codecs manualmente para executar o AppImage.
 
 ## Abrir no Bazzite
 
-Baixe `HyperCast-0.8.10-linux-x86_64.AppImage` na página de versões e abra pelo
+Baixe `HyperCast-0.8.11-linux-x86_64.AppImage` na página de versões e abra pelo
 Gear Lever. Se preferir abrir diretamente, habilite a permissão de execução nas
 propriedades do arquivo. Sem suporte a FUSE, use `--appimage-extract-and-run`.
 
@@ -111,6 +111,16 @@ usa um daemon PipeWire privado, sem dispositivos, e abre/fecha três conexões p
 descritor de arquivo, como no portal. Ele reproduz a falha no pacote 0.8.9 e
 verifica a inicialização/limpeza do pacote corrigido. Não captura tela nem áudio;
 a seleção real no portal do Bazzite ainda depende de validação nessa máquina.
+
+A 0.8.11 define os limites de formato/resolução antes de iniciar o pipeline.
+O callback de formato recebido passa a apenas validar e registrar o tamanho;
+ele não altera mais o capsfilter durante a negociação do PipeWire. Essa alteração
+provocava renegociação da origem e podia interromper o fluxo ou bloquear a
+inicialização. O conversor negocia dimensões pares dentro dos limites do encoder,
+mantendo a proporção. O teste acima aceita `--capture-test-binary /caminho/teste`
+para conectar uma fonte PipeWire sintética ao pipeline de captura real e exigir
+dez quadros codificados. O binário é gerado com `cargo test --features desktop
+--lib --no-run`; o teste de Rust se chama `pipewire_first_encoded_frames`.
 
 ## Desenvolver
 
