@@ -213,6 +213,18 @@ impl Capture {
         let pipeline=gst::parse::launch(&format!("{description} ! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! identity name=source_bounds ! videorate drop-only=true max-rate={fps} ! videoconvertscale ! capsfilter name=scaled ! {raw},format={raw_format},framerate={fps}/1 ! {chain} ! {parser} ! appsink name=encoded sync=false max-buffers=2 drop=true"))?
             .downcast::<gst::Pipeline>().map_err(|_|anyhow::anyhow!("Invalid capture pipeline"))?;
         eprintln!("Linux capture: stage=pipeline_created");
+        // KWin screen casts offer only 2..4 buffers; pipewiresrc 1.0.5
+        // defaults to a minimum of eight. Copy before downstream queues keep
+        // references so a small compositor pool can recycle immediately.
+        for source in pipeline.iterate_sources().into_iter() {
+            let source=source.map_err(|_|anyhow::anyhow!("Capture source enumeration failed"))?;
+            if source.factory().is_some_and(|factory|factory.name()=="pipewiresrc") {
+                source.set_property("min-buffers",2_i32);
+                source.set_property("max-buffers",4_i32);
+                source.set_property("always-copy",true);
+                eprintln!("Linux capture: stage=pipewire_buffers min=2 max=4 always_copy=true");
+            }
+        }
         let sink = pipeline
             .by_name("encoded")
             .unwrap()
@@ -241,7 +253,9 @@ impl Capture {
                 if let Some(element)=pad.parent_element(){gst::element_error!(element,gst::StreamError::Format,["Capture exceeds 8192 per axis or 32 megapixels"]);}
                 return gst::PadProbeReturn::Drop;
             };
-            eprintln!("Linux capture: stage=source_caps width={w} height={h}");
+            let format=event.caps().structure(0).and_then(|s|s.get::<&str>("format").ok()).unwrap_or("unknown");
+            let memory=event.caps().features(0).map(|features|features.to_string()).unwrap_or_default();
+            eprintln!("Linux capture: stage=source_caps width={w} height={h} format={format} memory={memory}");
             gst::PadProbeReturn::Ok
         });
         pipeline.by_name("scaled").unwrap().static_pad("src").unwrap().add_probe(gst::PadProbeType::EVENT_DOWNSTREAM,|_,info| {

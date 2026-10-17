@@ -8,7 +8,7 @@ GStreamer ou codecs manualmente para executar o AppImage.
 
 ## Abrir no Bazzite
 
-Baixe `HyperCast-0.8.11-linux-x86_64.AppImage` na página de versões e abra pelo
+Baixe `HyperCast-0.8.12-linux-x86_64.AppImage` na página de versões e abra pelo
 Gear Lever. Se preferir abrir diretamente, habilite a permissão de execução nas
 propriedades do arquivo. Sem suporte a FUSE, use `--appimage-extract-and-run`.
 
@@ -121,6 +121,22 @@ mantendo a proporção. O teste acima aceita `--capture-test-binary /caminho/tes
 para conectar uma fonte PipeWire sintética ao pipeline de captura real e exigir
 dez quadros codificados. O binário é gerado com `cargo test --features desktop
 --lib --no-run`; o teste de Rust se chama `pipewire_first_encoded_frames`.
+
+A 0.8.12 solicita de dois a quatro buffers ao `pipewiresrc` e ativa
+`always-copy`, desacoplando os buffers emprestados do compositor das filas do
+encoder. O padrão do plugin incluído exigia no mínimo oito buffers, enquanto
+o [KWin oferece de dois a quatro](https://github.com/KDE/kwin/blob/master/src/plugins/screencast/screencaststream.cpp).
+O caminho portátil Linux faz uma cópia adicional na CPU; não representa uma
+implementação zero-copy e seu custo precisa ser medido na máquina de destino.
+O log passa a registrar formato de pixel, tipo de memória e política de buffers.
+
+Para testar também um produtor cliente que aloca seus próprios MemFd, oferece
+BGRA com FPS variável e limita o pool a quatro buffers, compile
+`tests/pipewire_limited_source.c` com os headers/lib de `libpipewire-0.3` e passe
+`--limited-source /caminho/produtor` junto com `--capture-test-binary` no teste.
+Esse produtor só gera pixels sintéticos e verifica a liberação dos seus buffers.
+Os testes com o servidor PipeWire 1.0.5 não reproduziram o EINVAL do Bazzite;
+o ajuste de compatibilidade ainda depende da confirmação no compositor afetado.
 
 ## Desenvolver
 
