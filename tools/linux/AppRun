@@ -1,0 +1,37 @@
+#!/bin/sh
+set -eu
+umask 077
+APPDIR=${APPDIR:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)}
+export LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export GST_PLUGIN_SYSTEM_PATH_1_0=""
+export GST_PLUGIN_PATH_1_0="$APPDIR/usr/lib/gstreamer-1.0"
+export SPA_PLUGIN_DIR="$APPDIR/usr/lib/spa-0.2"
+export PIPEWIRE_MODULE_DIR="$APPDIR/usr/lib/pipewire-0.3"
+export PIPEWIRE_CONFIG_DIR="$APPDIR/usr/share/pipewire"
+export GST_PLUGIN_SCANNER="$APPDIR/usr/lib/gst-plugin-scanner"
+cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/hypercast"
+mkdir -p "$cache_dir"
+export GST_REGISTRY="$cache_dir/gstreamer-registry.bin"
+if [ -z "${SSL_CERT_FILE:-}" ]; then
+    for candidate in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
+        if [ -f "$candidate" ]; then export SSL_CERT_FILE="$candidate"; break; fi
+    done
+fi
+if [ "$#" -eq 0 ]; then set -- --gui; fi
+gui=0
+for argument in "$@"; do
+    if [ "$argument" = "--gui" ]; then gui=1; fi
+done
+if [ "$gui" -eq 1 ]; then
+    # Keep the parent alive so native aborts and signals leave an exit status.
+    # Never log arguments or environment: they can contain room credentials.
+    exec >>"$cache_dir/hypercast.log" 2>&1
+    export RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
+    export GST_DEBUG_NO_COLOR=1
+    printf '\nHyperCast launcher: started=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    if "$APPDIR/usr/bin/hypercast" "$@"; then status=0; else status=$?; fi
+    printf 'HyperCast launcher: exit_code=%s finished=%s\n' "$status" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    exit "$status"
+fi
+# Diagnostic CLI commands must retain stdout/stderr and their original status.
+exec "$APPDIR/usr/bin/hypercast" "$@"

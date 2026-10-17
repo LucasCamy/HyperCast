@@ -16,15 +16,17 @@ def main():
     base={k:v for k,v in os.environ.items() if not k.startswith(('LIVEKIT_','HYPERCAST_','GH_','GITHUB_'))}
     children=[];logs=[]
     binary=os.environ.get('HYPERCAST_LINUX_EXE','/home/lucas/hypercast-target/debug/hypercast')
+    gui_cache=ROOT/'.tools'/('linux-gui-cache-'+uuid.uuid4().hex)
+    gui_cache_linux='/mnt/'+gui_cache.drive[0].lower()+gui_cache.as_posix()[2:]
     def command(*args):return [binary,*(['--appimage-extract-and-run'] if binary.endswith('.AppImage') else []),*args]
     def launch_linux(name,args,extra=None):
         env={**base,'HYPERCAST_ROOM_TOKEN':token(name=='publisher'),'HYPERCAST_URL':'wss://hypercast.cloudlane.com.br',**(extra or {})}
-        names=[n+'/u' for n in env if n.startswith('HYPERCAST_')];env['WSLENV']=':'.join(names)
+        names=[n+'/u' for n in env if n.startswith('HYPERCAST_') or n=='XDG_CACHE_HOME'];env['WSLENV']=':'.join(names)
         file=(ROOT/'.tools'/f'linux-{name}.log').open('wb');logs.append(file)
         child=subprocess.Popen(['wsl','-d','Ubuntu','--',*args],env=env,stdout=file,stderr=subprocess.STDOUT);children.append(child);return child
     try:
         linux=launch_linux('receiver',command('--receive-url','wss://hypercast.cloudlane.com.br','--seconds','17'))
-        gui=launch_linux('gui',['xvfb-run','-a',*command('--gui')],{'HYPERCAST_AUTO_CONNECT':'1','HYPERCAST_SMOKE_SECONDS':'15','HYPERCAST_AUDIO_TEST_SILENT_OUTPUT':'1'})
+        gui=launch_linux('gui',['xvfb-run','-a',*command('--gui')],{'HYPERCAST_AUTO_CONNECT':'1','HYPERCAST_SMOKE_SECONDS':'15','HYPERCAST_AUDIO_TEST_SILENT_OUTPUT':'1','XDG_CACHE_HOME':gui_cache_linux})
         windows=Path(os.environ.get('HYPERCAST_WINDOWS_EXE',str(ROOT/'dist/HyperCast-0.6.5-windows-x64/hypercast.exe')))
         file=(ROOT/'.tools/linux-windows.log').open('wb');logs.append(file)
         child=subprocess.Popen([str(windows),'--receive-url','wss://hypercast.cloudlane.com.br','--seconds','17'],env={**base,'HYPERCAST_ROOM_TOKEN':token(False)},stdout=file,stderr=subprocess.STDOUT);children.append(child)
@@ -36,7 +38,13 @@ def main():
         for child in children:
             code=child.wait(timeout=55);assert code==0,f'A media client failed with exit {code}; inspect local logs without credentials'
         for file in logs:file.close()
+        if binary.endswith('.AppImage'):
+            (ROOT/'.tools/linux-gui.log').write_bytes((gui_cache/'hypercast/hypercast.log').read_bytes())
         read=lambda name:(ROOT/'.tools'/f'linux-{name}.log').read_text(encoding='utf-8',errors='replace')
+        if binary.endswith('.AppImage'):
+            assert 'HyperCast launcher: exit_code=0' in read('gui'),'GUI launcher did not record a clean exit'
+            assert 'HyperCast Linux: version=' in read('gui'),'GUI startup marker missing'
+        assert 'Linux capture: stage=first_packet' in read('publisher'),'Capture diagnostic stages missing'
         received=int(re.search(r'Receiver total: (\d+) decoded frames',read('receiver'))[1])
         assert received>100,'Linux did not decode HEVC'
         result=re.search(r'Linux GUI smoke: (\d+) received, (\d+) textures',read('gui'));assert result and int(result[1])>100 and int(result[2])>0,'Linux did not render received video'

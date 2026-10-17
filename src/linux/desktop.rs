@@ -460,6 +460,7 @@ impl eframe::App for App {
     fn ui(&mut self,root:&mut egui::Ui,_:&mut eframe::Frame){self.render(root);}
 }
 pub fn run() -> anyhow::Result<()> {
+    eprintln!("HyperCast Linux: version={} pid={}",env!("CARGO_PKG_VERSION"),std::process::id());
     gstreamer::init()?;
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

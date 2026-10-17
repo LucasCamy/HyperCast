@@ -91,28 +91,7 @@ def main():
             if source.exists():shutil.copy2(source,licenses/source.name)
         (stage/"com.cloudlane.HyperCast.desktop").write_text("[Desktop Entry]\nType=Application\nName=HyperCast\nComment=Screen sharing through LiveKit\nExec=hypercast\nIcon=hypercast\nCategories=Network;AudioVideo;\nTerminal=false\n")
         shutil.copy2(ROOT/"assets/hypercast.png",stage/"hypercast.png")
-        (stage/"AppRun").write_text("""#!/bin/sh
-set -eu
-APPDIR=${APPDIR:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)}
-export LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export GST_PLUGIN_SYSTEM_PATH_1_0=""
-export GST_PLUGIN_PATH_1_0="$APPDIR/usr/lib/gstreamer-1.0"
-export SPA_PLUGIN_DIR="$APPDIR/usr/lib/spa-0.2"
-export PIPEWIRE_MODULE_DIR="$APPDIR/usr/lib/pipewire-0.3"
-export PIPEWIRE_CONFIG_DIR="$APPDIR/usr/share/pipewire"
-export GST_PLUGIN_SCANNER="$APPDIR/usr/lib/gst-plugin-scanner"
-mkdir -p "${XDG_CACHE_HOME:-$HOME/.cache}/hypercast"
-export GST_REGISTRY="${XDG_CACHE_HOME:-$HOME/.cache}/hypercast/gstreamer-registry.bin"
-if [ -z "${SSL_CERT_FILE:-}" ]; then
-    for candidate in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
-        if [ -f "$candidate" ]; then export SSL_CERT_FILE="$candidate"; break; fi
-    done
-fi
-if [ "$#" -eq 0 ]; then
-    exec "$APPDIR/usr/bin/hypercast" --gui >>"${XDG_CACHE_HOME:-$HOME/.cache}/hypercast/hypercast.log" 2>&1
-fi
-exec "$APPDIR/usr/bin/hypercast" "$@"
-""")
+        shutil.copy2(ROOT/"tools/linux/AppRun",stage/"AppRun")
         (stage/"AppRun").chmod(0o755)
         scanner=Path(run("pkg-config","--variable=pluginscannerdir","gstreamer-1.0",capture_output=True).stdout.strip())/"gst-plugin-scanner"
         if not scanner.exists():scanner=Path("/usr/lib/x86_64-linux-gnu/gstreamer1.0/gstreamer-1.0/gst-plugin-scanner")

@@ -84,9 +84,11 @@ impl Capture {
         Self::open_with_profile(source,codec,encoder,crate::bandwidth::UploadProfile::Maximum).await
     }
     pub async fn open_with_profile(source:Source,codec:Codec,encoder:Encoder,upload:crate::bandwidth::UploadProfile)->Result<Self>{
+        eprintln!("Linux capture: stage=init source={source:?} codec={codec:?} encoder={encoder:?}");
         gst::init()?;
         let (description, lease, fd) = match source {
             Source::Portal => {
+                eprintln!("Linux capture: stage=portal_connect");
                 let portal=Screencast::new().await.context("Portal de captura indisponível; confira xdg-desktop-portal e o backend do desktop")?;
                 let mut lease = PortalLease(Some(portal.create_session(Default::default()).await?));
                 let setup = async {
@@ -115,10 +117,12 @@ impl Capture {
                         )
                         .await?
                         .response()?;
+                    eprintln!("Linux capture: stage=portal_select");
                     let response = portal
                         .start(lease.0.as_ref().unwrap(), None, Default::default())
                         .await?
                         .response()?;
+                    eprintln!("Linux capture: stage=portal_selected");
                     let node = response
                         .streams()
                         .first()
@@ -127,6 +131,7 @@ impl Capture {
                     let fd = portal
                         .open_pipe_wire_remote(lease.0.as_ref().unwrap(), Default::default())
                         .await?;
+                    eprintln!("Linux capture: stage=pipewire_remote_open");
                     Ok::<_, anyhow::Error>((node, fd))
                 }
                 .await;
@@ -173,6 +178,7 @@ impl Capture {
         };
         let bitrate_limit=if encoder==Encoder::Software{upload.bps().min(12_000_000)}else{upload.bps()};
         let kbps=bitrate_limit/1000;
+        eprintln!("Linux capture: stage=encoder_discovery");
         let chain=match (encoder,codec) {
             (Encoder::Software,Codec::Hevc)=>"x265enc name=encoder tune=zerolatency speed-preset=ultrafast bitrate=12000 key-int-max=30 option-string=bframes=0:rc-lookahead=0:pools=1:frame-threads=1".to_string(),
             (Encoder::Software,Codec::Av1)=>anyhow::bail!("O modo compatível usa HEVC; AV1 exige encoder de hardware"),
@@ -200,8 +206,10 @@ impl Capture {
         };
         // Only encoded access units enter Rust RAM. The initial portable source
         // conversion can negotiate CPU buffers; DMA-BUF zero-copy is not guaranteed.
+        eprintln!("Linux capture: stage=pipeline_create backend={}",chain.split_whitespace().next().unwrap_or("encoder"));
         let pipeline=gst::parse::launch(&format!("{description} ! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! identity name=source_bounds ! videorate drop-only=true max-rate={fps} ! videoconvertscale ! capsfilter name=scaled ! {raw},format={raw_format},framerate={fps}/1 ! {chain} ! {parser} ! appsink name=encoded sync=false max-buffers=2 drop=true"))?
             .downcast::<gst::Pipeline>().map_err(|_|anyhow::anyhow!("Invalid capture pipeline"))?;
+        eprintln!("Linux capture: stage=pipeline_created");
         let sink = pipeline
             .by_name("encoded")
             .unwrap()
@@ -218,6 +226,7 @@ impl Capture {
                 if let Some(element)=pad.parent_element(){gst::element_error!(element,gst::StreamError::Format,["Capture exceeds 8192 per axis or 32 megapixels"]);}
                 return gst::PadProbeReturn::Drop;
             };
+            eprintln!("Linux capture: stage=source_caps width={w} height={h}");
             for (max_w,max_h) in [(8192,8192),(4096,4096),(3840,2160),(3440,1440),(2560,1440),(1920,1080)] {
                 let (w,h)=crate::resolution::fit(w as u32,h as u32,max_w,max_h).unwrap();
                 let caps=gst::Caps::builder("video/x-raw").field("format",raw_format).field("width",w as i32).field("height",h as i32).field("pixel-aspect-ratio",gst::Fraction::new(1,1)).build();
@@ -258,14 +267,17 @@ impl Capture {
             bitrate_limit,
             ready: None,
         };
+        eprintln!("Linux capture: stage=pipeline_start");
         if let Err(e) = result.pipeline.set_state(gst::State::Playing) {
             result.stop().await;
             return Err(e.into());
         }
+        eprintln!("Linux capture: stage=waiting_first_packet");
         let deadline = std::time::Instant::now() + Duration::from_secs(8);
         let readiness = async {
             loop {
                 if let Some(packet) = result.poll()? {
+                    eprintln!("Linux capture: stage=first_packet width={} height={} bytes={}",packet.width,packet.height,packet.bytes.len());
                     result.ready = Some(packet);
                     return Ok::<_, anyhow::Error>(());
                 }
@@ -278,6 +290,7 @@ impl Capture {
         }
         .await;
         if let Err(error) = readiness {
+            eprintln!("Linux capture: stage=start_failed error={error:#}");
             result.stop().await;
             return Err(error);
         }

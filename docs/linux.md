@@ -8,7 +8,7 @@ GStreamer ou codecs manualmente para executar o AppImage.
 
 ## Abrir no Bazzite
 
-Baixe `HyperCast-0.8.8-linux-x86_64.AppImage` na página de versões e abra pelo
+Baixe `HyperCast-0.8.9-linux-x86_64.AppImage` na página de versões e abra pelo
 Gear Lever. Se preferir abrir diretamente, habilite a permissão de execução nas
 propriedades do arquivo. Sem suporte a FUSE, use `--appimage-extract-and-run`.
 
@@ -86,8 +86,18 @@ O build e os testes automatizados usam Ubuntu/WSL e mídia gerada. A validação
 Bazzite, Wayland e NVENC na RTX 5060 Ti precisa ser feita no PC do colega.
 O servidor continua o mesmo, sem reinstalação ou alteração de chaves.
 
-Logs do AppImage aberto normalmente: `~/.cache/hypercast/hypercast.log`
-(ou `$XDG_CACHE_HOME/hypercast/hypercast.log`). Não envie a chave de acesso ou JWT.
+Logs da interface do AppImage (aberto normalmente ou com `--gui`):
+`~/.cache/hypercast/hypercast.log` (ou `$XDG_CACHE_HOME/hypercast/hypercast.log`).
+A partir da 0.8.9, o lançador registra início e código de saída mesmo quando o
+processo filho encerra por um sinal; a captura registra etapas do portal,
+PipeWire e encoder, sem imagens nem credenciais. Os comandos de diagnóstico
+via CLI continuam escrevendo no terminal. Não envie a chave de acesso ou JWT.
+
+Se o aplicativo fechar, envie o log completo dessa execução, incluindo as linhas
+`Linux capture: stage=...` e `HyperCast launcher: exit_code=...`. Se o sistema
+encerrar também o lançador (por exemplo, falta de memória), a linha de saída
+pode não existir; nesse caso é necessário consultar o journal do sistema.
+Um aviso sobre `libnvrtc.so` sozinho não comprova a causa do fechamento.
 
 ## Desenvolver
 
