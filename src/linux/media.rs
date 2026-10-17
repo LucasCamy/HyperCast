@@ -25,6 +25,8 @@ pub enum Source {
     Portal,
     X11,
     Test,
+    #[cfg(test)]
+    Synthetic(u32,u32),
 }
 
 fn enum_property(element: &gst::Element, name: &str, value: &str) -> bool {
@@ -78,6 +80,16 @@ pub struct Capture {
     pub fps: u32,
     pub bitrate_limit:u32,
     ready: Option<Packet>,
+    counters:std::sync::Arc<CaptureCounters>,
+    last_report:std::time::Instant,
+    last_counts:[u64;4],
+}
+#[derive(Default)]
+struct CaptureCounters {
+    source:std::sync::atomic::AtomicU64,
+    input:std::sync::atomic::AtomicU64,
+    encoded:std::sync::atomic::AtomicU64,
+    delivered:std::sync::atomic::AtomicU64,
 }
 impl Capture {
     pub async fn open(source: Source, codec: Codec, encoder: Encoder) -> Result<Self> {
@@ -170,6 +182,11 @@ impl Capture {
                 ensure!(crate::resolution::valid(w,h),"Invalid synthetic size");
                 (format!("videotestsrc is-live=true pattern=ball ! video/x-raw,width={w},height={h}"),None,None)
             },
+            #[cfg(test)]
+            Source::Synthetic(w,h)=>{
+                ensure!(crate::resolution::valid(w,h),"Invalid synthetic size");
+                (format!("videotestsrc is-live=true pattern=ball ! video/x-raw,width={w},height={h}"),None,None)
+            },
         };
         Self::open_pipeline(description,lease,fd,codec,encoder,upload).await
     }
@@ -196,28 +213,40 @@ impl Capture {
                 }else{anyhow::bail!("Encoder de hardware indisponível. Instale os plugins nvcodec/VA-API ou selecione HEVC compatível (30 FPS)");}
             }
         };
-        let raw_format = if encoder == Encoder::Software {
-            "I420"
+        let raw_formats:&[&str] = if encoder == Encoder::Software {
+            &["I420"]
+        } else if chain.starts_with("nv") {
+            // NVENC accepts packed RGB directly. Avoid forcing a full-frame
+            // BGRA->NV12 CPU conversion when the portal already supplies BGRA.
+            &["BGRA","BGRx","RGBA","RGBx","NV12"]
         } else {
-            "NV12"
+            &["NV12"]
         };
-        let raw="video/x-raw";
+        let raw=gst::Caps::builder("video/x-raw").field("format",gst::List::new(raw_formats.iter().copied())).field("framerate",gst::Fraction::new(fps as i32,1)).build();
         let parser = if codec == Codec::Av1 {
             "av1parse ! video/x-av1,stream-format=obu-stream,alignment=tu"
         } else {
             "h265parse config-interval=-1 ! video/x-h265,stream-format=byte-stream,alignment=au"
         };
+        // Drop stale raw frames before encoding, never dependent encoded frames.
+        // A bounded appsink applies backpressure while the upstream raw queue
+        // discards work safely. Dropping HEVC/AV1 deltas corrupts later frames.
         // Only encoded access units enter Rust RAM. The initial portable source
         // conversion can negotiate CPU buffers; DMA-BUF zero-copy is not guaranteed.
         eprintln!("Linux capture: stage=pipeline_create backend={}",chain.split_whitespace().next().unwrap_or("encoder"));
-        let pipeline=gst::parse::launch(&format!("{description} ! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! identity name=source_bounds ! videorate drop-only=true max-rate={fps} ! videoconvertscale ! capsfilter name=scaled ! {raw},format={raw_format},framerate={fps}/1 ! {chain} ! {parser} ! appsink name=encoded sync=false max-buffers=2 drop=true"))?
+        let pipeline=gst::parse::launch(&format!("{description} ! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! identity name=source_bounds ! videorate drop-only=true max-rate={fps} ! videoconvertscale ! capsfilter name=scaled ! {raw} ! {chain} ! {parser} ! appsink name=encoded sync=false max-buffers=2 drop=false"))?
             .downcast::<gst::Pipeline>().map_err(|_|anyhow::anyhow!("Invalid capture pipeline"))?;
         eprintln!("Linux capture: stage=pipeline_created");
+        let counters=std::sync::Arc::new(CaptureCounters::default());
         // KWin screen casts offer only 2..4 buffers; pipewiresrc 1.0.5
         // defaults to a minimum of eight. Copy before downstream queues keep
         // references so a small compositor pool can recycle immediately.
         for source in pipeline.iterate_sources().into_iter() {
             let source=source.map_err(|_|anyhow::anyhow!("Capture source enumeration failed"))?;
+            if let Some(pad)=source.static_pad("src") {
+                let count=counters.clone();
+                pad.add_probe(gst::PadProbeType::BUFFER,move|_,_|{count.source.fetch_add(1,std::sync::atomic::Ordering::Relaxed);gst::PadProbeReturn::Ok});
+            }
             if source.factory().is_some_and(|factory|factory.name()=="pipewiresrc") {
                 source.set_property("min-buffers",2_i32);
                 source.set_property("max-buffers",4_i32);
@@ -231,6 +260,15 @@ impl Capture {
             .downcast::<AppSink>()
             .unwrap();
         let encoder_element = pipeline.by_name("encoder").unwrap();
+        for (pad,is_input) in [(encoder_element.static_pad("sink"),true),(sink.static_pad("sink"),false)] {
+            if let Some(pad)=pad {
+                let count=counters.clone();
+                pad.add_probe(gst::PadProbeType::BUFFER,move|_,_|{
+                    if is_input{count.input.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}else{count.encoded.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}
+                    gst::PadProbeReturn::Ok
+                });
+            }
+        }
         let supported=encoder_element.static_pad("sink").context("Encoder input missing")?.query_caps(None);
         // Negotiate bounds before starting PipeWire. Changing capsfilter from a
         // downstream CAPS probe sends RECONFIGURE upstream and can reconnect or
@@ -238,7 +276,7 @@ impl Capture {
         // videoconvertscale fixates these ranges to the nearest supported size,
         // preserving aspect ratio through square pixels and even YUV dimensions.
         let bounds=gst::Caps::builder("video/x-raw")
-            .field("format",raw_format)
+            .field("format",gst::List::new(raw_formats.iter().copied()))
             .field("width",gst::IntRange::<i32>::with_step(2,8192,2))
             .field("height",gst::IntRange::<i32>::with_step(2,8192,2))
             .field("pixel-aspect-ratio",gst::Fraction::new(1,1)).build();
@@ -263,7 +301,8 @@ impl Capture {
                 if let gst::EventView::Caps(event)=event.view() {
                     if let Some(s)=event.caps().structure(0) {
                         if let (Ok(w),Ok(h))=(s.get::<i32>("width"),s.get::<i32>("height")) {
-                            eprintln!("Linux capture: stage=output_caps width={w} height={h}");
+                            let format=s.get::<&str>("format").unwrap_or("unknown");
+                            eprintln!("Linux capture: stage=output_caps width={w} height={h} format={format}");
                         }
                     }
                 }
@@ -298,6 +337,9 @@ impl Capture {
             fps,
             bitrate_limit,
             ready: None,
+            counters,
+            last_report:std::time::Instant::now(),
+            last_counts:[0;4],
         };
         eprintln!("Linux capture: stage=pipeline_start");
         if let Err(e) = result.pipeline.set_state(gst::State::Playing) {
@@ -333,6 +375,14 @@ impl Capture {
         Ok(result)
     }
     pub fn poll(&mut self) -> Result<Option<Packet>> {
+        if self.last_report.elapsed()>=Duration::from_secs(5) {
+            let c=&self.counters;let order=std::sync::atomic::Ordering::Relaxed;
+            let counts=[c.source.load(order),c.input.load(order),c.encoded.load(order),c.delivered.load(order)];
+            let seconds=self.last_report.elapsed().as_secs_f64();
+            let rates=std::array::from_fn::<_,4,_>(|i|counts[i].saturating_sub(self.last_counts[i]) as f64/seconds);
+            eprintln!("Linux capture rates: backend={} source_fps={:.1} encoder_in_fps={:.1} encoded_fps={:.1} delivered_fps={:.1}",self.backend,rates[0],rates[1],rates[2],rates[3]);
+            self.last_report=std::time::Instant::now();self.last_counts=counts;
+        }
         if let Some(packet) = self.ready.take() {
             return Ok(Some(packet));
         }
@@ -361,6 +411,7 @@ impl Capture {
         );
         let data = buffer.map_readable()?;
         ensure!(data.len() <= 16 * 1024 * 1024, "Encoded frame too large");
+        self.counters.delivered.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
         Ok(Some(Packet {
             bytes: data.to_vec(),
             timestamp_us: buffer
@@ -373,11 +424,11 @@ impl Capture {
         }))
     }
     pub fn request_keyframe(&self) {
-        let _ = self.pipeline.send_event(
+        self.encoder.call_async(|encoder|{if let Some(pad)=encoder.static_pad("src"){let _ = pad.send_event(
             gstreamer_video::UpstreamForceKeyUnitEvent::builder()
                 .all_headers(true)
                 .build(),
-        );
+        );}});
     }
     pub fn bitrate(&self, bits: u32) {
         if self.encoder.find_property("bitrate").is_some() {
@@ -386,7 +437,8 @@ impl Capture {
         }
     }
     pub async fn stop(&mut self) {
-        let _ = self.pipeline.set_state(gst::State::Null);
+        let pipeline=self.pipeline.clone();
+        let _=tokio::task::spawn_blocking(move||pipeline.set_state(gst::State::Null)).await;
         if let Some(lease) = &mut self.lease {
             lease.close().await;
         }
@@ -418,16 +470,20 @@ mod pipewire_tests {
             let description=format!("pipewiresrc fd={} target-object=HyperCastTest client-name=HyperCastProbe do-timestamp=true ! video/x-raw,width={w},height={h}",fd.as_raw_fd());
             let mut capture=Capture::open_pipeline(description,None,Some(fd),codec,encoder,crate::bandwidth::UploadProfile::Economic).await?;
             let mut frames=0;
+            let mut requested_key=false;
             let deadline=std::time::Instant::now()+Duration::from_secs(15);
             while frames<10 && std::time::Instant::now()<deadline {
                 if let Some(packet)=capture.poll()? {
                     ensure!(packet.width.abs_diff(w)<=1 && packet.height.abs_diff(h)<=1,"Unexpected synthetic size: {}x{}",packet.width,packet.height);
                     frames+=1;
+                    if frames>3 && packet.keyframe{requested_key=true;}
+                    if frames==3{capture.request_keyframe();}
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
             capture.stop().await;
             ensure!(frames>=10,"PipeWire produced {frames}/10 encoded frames");
+            ensure!(requested_key,"Encoder did not honor the asynchronous keyframe request");
             eprintln!("PASS: PipeWire FD -> production capture -> {codec:?} {encoder:?} {w}x{h}: {frames} frames");
             Ok(())
         })

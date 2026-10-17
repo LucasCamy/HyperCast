@@ -324,7 +324,7 @@ async fn session(
     livekit::webrtc::enable_zero_playout_delay()?;
     let connection = tokio::select! {result=network::connect(&address,&token)=>result?,_ = rx.recv()=>return Ok(())};
     let (room, mut events) = connection;
-    let room = Arc::new(room);
+    let mut room = Arc::new(room);
     {
         let mut s = shared.lock().unwrap();
         s.connected = true;
@@ -344,6 +344,9 @@ async fn session(
     let mut wants_audio = false;
     let mut pending: Option<tokio::task::JoinHandle<Result<(Capture, Codec)>>> = None;
     let mut current_codec = Codec::Hevc;
+    let mut publication_format:Option<(Codec,u32,u32)>=None;
+    let mut last_video_bps:Option<u64>=None;
+    let mut retiring:Option<tokio::task::JoinHandle<()>>=None;
     let mut transmit_paused=false;
     let started = Instant::now();
     let mut ticks = tokio::time::interval(Duration::from_millis(8));
@@ -368,7 +371,7 @@ async fn session(
                     },
                     Command::Layout(value)=>{layout=value;volume.store(layout.volume,Ordering::Relaxed);last_refresh=Instant::now()-Duration::from_secs(1);},
                     Command::Share(source,codec,encoder,upload)=>{
-                        if pending.is_none() && room.local_participant().permission().is_some_and(|grant|grant.can_publish){
+                        if pending.is_none() && retiring.is_none() && room.local_participant().permission().is_some_and(|grant|grant.can_publish){
                             pending=Some(tokio::spawn(async move{let cap=Capture::open_with_profile(source,codec,encoder,upload).await?;Ok((cap,codec))}));
                             let mut s=shared.lock().unwrap();s.selecting=true;s.status="Selecione a tela ou janela no diálogo do sistema".into();
                         }
@@ -381,6 +384,7 @@ async fn session(
                         if let Some(task)=pending.take(){task.abort();let _=task.await;}
                         if let Some(mut cap)=capture.take(){cap.stop().await;}
                         if let Some(p)=publisher.take(){let _=p.stop().await;}
+                        publication_format=None;last_video_bps=None;transmit_paused=false;
                         if let Some(a)=audio.take(){a.stop(&room).await;}
                         let mut s=shared.lock().unwrap();s.sharing=false;s.selecting=false;s.status="Compartilhamento encerrado".into();
                     },
@@ -395,6 +399,7 @@ async fn session(
                         if reception_restart.is_some() || !publication.is_desired(){continue;}
                         let Some(RemoteTrack::Video(track))=publication.track() else{continue;};
                         let sid=publication.sid().to_string();
+                        eprintln!("Linux reception: stage=subscribed sid={sid}");
                         if publication.source()==TrackSource::Screenshare && (video_sinks.contains_key(&sid)||video_sinks.len()<3) {
                             video_sinks.insert(sid.clone(),attach_video(track,&sid,&shared,&ctx));
                         }
@@ -410,12 +415,45 @@ async fn session(
                     _=>{last_refresh=Instant::now()-Duration::from_secs(1);},
                 },
                 _=ticks.tick()=>{
+                    if retiring.as_ref().is_some_and(|task|task.is_finished()) {
+                        retiring.take().unwrap().await?;
+                        shared.lock().unwrap().selecting=pending.is_some();
+                    }
                     if pending.as_ref().is_some_and(|t|t.is_finished()) {
                         let result=pending.take().unwrap().await?;
                         shared.lock().unwrap().selecting=false;
                         match result {
-                            Ok((cap,codec))=>{if let Some(mut old)=capture.take(){old.stop().await;}current_codec=codec;cap.request_keyframe();
-                                {let mut s=shared.lock().unwrap();s.sharing=true;s.status=format!("Captura Linux · {} · até {} FPS",cap.backend,cap.fps);}capture=Some(cap);
+                            Ok((cap,codec))=>{
+                                let next_format=(codec,cap.fps,cap.bitrate_limit);
+                                if publication_format.is_some_and(|previous|previous!=next_format) {
+                                    eprintln!("Linux publish: stage=reconfigure codec={codec:?} fps={} bitrate={}",cap.fps,cap.bitrate_limit);
+                                    // A fresh Linux media connection avoids retaining the previous
+                                    // codec/transport after the sole video transceiver is stopped.
+                                    {let mut s=shared.lock().unwrap();s.reconnecting=true;s.status="Reconectando para alterar o formato da transmissão…".into();}
+                                    if let Some(a)=audio.take(){a.stop(&room).await;}
+                                    if let Some(p)=publisher.take(){let _=p.stop().await;}
+                                    for (_,mut sink) in video_sinks.drain(){sink.0.abort();let _=(&mut sink.0).await;}
+                                    for (_,mut sink) in audio_sinks.drain(){sink.0.abort();let _=(&mut sink.0).await;}
+                                    room.close().await?;
+                                    let (next_room,next_events)=network::connect(&address,&token).await?;
+                                    room=Arc::new(next_room);events=next_events;
+                                    reception_restart=None;last_refresh=Instant::now()-Duration::from_secs(1);
+                                    {let mut s=shared.lock().unwrap();s.reconnecting=false;s.reception_resetting=false;}
+                                    publication_format=None;last_video_bps=None;transmit_paused=false;
+                                }
+                                if let Some(bps)=last_video_bps.filter(|bps|*bps>0){cap.bitrate(bps.min(cap.bitrate_limit as u64) as u32);}
+                                current_codec=codec;
+                                {let mut s=shared.lock().unwrap();s.sharing=true;s.status=format!("Captura Linux · {} · até {} FPS",cap.backend,cap.fps);s.quality.send=None;}
+                                if let Some(mut old)=capture.replace(cap) {
+                                    retiring=Some(tokio::spawn(async move{
+                                        eprintln!("Linux capture: stage=retire_previous_start");
+                                        old.stop().await;
+                                        eprintln!("Linux capture: stage=retire_previous_done");
+                                    }));
+                                }
+                                shared.lock().unwrap().selecting=retiring.is_some();
+                                send_meter=Default::default();
+                                eprintln!("Linux capture: stage=source_switched codec={codec:?}");
                                 if let Some(p)=&mut publisher{p.restart_keyframe();}
                             },
                             Err(error)=>{shared.lock().unwrap().status=error.to_string();},
@@ -451,6 +489,8 @@ async fn session(
                     if let Some(cap)=&mut capture {
                         if let Some(p)=&mut publisher {
                             if let Some(rate)=p.take_rate_control_request(){
+                                if last_video_bps!=Some(rate.target_bitrate_bps){eprintln!("Linux publish rate: target_bps={} paused={}",rate.target_bitrate_bps,rate.target_bitrate_bps==0);}
+                                last_video_bps=Some(rate.target_bitrate_bps);
                                 let was_paused=transmit_paused;transmit_paused=rate.target_bitrate_bps==0;
                                 if !transmit_paused {cap.bitrate(rate.target_bitrate_bps.min(cap.bitrate_limit as u64) as u32);}
                                 if was_paused&&!transmit_paused{p.restart_keyframe();cap.request_keyframe();}
@@ -462,17 +502,18 @@ async fn session(
                                 if publisher.is_none(){
                                     if !packet.keyframe{cap.request_keyframe();continue;}
                                     match EncodedPublisher::in_room(room.clone(),packet.width,packet.height,cap.fps,cap.bitrate_limit,current_codec==Codec::Av1).await{
-                                        Ok(p)=>{publisher=Some(p);shared.lock().unwrap().sharing=true;},
+                                        Ok(p)=>{publisher=Some(p);publication_format=Some((current_codec,cap.fps,cap.bitrate_limit));shared.lock().unwrap().sharing=true;},
                                         Err(error)=>{shared.lock().unwrap().status=format!("Publicação rejeitada: {error}");cap.stop().await;capture=None;shared.lock().unwrap().sharing=false;continue;}
                                     }
                                 }
                                 let p=publisher.as_mut().unwrap();
-                                if p.take_keyframe_request(){cap.request_keyframe();if !packet.keyframe{continue;}}
                                 p.set_resolution_if_changed(packet.width,packet.height);
+                                if p.take_keyframe_request(){cap.request_keyframe();if !packet.keyframe{continue;}}
                                 if p.push(&packet.bytes,started.elapsed().as_micros() as i64,packet.keyframe)?{let mut state=shared.lock().unwrap();state.sent+=1;sent_bytes+=packet.bytes.len() as u64;state.quality.resolution=Some((packet.width,packet.height));}
                             },
                             Ok(None)=>{},
                             Err(error)=>{shared.lock().unwrap().status=error.to_string();cap.stop().await;capture=None;if let Some(p)=publisher.take(){let _=p.stop().await;}if let Some(a)=audio.take(){a.stop(&room).await;}
+                                publication_format=None;last_video_bps=None;transmit_paused=false;
                                 shared.lock().unwrap().sharing=false;},
                         }
                     }
@@ -503,6 +544,7 @@ async fn session(
     if let Some(mut cap) = capture.take() {
         cap.stop().await;
     }
+    if let Some(task)=retiring.take(){let _=task.await;}
     if let Some(a) = audio.take() {
         a.stop(&room).await;
     }
@@ -529,6 +571,47 @@ async fn session(
 #[cfg(test)]
 mod reception_tests {
     use super::*;
+    #[test]
+    #[ignore="Needs two authorized tokens for one isolated room and an NVENC GPU"]
+    fn publisher_source_and_codec_switches()->Result<()> {
+        let address=std::env::var("HYPERCAST_URL")?;
+        let publisher=Engine::start(address.clone(),std::env::var("HYPERCAST_PUBLISH_TOKEN")?,egui::Context::default());
+        let viewer=Engine::start(address,std::env::var("HYPERCAST_ROOM_TOKEN")?,egui::Context::default());
+        let deadline=Instant::now()+Duration::from_secs(15);
+        while !publisher.state.lock().unwrap().connected || !viewer.state.lock().unwrap().connected {
+            anyhow::ensure!(Instant::now()<deadline,"Switch test clients did not connect");
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let mut previous_sid=None;
+        for (step,(w,h,codec,encoder)) in [
+            (640,360,Codec::Av1,Encoder::Auto),
+            (800,600,Codec::Av1,Encoder::Auto),
+            (640,360,Codec::Hevc,Encoder::Auto),
+            (800,600,Codec::Hevc,Encoder::Software),
+            (640,360,Codec::Hevc,Encoder::Auto),
+            (640,360,Codec::Av1,Encoder::Auto),
+        ].into_iter().enumerate() {
+            let before=viewer.state.lock().unwrap().received;
+            publisher.tx.send(Command::Share(Source::Synthetic(w,h),codec,encoder,crate::bandwidth::UploadProfile::Economic))?;
+            let deadline=Instant::now()+Duration::from_secs(15);
+            let sid=loop {
+                let ready={let s=publisher.state.lock().unwrap();s.sharing&&!s.selecting};
+                let fresh={let s=viewer.state.lock().unwrap();s.screens.iter().find_map(|screen|s.frames.get(&screen.sid).filter(|_|step<2 || previous_sid.as_ref()!=Some(&screen.sid)).filter(|(sequence,frame)|*sequence>before+3 && frame.buffer.width()==w && frame.buffer.height()==h).map(|_|screen.sid.clone()))};
+                if ready{if let Some(sid)=fresh{break sid;}}
+                if Instant::now()>=deadline {let p=publisher.state.lock().unwrap();let v=viewer.state.lock().unwrap();anyhow::bail!("Switch {step} did not deliver fresh {w}x{h} frames: publisher={}, sent={}, viewer={}, received={}, screens={}",p.status,p.sent,v.status,v.received,v.screens.len());}
+                std::thread::sleep(Duration::from_millis(25));
+            };
+            if let Some(previous)=previous_sid {
+                if step==1{anyhow::ensure!(sid==previous,"Compatible source change replaced the publication");}
+                else{anyhow::ensure!(sid!=previous,"Codec/FPS change kept an incompatible publication");}
+            }
+            previous_sid=Some(sid);
+            eprintln!("PASS: switch {step}: {w}x{h} {codec:?} {encoder:?}");
+        }
+        drop(publisher);drop(viewer);
+        anyhow::ensure!(super::super::media::decoder_count()==0,"Switch test retained decoders");
+        Ok(())
+    }
     #[test]
     #[ignore="Needs an isolated authorized room with two synthetic publishers"]
     fn receiver_switch_and_refresh_cycles()->Result<()> {

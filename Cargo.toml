@@ -1,6 +1,6 @@
 [package]
 name = "hypercast"
-version = "0.8.12"
+version = "0.8.13"
 edition = "2024"
 rust-version = "1.92"
 description = "Native Windows and Linux screen sharing through a centralized LiveKit SFU"

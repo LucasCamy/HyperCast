@@ -8,7 +8,7 @@ GStreamer ou codecs manualmente para executar o AppImage.
 
 ## Abrir no Bazzite
 
-Baixe `HyperCast-0.8.12-linux-x86_64.AppImage` na página de versões e abra pelo
+Baixe `HyperCast-0.8.13-linux-x86_64.AppImage` na página de versões e abra pelo
 Gear Lever. Se preferir abrir diretamente, habilite a permissão de execução nas
 propriedades do arquivo. Sem suporte a FUSE, use `--appimage-extract-and-run`.
 
@@ -137,6 +137,29 @@ BGRA com FPS variável e limita o pool a quatro buffers, compile
 Esse produtor só gera pixels sintéticos e verifica a liberação dos seus buffers.
 Os testes com o servidor PipeWire 1.0.5 não reproduziram o EINVAL do Bazzite;
 o ajuste de compatibilidade ainda depende da confirmação no compositor afetado.
+
+A 0.8.13 mantém a publicação ao trocar de janela/monitor com o mesmo codec,
+FPS e orçamento. A captura nova substitui a anterior somente depois do primeiro
+quadro codificado; o encerramento do pipeline anterior ocorre fora do loop de
+mídia. Uma troca de codec, modo de encoder (30/120 FPS) ou orçamento renova a
+conexão Linux da sala, com breve interrupção também da recepção/áudio, para não
+reutilizar a negociação anterior. Não é necessário sair manualmente da sala.
+Pedidos de keyframe são enviados de forma assíncrona ao encoder. A fila
+codificada aplica contrapressão com tamanho limitado; apenas a fila de quadros
+brutos descarta imagens antigas, preservando as referências HEVC/AV1.
+
+No NVENC, formatos BGRA/RGBA do portal podem entrar diretamente no encoder e
+evitar a conversão de cor forçada na CPU. Continua havendo cópia MemFd e upload
+para a GPU; redimensionar pode exigir processamento adicional na CPU.
+A cada cinco segundos, `Linux capture rates` registra FPS de origem,
+entrada do encoder, saída codificada e entrega ao loop de rede. `Linux publish
+rate` registra o bitrate solicitado pelo WebRTC. Fonte estática do compositor
+pode legitimamente emitir poucos quadros; esses números não garantem 120 FPS.
+
+O teste `publisher_source_and_codec_switches` gera imagens e exige que outro
+cliente decodifique cada troca, preservando SID apenas na troca compatível.
+`tests/integration_linux_publisher_switch.py` executa esse teste na sala isolada
+do ambiente de desenvolvimento Windows/WSL, com as bibliotecas do AppImage.
 
 ## Desenvolver
 
