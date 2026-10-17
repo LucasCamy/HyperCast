@@ -8,5 +8,6 @@
 *.toml text eol=lf
 *.md text eol=lf
 *.ps1 text eol=lf
+tools/linux/AppRun text eol=lf
 # Preserve upstream SDK formatting; our source remains whitespace-checked.
 vendor/** -whitespace
