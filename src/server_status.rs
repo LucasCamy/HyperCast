@@ -15,7 +15,7 @@ pub struct ServerStatus {
 
 impl Default for ServerStatus {
     fn default() -> Self {
-        Self { status: Status::Checking, detail: "Verificando disponibilidade do servidor",
+        Self { status: Status::Checking, detail: crate::i18n::label("Verificando disponibilidade do servidor","Checking server availability"),
             address: String::new(), changed: Instant::now(), checked: None, receiver: None }
     }
 }
@@ -23,10 +23,10 @@ impl Default for ServerStatus {
 impl ServerStatus {
     pub fn label(&self) -> &'static str {
         match self.status {
-            Status::Checking => "VERIFICANDO",
+            Status::Checking => crate::i18n::label("VERIFICANDO","CHECKING"),
             Status::Online => "ONLINE",
             Status::Offline => "OFFLINE",
-            Status::InvalidAddress => "INVÁLIDO",
+            Status::InvalidAddress => crate::i18n::label("INVÁLIDO","INVALID"),
         }
     }
 
@@ -37,7 +37,7 @@ impl ServerStatus {
             self.changed = Instant::now();
             self.checked = None;
             self.status = Status::Checking;
-            self.detail = "Verificando disponibilidade do servidor";
+            self.detail = crate::i18n::label("Verificando disponibilidade do servidor","Checking server availability");
         }
         if let Some(rx) = &self.receiver {
             match rx.try_recv() {
@@ -47,7 +47,7 @@ impl ServerStatus {
                     if requested == self.address {
                         self.checked = Some(Instant::now());
                         match result {
-                            Ok(()) => { self.status = Status::Online; self.detail = "Servidor disponível · independente da conexão com a sala"; }
+                            Ok(()) => { self.status = Status::Online; self.detail = crate::i18n::label("Servidor disponível · independente da conexão com a sala","Server available · independent of room connection"); }
                             Err(detail) => { self.status = Status::Offline; self.detail = detail; }
                         }
                     }
@@ -61,7 +61,7 @@ impl ServerStatus {
         }
         let Ok(endpoint) = crate::invitation::endpoint(address, "/") else {
             self.status = Status::InvalidAddress;
-            self.detail = "Informe um endereço WSS válido para verificar o servidor";
+            self.detail = crate::i18n::label("Informe um endereço WSS válido para verificar o servidor","Enter a valid WSS address to check the server");
             return;
         };
         if self.receiver.is_some() || self.changed.elapsed() < Duration::from_millis(600)
@@ -82,19 +82,19 @@ fn probe(endpoint: url::Url) -> Result<(), &'static str> {
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(3)).timeout(Duration::from_secs(4))
         .user_agent(concat!("HyperCast-Desktop/", env!("CARGO_PKG_VERSION")))
-        .build().map_err(|_| "Não foi possível iniciar a verificação do servidor")?;
+        .build().map_err(|_| crate::i18n::label("Não foi possível iniciar a verificação do servidor","Could not start the server check"))?;
     // No room token, shared key or device ID. Require LiveKit's health response;
     // a proxy login page, redirect or Cloudflare error is not a healthy SFU.
     let response = client.get(endpoint).header("Cache-Control", "no-cache, no-store")
-        .send().map_err(|_| "Servidor inacessível · verifique a rede e o endereço")?;
+        .send().map_err(|_| crate::i18n::label("Servidor inacessível · verifique a rede e o endereço","Server unreachable · check your network and the address"))?;
     if response.status().as_u16() == 403 {
-        return Err("Acesso ao servidor bloqueado pelo proxy ou firewall (HTTP 403)");
+        return Err(crate::i18n::label("Acesso ao servidor bloqueado pelo proxy ou firewall (HTTP 403)","Server access blocked by proxy or firewall (HTTP 403)"));
     }
-    if response.status().as_u16() != 200 { return Err("Servidor indisponível ou ainda não está pronto"); }
+    if response.status().as_u16() != 200 { return Err(crate::i18n::label("Servidor indisponível ou ainda não está pronto","Server unavailable or not ready yet")); }
     let mut body = Vec::new();
-    response.take(17).read_to_end(&mut body).map_err(|_| "Resposta do servidor interrompida")?;
+    response.take(17).read_to_end(&mut body).map_err(|_| crate::i18n::label("Resposta do servidor interrompida","Server response interrupted"))?;
     if body.len() <= 16 && body.as_slice() == b"OK" { Ok(()) }
-    else { Err("O endereço não retornou a confirmação de saúde do LiveKit") }
+    else { Err(crate::i18n::label("O endereço não retornou a confirmação de saúde do LiveKit","The address did not return the LiveKit health confirmation")) }
 }
 
 #[cfg(test)]

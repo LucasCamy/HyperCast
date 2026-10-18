@@ -1,3 +1,4 @@
+pub mod i18n;
 #[cfg(all(windows, feature = "desktop"))]
 pub mod system_audio;
 #[cfg(all(windows, feature = "desktop"))]

@@ -1,5 +1,5 @@
 mod desktop;
-mod engine;
+pub(crate) mod engine;
 mod media;
 pub use desktop::run;
 pub use media::media_self_test;

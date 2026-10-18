@@ -17,7 +17,7 @@ pub fn modal_header(ui:&mut egui::Ui,title:&str) {
                 ui.add_sized([32.0,32.0],egui::Button::new("").corner_radius(8)
                     .fill(if ui.is_enabled(){SURFACE}else{Color32::TRANSPARENT}).stroke(egui::Stroke::NONE))
             }).inner;
-            response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,true,format!("Fechar {title}")));
+            response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,true,crate::i18n_format!("Fechar {title}","Close {title}")));
             let stroke=egui::Stroke::new(1.5,if response.hovered()||response.has_focus(){TEXT}else{MUTED});
             for direction in [-1.0,1.0]{let offset=Vec2::new(5.0,5.0*direction);ui.painter().line_segment([response.rect.center()-offset,response.rect.center()+offset],stroke);}
             if response.clicked(){ui.close_kind(egui::UiKind::Window);}
@@ -27,11 +27,11 @@ pub fn modal_header(ui:&mut egui::Ui,title:&str) {
 pub fn upload_selector(ui:&mut egui::Ui,profile:&mut crate::bandwidth::UploadProfile,enabled:bool)->bool {
     let previous=*profile;
     ui.add_enabled_ui(enabled,|ui|{
-        ui.label(RichText::new("Limite de upload · vídeo").size(11.0).color(MUTED));
+        ui.label(RichText::new(crate::i18n::label("Limite de upload · vídeo","Upload limit · video")).size(11.0).color(MUTED));
         egui::ComboBox::from_id_salt("upload_profile").width(ui.available_width()).selected_text(profile.label()).show_ui(ui,|ui|{
             for choice in crate::bandwidth::UploadProfile::ALL{ui.selectable_value(profile,choice,choice.label());}
         });
-        ui.label(RichText::new(if enabled{"Mantém resolução e FPS. Menos Mbps pode reduzir os detalhes."}else{"Pare o compartilhamento para alterar o limite."}).size(11.0).color(MUTED));
+        ui.label(RichText::new(if enabled{crate::i18n::label("Mantém resolução e FPS. Menos Mbps pode reduzir os detalhes.","Keeps resolution and FPS. Lower Mbps may reduce detail.")}else{crate::i18n::label("Pare o compartilhamento para alterar o limite.","Stop sharing to change the limit.")}).size(11.0).color(MUTED));
     });
     previous!=*profile
 }
@@ -62,24 +62,24 @@ pub fn exit_fullscreen(ui:&mut egui::Ui)->egui::Response {
         ui.spacing_mut().button_padding=Vec2::ZERO;ui.spacing_mut().interact_size=Vec2::splat(20.0);
         ui.add_sized([20.0,20.0],egui::Button::new("").corner_radius(5).fill(SURFACE))
     }).inner;
-    response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,true,"Sair da tela cheia"));
+    response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,true,crate::i18n::label("Sair da tela cheia","Exit full screen")));
     let center=response.rect.center();let stroke=egui::Stroke::new(1.5,if response.hovered()||response.has_focus(){TEXT}else{MUTED});
     for direction in [-1.0,1.0]{let offset=Vec2::new(3.5,3.5*direction);ui.painter().line_segment([center-offset,center+offset],stroke);}
-    response.on_hover_text("Sair da tela cheia · Esc / F11")
+    response.on_hover_text(crate::i18n::label("Sair da tela cheia · Esc / F11","Exit full screen · Esc / F11"))
 }
 pub fn quality_strip(ui:&mut egui::Ui,value:&crate::video_metrics::QualitySnapshot,reconnecting:bool,publishing:bool,reception_paused:bool){
     ui.horizontal_wrapped(|ui|{
         ui.spacing_mut().item_spacing.x=16.0;
-        ui.label(RichText::new(if reconnecting{"Sala · reconectando…"}else{"Sala · conectada"}).size(11.0).color(if reconnecting{Color32::from_rgb(236,190,105)}else{ACCENT}));
+        ui.label(RichText::new(if reconnecting{crate::i18n::label("Sala · reconectando…","Room · reconnecting…")}else{crate::i18n::label("Sala · conectada","Room · connected")}).size(11.0).color(if reconnecting{Color32::from_rgb(236,190,105)}else{ACCENT}));
         if publishing {
-            let text=if reconnecting{"Envio aguardando conexão".into()}else if value.send_paused{"Envio pausado".into()}else if let Some(rate)=value.send{
+            let text=if reconnecting{crate::i18n::label("Envio aguardando conexão","Publishing · waiting for connection").into()}else if value.send_paused{crate::i18n::label("Envio pausado","Publishing paused").into()}else if let Some(rate)=value.send{
                 let size=value.resolution.map(|(w,h)|format!("{w}×{h} · ")).unwrap_or_default();
-                format!("Envio · {size}{:.0} FPS · {:.1} Mbps",rate.fps,rate.mbps)
-            }else{"Envio · medindo…".into()};
-            ui.label(RichText::new(text).size(11.0).color(MUTED)).on_hover_text("Quadros e bytes de vídeo enviados na última janela, sem overhead da rede. Não medem fidelidade da imagem nem latência fim a fim.");
+                crate::i18n_format!("Envio · {size}{:.0} FPS · {:.1} Mbps","Sending · {size}{:.0} FPS · {:.1} Mbps",rate.fps,rate.mbps)
+            }else{crate::i18n::label("Envio · medindo…","Sending · measuring…").into()};
+            ui.label(RichText::new(text).size(11.0).color(MUTED)).on_hover_text(crate::i18n::label("Quadros e bytes de vídeo enviados na última janela, sem overhead da rede. Não medem fidelidade da imagem nem latência fim a fim.","Video frames and bytes sent during the last interval, excluding network overhead. These do not measure image fidelity or end-to-end latency."));
         }
-        let receive=if reception_paused{"Recepção pausada".into()}else if reconnecting{"Recepção aguardando conexão".into()}else if let Some(rate)=value.receive{format!("Recepção · {:.0} quadros/s no total",rate.fps)}else{"Recepção · medindo…".into()};
-        ui.label(RichText::new(receive).size(11.0).color(MUTED)).on_hover_text("Soma dos quadros decodificados de todas as transmissões recebidas; não é FPS de uma única tela nem FPS de apresentação.");
+        let receive=if reception_paused{crate::i18n::label("Recepção pausada","Playback paused").into()}else if reconnecting{crate::i18n::label("Recepção aguardando conexão","Playback · waiting for connection").into()}else if let Some(rate)=value.receive{crate::i18n_format!("Recepção · {:.0} quadros/s no total","Playback · {:.0} total frames/s",rate.fps)}else{crate::i18n::label("Recepção · medindo…","Playback · measuring…").into()};
+        ui.label(RichText::new(receive).size(11.0).color(MUTED)).on_hover_text(crate::i18n::label("Soma dos quadros decodificados de todas as transmissões recebidas; não é FPS de uma única tela nem FPS de apresentação.","Sum of decoded frames across all received streams; not the FPS of one stream or the presentation FPS."));
     });
 }
 
@@ -159,4 +159,16 @@ mod tests {
         assert_eq!(label.galley.rows.len(),1);
         assert!(button.contains_rect(label.visual_bounding_rect()));
     }
+}
+
+pub fn stream_settings(ui:&mut egui::Ui,value:&mut crate::resolution::StreamSettings,enabled:bool,max_fps:u32){
+    ui.add_enabled_ui(enabled,|ui|{ui.columns(2,|columns|{
+        columns[0].label(RichText::new(crate::i18n::label("Resolução","Resolution")).size(11.0).color(MUTED));
+        egui::ComboBox::from_id_salt("send_resolution").truncate().width(columns[0].available_width()).selected_text(value.size.label()).show_ui(&mut columns[0],|ui|{
+            for size in [crate::resolution::OutputSize::Native,crate::resolution::OutputSize::FullHd,crate::resolution::OutputSize::QuadHd]{ui.selectable_value(&mut value.size,size,size.label());}
+        });
+        columns[1].label(RichText::new(crate::i18n::label("FPS de envio","Send FPS")).size(11.0).color(MUTED));
+        egui::ComboBox::from_id_salt("send_fps").truncate().width(columns[1].available_width()).selected_text(format!("{} FPS",value.fps)).show_ui(&mut columns[1],|ui|{for fps in [30,60,120].into_iter().filter(|fps|*fps<=max_fps){ui.selectable_value(&mut value.fps,fps,format!("{fps} FPS"));}});
+    });});
+    ui.label(RichText::new(crate::i18n::label("Mantém a proporção; fontes menores não são ampliadas.","Keeps the aspect ratio; smaller sources are not upscaled.")).size(11.0).color(MUTED));
 }

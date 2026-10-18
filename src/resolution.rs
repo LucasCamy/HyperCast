@@ -25,3 +25,15 @@ mod tests {
         }
     }
 }
+
+/// Limits the encoded image, independently of the captured desktop size.
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub enum OutputSize {#[default] Native, FullHd, QuadHd}
+impl OutputSize {
+    pub fn limits(self)->(u32,u32){match self {Self::Native=>(8192,8192),Self::FullHd=>(1920,1080),Self::QuadHd=>(2560,1440)}}
+    pub fn label(self)->&'static str {match self{Self::Native=>crate::i18n::label("Nativa","Native"),Self::FullHd=>"Full HD · 1080p",Self::QuadHd=>"Quad HD · 1440p"}}
+}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct StreamSettings {pub size:OutputSize,pub fps:u32}
+impl Default for StreamSettings {fn default()->Self{Self{size:OutputSize::Native,fps:120}}}
+impl StreamSettings {pub fn valid(self)->bool{[30,60,120].contains(&self.fps)}}

@@ -5,7 +5,7 @@ impl UploadProfile {
     pub const ALL:[Self;3]=[Self::Economic,Self::Balanced,Self::Maximum];
     pub fn bps(self)->u32 {match self{Self::Economic=>12_000_000,Self::Balanced=>25_000_000,Self::Maximum=>40_000_000}}
     pub fn from_mbps(value:u32)->Option<Self>{Self::ALL.into_iter().find(|p|p.bps()/1_000_000==value)}
-    pub fn label(self)->&'static str {match self{Self::Economic=>"Econômico · 12 Mbps",Self::Balanced=>"Balanceado · 25 Mbps",Self::Maximum=>"Máxima qualidade · 40 Mbps"}}
+    pub fn label(self)->&'static str {match self{Self::Economic=>crate::i18n::label("Econômico · 12 Mbps","Economy · 12 Mbps"),Self::Balanced=>crate::i18n::label("Balanceado · 25 Mbps","Balanced · 25 Mbps"),Self::Maximum=>crate::i18n::label("Máxima qualidade · 40 Mbps","Maximum quality · 40 Mbps")}}
     pub fn initial()->Self {
         // Bounded smoke-test override; ordinary sessions always start at 25 Mbps.
         if std::env::var("HYPERCAST_SMOKE_SECONDS").ok().and_then(|v|v.parse::<u32>().ok()).is_some_and(|n|(1..=300).contains(&n)){

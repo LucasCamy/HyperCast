@@ -51,3 +51,12 @@ instalação registrada isolada, uma versão privada anterior do mesmo cliente e
 o instalador oficial baixado do GitHub; recusa uma instalação de usuário existente.
 
 Referência: [GitHub — release assets e digest](https://docs.github.com/en/rest/releases/assets).
+
+O instalador oferece Português (Brasil) e Inglês. Após a instalação, salva
+`pt-BR` ou `en-US` em `%LOCALAPPDATA%/HyperCast/language`; a aplicação lê esse
+arquivo ao iniciar. Atualizações silenciosas preservam a preferência existente.
+Uma instalação manual pode alterar o idioma escolhido. O arquivo permanece no
+perfil após desinstalar, como as demais preferências não secretas.
+No Linux, o caminho é `${XDG_STATE_HOME:-$HOME/.local/state}/hypercast/language`.
+`HYPERCAST_LANGUAGE=pt-BR` ou `en-US` permite validar o idioma sem alterar a
+preferência salva. Os nomes de usuários e salas são exibidos como foram criados.

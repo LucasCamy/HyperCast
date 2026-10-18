@@ -29,15 +29,15 @@ impl Catalog {
                     CatalogAction::Delete(room)=>{catalog_post(&address,&session,"/api/rooms/delete",serde_json::json!({"room":room}))?;},
                 }}
                 let value=catalog_post(&address,&session,"/api/rooms/list",serde_json::json!({}))?;
-                let rows=value["rooms"].as_array().ok_or_else(||anyhow::anyhow!("Lista de salas inválida"))?;
-                ensure!(rows.len()<=32,"Lista de salas excedeu o limite");
+                let rows=value["rooms"].as_array().ok_or_else(||anyhow::anyhow!(crate::i18n::label("Lista de salas inválida","Invalid room list")))?;
+                ensure!(rows.len()<=32,crate::i18n::label("Lista de salas excedeu o limite","Room list exceeded the limit"));
                 let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
                 rows.iter().map(|v| {
-                    let text=|key:&str|->Result<String>{Ok(v[key].as_str().ok_or_else(||anyhow::anyhow!("Sala inválida"))?.to_owned())};
+                    let text=|key:&str|->Result<String>{Ok(v[key].as_str().ok_or_else(||anyhow::anyhow!(crate::i18n::label("Sala inválida","Invalid room")))?.to_owned())};
                     let room=text("room")?;let title=text("room_name")?;
-                    ensure!(room.len()<=64 && !title.is_empty() && title.chars().count()<=64 && !title.chars().any(char::is_control),"Sala inválida");
-                    let persistent=v["persistent"].as_bool().ok_or_else(||anyhow::anyhow!("Sala inválida"))?;
-                    let expires=v["expires_at"].as_u64().ok_or_else(||anyhow::anyhow!("Sala inválida"))?;
+                    ensure!(room.len()<=64 && !title.is_empty() && title.chars().count()<=64 && !title.chars().any(char::is_control),crate::i18n::label("Sala inválida","Invalid room"));
+                    let persistent=v["persistent"].as_bool().ok_or_else(||anyhow::anyhow!(crate::i18n::label("Sala inválida","Invalid room")))?;
+                    let expires=v["expires_at"].as_u64().ok_or_else(||anyhow::anyhow!(crate::i18n::label("Sala inválida","Invalid room")))?;
                     Ok(SavedRoom{room,title,persistent,expired:!persistent && expires<=now,participants:v["participants"].as_u64().unwrap_or(0).min(12)})
                 }).collect()
             })();
@@ -48,7 +48,7 @@ impl Catalog {
         if let Some(rx)=&self.receiver {
             match rx.try_recv() {
                 Ok((origin,requested_session,result))=>{self.receiver=None;self.busy=false;if origin==address && requested_session==session && !session.is_empty(){match result {Ok(rooms)=>self.rooms=rooms,Err(e)=>self.status=e.to_string()}}},
-                Err(mpsc::TryRecvError::Disconnected)=>{self.receiver=None;self.busy=false;self.status="Consulta interrompida; tente novamente".into();},
+                Err(mpsc::TryRecvError::Disconnected)=>{self.receiver=None;self.busy=false;self.status=crate::i18n::label("Consulta interrompida; tente novamente","Request interrupted; try again").into();},
                 Err(mpsc::TryRecvError::Empty)=>{}
             }
         }
@@ -56,22 +56,22 @@ impl Catalog {
         if !self.open{return None;}
         if !self.busy && self.last_refresh.is_none_or(|at|at.elapsed()>=std::time::Duration::from_secs(30)) {self.request(address.to_owned(),session.clone(),None,ctx.clone());}
         let mut open=true;let mut selected=None;let mut action=None;let mut refresh=false;
-        egui::Window::new("Escolher sala").id(egui::Id::new("saved_rooms_window")).title_bar(false).open(&mut open)
+        egui::Window::new(crate::i18n::label("Escolher sala","Choose room")).id(egui::Id::new("saved_rooms_window")).title_bar(false).open(&mut open)
             .frame(egui::Frame::window(&ctx.style_of(egui::Theme::Dark)).fill(controls::PANEL).stroke(egui::Stroke::new(1.0,controls::BORDER)).corner_radius(12).inner_margin(16))
             .fixed_pos(egui::pos2(16.0,16.0)).default_width(440.0).max_width(440.0).resizable(false).collapsible(false).show(ctx,|ui|{
-                controls::modal_header(ui,"Escolher sala");
+                controls::modal_header(ui,crate::i18n::label("Escolher sala","Choose room"));
                 ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
                 ui.spacing_mut().item_spacing=egui::vec2(10.0,10.0);
                 ui.horizontal(|ui|{
-                    ui.label(egui::RichText::new(if self.busy {"Atualizando salas…".into()}else{format!("{} sala(s) disponível(is)",self.rooms.len())}).size(12.0).color(controls::MUTED));
+                    ui.label(egui::RichText::new(if self.busy {crate::i18n::label("Atualizando salas…","Refreshing rooms…").into()}else{crate::i18n_format!("{} sala(s) disponível(is)","{} room(s) available",self.rooms.len())}).size(12.0).color(controls::MUTED));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
-                        if controls::compact(ui,"Atualizar lista",!self.busy).clicked(){refresh=true;}
+                        if controls::compact(ui,crate::i18n::label("Atualizar lista","Refresh list"),!self.busy).clicked(){refresh=true;}
                     });
                 });
-                let name_label=ui.label("Seu nome").id;
-                controls::input(ui,name,"Como quer aparecer na sala",false,64,current_room.is_none() && !transitioning).labelled_by(name_label);
+                let name_label=ui.label(crate::i18n::label("Seu nome","Your name")).id;
+                controls::input(ui,name,crate::i18n::label("Como quer aparecer na sala","Your display name in the room"),false,64,current_room.is_none() && !transitioning).labelled_by(name_label);
                 if !self.status.is_empty(){ui.label(&self.status);}
-                if !self.busy && self.rooms.is_empty(){ui.label("Nenhuma sala salva. Crie uma para começar.");}
+                if !self.busy && self.rooms.is_empty(){ui.label(crate::i18n::label("Nenhuma sala salva. Crie uma para começar.","No saved rooms. Create one to get started."));}
                 let list_height=(ctx.content_rect().bottom()-ui.cursor().top()-64.0).max(160.0);
                 egui::ScrollArea::vertical().min_scrolled_height(list_height).max_height(list_height).auto_shrink([false,false]).show(ui,|ui|{
                     let card_width=ui.available_width();
@@ -87,42 +87,42 @@ impl Catalog {
                                         ui.allocate_ui_with_layout(egui::vec2(title_width,0.0),egui::Layout::top_down(egui::Align::Min),|ui|{
                                             ui.set_min_width(title_width);
                                             ui.label(egui::RichText::new(&entry.title).strong().size(15.0));
-                                            ui.label(egui::RichText::new(format!("{} · {} pessoa(s)",if entry.expired{"Expirada"}else if entry.persistent{"Permanente"}else{"Temporária · 24 h"},entry.participants)).size(12.0).color(controls::MUTED));
+                                            ui.label(egui::RichText::new(crate::i18n_format!("{} · {} pessoa(s)","{} · {} person(s)",if entry.expired{crate::i18n::label("Expirada","Expired")}else if entry.persistent{crate::i18n::label("Permanente","Permanent")}else{crate::i18n::label("Temporária · 24 h","Temporary · 24 h")},entry.participants)).size(12.0).color(controls::MUTED));
                                         });
                                         let valid_name=!name.is_empty() && name.len()<=64 && name.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_');
                                         let enabled=!self.busy && !transitioning && !entry.expired && !current && valid_name;
-                                        let enter=controls::primary(ui,if current{"Nesta sala"}else{"Entrar"},enabled,egui::vec2(88.0,36.0));
-                                        enter.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,enabled,format!("Entrar em {}",entry.title)));
+                                        let enter=controls::primary(ui,if current{crate::i18n::label("Nesta sala","Current room")}else{crate::i18n::label("Entrar","Join")},enabled,egui::vec2(88.0,36.0));
+                                        enter.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,enabled,crate::i18n_format!("Entrar em {}","Join {}",entry.title)));
                                         if enter.clicked(){selected=Some(CreatedRoom{room:entry.room.clone(),title:entry.title.clone()});}
                                     });
                                     let can_delete=!self.busy && !transitioning && entry.participants==0 && !current;
                                     ui.horizontal(|ui|{
                                         let mut persistent=entry.persistent;
-                                        let checkbox=ui.add_enabled(!self.busy,egui::Checkbox::new(&mut persistent,"Manter esta sala"));
-                                        checkbox.widget_info(||egui::WidgetInfo::selected(egui::WidgetType::Checkbox,!self.busy,persistent,format!("Manter sala {}",entry.title)));
+                                        let checkbox=ui.add_enabled(!self.busy,egui::Checkbox::new(&mut persistent,crate::i18n::label("Manter esta sala","Keep this room")));
+                                        checkbox.widget_info(||egui::WidgetInfo::selected(egui::WidgetType::Checkbox,!self.busy,persistent,crate::i18n_format!("Manter sala {}","Keep room {}",entry.title)));
                                         if checkbox.changed(){action=Some(CatalogAction::Keep(entry.room.clone(),persistent));}
                                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
-                                            let delete=controls::compact(ui,"Excluir sala",can_delete);
-                                            delete.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,can_delete,format!("Excluir sala {}",entry.title)));
+                                            let delete=controls::compact(ui,crate::i18n::label("Excluir sala","Delete room"),can_delete);
+                                            delete.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,can_delete,crate::i18n_format!("Excluir sala {}","Delete room {}",entry.title)));
                                             if delete.clicked(){self.confirm_delete=Some(entry.room.clone());}
                                         });
                                     });
                                     if self.confirm_delete.as_deref()==Some(&entry.room) {
                                         ui.horizontal(|ui|{
-                                            ui.label(egui::RichText::new("Excluir esta sala?").size(11.0).color(controls::MUTED));
-                                            if controls::compact(ui,"Cancelar",!self.busy).clicked(){self.confirm_delete=None;}
-                                            let confirm=controls::compact(ui,"Excluir",can_delete);
-                                            confirm.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,can_delete,format!("Confirmar exclusão de {}",entry.title)));
+                                            ui.label(egui::RichText::new(crate::i18n::label("Excluir esta sala?","Delete this room?")).size(11.0).color(controls::MUTED));
+                                            if controls::compact(ui,crate::i18n::label("Cancelar","Cancel"),!self.busy).clicked(){self.confirm_delete=None;}
+                                            let confirm=controls::compact(ui,crate::i18n::label("Excluir","Delete"),can_delete);
+                                            confirm.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,can_delete,crate::i18n_format!("Confirmar exclusão de {}","Confirm deletion of {}",entry.title)));
                                             if confirm.clicked(){action=Some(CatalogAction::Delete(entry.room.clone()));self.confirm_delete=None;}
                                         });
                                     }
-                                    if entry.expired{ui.label(egui::RichText::new(if entry.participants>0{"A limpeza aguarda os participantes saírem."}else{"Aguardando limpeza automática."}).size(11.0).color(controls::MUTED));}
+                                    if entry.expired{ui.label(egui::RichText::new(if entry.participants>0{crate::i18n::label("A limpeza aguarda os participantes saírem.","Cleanup will start after everyone leaves.")}else{crate::i18n::label("Aguardando limpeza automática.","Waiting for automatic cleanup.")}).size(11.0).color(controls::MUTED));}
                                 });
                         });
                     }
                 });
-                if transitioning{ui.small("Aguarde a troca de sala…");}
-                else if current_room.is_some(){ui.small("Ao entrar em outra sala, seu compartilhamento atual será encerrado.");}
+                if transitioning{ui.small(crate::i18n::label("Aguarde a troca de sala…","Wait for the room switch…"));}
+                else if current_room.is_some(){ui.small(crate::i18n::label("Ao entrar em outra sala, seu compartilhamento atual será encerrado.","Joining another room will stop your current stream."));}
             });
         self.open=open && selected.is_none();
         if refresh || action.is_some(){self.request(address.to_owned(),session,action,ctx.clone());}
@@ -130,12 +130,12 @@ impl Catalog {
     }
 }
 fn catalog_post(address:&str,session:&str,path:&str,body:serde_json::Value)->Result<serde_json::Value> {
-    ensure!(!session.is_empty() && session.len()<=4096,"Entre no servidor novamente");
+    ensure!(!session.is_empty() && session.len()<=4096,crate::i18n::label("Entre no servidor novamente","Connect to the server again"));
     let response=reqwest::blocking::Client::builder().redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(15)).build()?.post(crate::invitation::endpoint(address,path)?)
-        .bearer_auth(session).json(&body).send().map_err(|_|anyhow::anyhow!("Servidor indisponível; tente novamente"))?;
-    match response.status().as_u16(){200=>{},401|403=>anyhow::bail!("Sessão expirada; entre no servidor novamente"),404=>anyhow::bail!("Sala já removida; atualize a lista"),409 if path=="/api/rooms/delete"=>anyhow::bail!("A sala recebeu participantes. Aguarde todos saírem para excluir"),_=>anyhow::bail!("Não foi possível atualizar a lista de salas")}
-    let mut bytes=Vec::new();response.take(65537).read_to_end(&mut bytes)?;ensure!(bytes.len()<=65536,"Resposta excedeu o limite");
+        .bearer_auth(session).json(&body).send().map_err(|_|anyhow::anyhow!(crate::i18n::label("Servidor indisponível; tente novamente","Server unavailable; try again")))?;
+    match response.status().as_u16(){200=>{},401|403=>anyhow::bail!(crate::i18n::label("Sessão expirada; entre no servidor novamente","Session expired; connect to the server again")),404=>anyhow::bail!(crate::i18n::label("Sala já removida; atualize a lista","Room already removed; refresh the list")),409 if path=="/api/rooms/delete"=>anyhow::bail!(crate::i18n::label("A sala recebeu participantes. Aguarde todos saírem para excluir","The room has participants. Wait until everyone leaves before deleting it")),_=>anyhow::bail!(crate::i18n::label("Não foi possível atualizar a lista de salas","Could not refresh the room list"))}
+    let mut bytes=Vec::new();response.take(65537).read_to_end(&mut bytes)?;ensure!(bytes.len()<=65536,crate::i18n::label("Resposta excedeu o limite","Response exceeded the limit"));
     Ok(serde_json::from_slice(&bytes)?)
 }
 
@@ -149,16 +149,21 @@ impl Default for Creator {
     fn default()->Self {Self {open:false,title:String::new(),persistent:false,busy:false,status:String::new(),request_id:String::new(),requested_title:String::new(),requested_persistent:false,receiver:None}}
 }
 impl Creator {
+    /// The server may finish creating the room, but a cancelled UI intent must
+    /// never join it later. The room remains discoverable in the catalog.
+    pub fn cancel_automatic_join(&mut self){
+        if self.receiver.take().is_some(){self.busy=false;self.status=crate::i18n::label("Entrada automática cancelada","Automatic join cancelled").into();}
+    }
     pub fn open(&mut self,_address:&str) {self.open=true;self.status.clear();self.request_id=uuid::Uuid::new_v4().simple().to_string();self.requested_title.clear();}
     pub fn start(&mut self,address:String,session:String,ctx:egui::Context) {
         if self.busy {return;}
         let title=self.title.trim().to_owned();
         if self.requested_title!=title || self.requested_persistent!=self.persistent {self.request_id=uuid::Uuid::new_v4().simple().to_string();self.requested_title=title.clone();self.requested_persistent=self.persistent;}
-        let persistent=self.persistent;let request=self.request_id.clone();let(tx,rx)=mpsc::channel();self.busy=true;self.status="Criando sala…".into();
+        let persistent=self.persistent;let request=self.request_id.clone();let(tx,rx)=mpsc::channel();self.busy=true;self.status=crate::i18n::label("Criando sala…","Creating room…").into();
         std::thread::spawn(move||{let _=tx.send(create(&address,&session,&title,&request,persistent));ctx.request_repaint();});self.receiver=Some(rx);
     }
     pub fn poll(&mut self)->Option<CreatedRoom> {
-        let result=match self.receiver.as_ref()?.try_recv(){Ok(r)=>r,Err(mpsc::TryRecvError::Empty)=>return None,Err(_)=>Err(anyhow::anyhow!("Criação interrompida; tente novamente"))};
+        let result=match self.receiver.as_ref()?.try_recv(){Ok(r)=>r,Err(mpsc::TryRecvError::Empty)=>return None,Err(_)=>Err(anyhow::anyhow!(crate::i18n::label("Criação interrompida; tente novamente","Creation interrupted; try again")))};
         self.receiver=None;self.busy=false;
         match result {Ok(room)=>{self.open=false;self.status.clear();Some(room)},Err(e)=>{self.status=e.to_string();None}}
     }
@@ -189,8 +194,8 @@ impl ServerAccess {
         if !self.loaded {self.loaded=true;if let Ok(code)=load_code(address){self.code=code;self.start(address.to_owned(),device.to_owned(),ctx.clone());}}
         if let Some(rx)=&self.receiver {
             match rx.try_recv(){
-                Ok(result)=>{self.receiver=None;self.busy=false;match result {Ok((token,failed))=>{self.token=token;self.refresh=std::time::Instant::now();self.status=if failed{"Acesso liberado; não foi possível atualizar a chave salva neste dispositivo".into()}else{String::new()};},Err(e)=>{self.token.clear();self.status=e.to_string();}}},
-                Err(mpsc::TryRecvError::Disconnected)=>{self.receiver=None;self.busy=false;self.token.clear();self.status="Acesso interrompido; tente novamente".into();},
+                Ok(result)=>{self.receiver=None;self.busy=false;match result {Ok((token,failed))=>{self.token=token;self.refresh=std::time::Instant::now();self.status=if failed{crate::i18n::label("Acesso liberado; não foi possível atualizar a chave salva neste dispositivo","Access granted; could not update the key saved on this device").into()}else{String::new()};},Err(e)=>{self.token.clear();self.status=e.to_string();}}},
+                Err(mpsc::TryRecvError::Disconnected)=>{self.receiver=None;self.busy=false;self.token.clear();self.status=crate::i18n::label("Acesso interrompido; tente novamente","Access interrupted; try again").into();},
                 Err(mpsc::TryRecvError::Empty)=>{}
             }
         }
@@ -198,44 +203,44 @@ impl ServerAccess {
     }
 }
 fn login(address:&str,code:&str,device:&str)->Result<String> {
-    ensure!((32..=64).contains(&code.len()) && code.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_'),"Informe uma chave de acesso válida");
+    ensure!((32..=64).contains(&code.len()) && code.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_'),crate::i18n::label("Informe uma chave de acesso válida","Enter a valid access key"));
     let response=reqwest::blocking::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(std::time::Duration::from_secs(12)).user_agent("HyperCast-Desktop/0.6").build()?
-        .post(crate::invitation::endpoint(address,"/api/login")?).bearer_auth(code).json(&serde_json::json!({"device_id":device})).send().map_err(|_|anyhow::anyhow!("Servidor indisponível; tente novamente"))?;
-    match response.status().as_u16(){200=>{},401=>anyhow::bail!("Chave inválida, expirada ou revogada"),status=>anyhow::bail!("Acesso indisponível (HTTP {status}); tente novamente")}
-    let mut bytes=Vec::new();response.take(16385).read_to_end(&mut bytes)?;ensure!(bytes.len()<=16384,"Resposta de acesso excedeu o limite");
+        .post(crate::invitation::endpoint(address,"/api/login")?).bearer_auth(code).json(&serde_json::json!({"device_id":device})).send().map_err(|_|anyhow::anyhow!(crate::i18n::label("Servidor indisponível; tente novamente","Server unavailable; try again")))?;
+    match response.status().as_u16(){200=>{},401=>anyhow::bail!(crate::i18n::label("Chave inválida, expirada ou revogada","Invalid, expired or revoked key")),status=>anyhow::bail!("Acesso indisponível (HTTP {status}); tente novamente")}
+    let mut bytes=Vec::new();response.take(16385).read_to_end(&mut bytes)?;ensure!(bytes.len()<=16384,crate::i18n::label("Resposta de acesso excedeu o limite","Access response exceeded the limit"));
     let value:serde_json::Value=serde_json::from_slice(&bytes)?;
-    let token=value["token"].as_str().ok_or_else(||anyhow::anyhow!("Resposta de acesso inválida"))?;
-    ensure!(!token.is_empty() && token.len()<=4096 && value["expires_in"].as_u64()==Some(900),"Resposta de acesso inválida");Ok(token.to_owned())
+    let token=value["token"].as_str().ok_or_else(||anyhow::anyhow!(crate::i18n::label("Resposta de acesso inválida","Invalid access response")))?;
+    ensure!(!token.is_empty() && token.len()<=4096 && value["expires_in"].as_u64()==Some(900),crate::i18n::label("Resposta de acesso inválida","Invalid access response"));Ok(token.to_owned())
 }
 
 pub fn create(address:&str,code:&str,title:&str,request_id:&str,persistent:bool)->Result<CreatedRoom> {
-    ensure!(!code.is_empty() && code.len()<=4096,"Autentique-se no servidor");
+    ensure!(!code.is_empty() && code.len()<=4096,crate::i18n::label("Autentique-se no servidor","Authenticate with the server"));
     let endpoint=crate::invitation::endpoint(address,"/api/rooms")?;
     let response=reqwest::blocking::Client::builder().redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(20)).user_agent("HyperCast-Desktop/0.6").build()?
         .post(endpoint).bearer_auth(code).json(&serde_json::json!({"room_name":title,"request_id":request_id,"persistent":persistent}))
-        .send().map_err(|_|anyhow::anyhow!("Não foi possível acessar o servidor; tente novamente"))?;
+        .send().map_err(|_|anyhow::anyhow!(crate::i18n::label("Não foi possível acessar o servidor; tente novamente","Could not reach the server; try again")))?;
     match response.status().as_u16() {
         200=>{},
-        400=>anyhow::bail!("Use um nome de sala com 1 a 64 caracteres visíveis"),
-        401|403=>anyhow::bail!("Sessão expirada; entre novamente no servidor"),
+        400=>anyhow::bail!(crate::i18n::label("Use um nome de sala com 1 a 64 caracteres visíveis","Use a room name with 1 to 64 visible characters")),
+        401|403=>anyhow::bail!(crate::i18n::label("Sessão expirada; entre novamente no servidor","Session expired; connect to the server again")),
         409=>{
             let mut body=Vec::new();response.take(4097).read_to_end(&mut body)?;
             let value=serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default();
             anyhow::bail!(match value["error"].as_str(){
-                Some("Saved room limit reached")=>"Limite de 32 salas salvas atingido; exclua uma sala vazia",
-                _=>"Pedido de criação desatualizado; feche esta janela e tente novamente",
+                Some("Saved room limit reached")=>crate::i18n::label("Limite de 32 salas salvas atingido; exclua uma sala vazia","The limit of 32 saved rooms was reached; delete an empty room"),
+                _=>crate::i18n::label("Pedido de criação desatualizado; feche esta janela e tente novamente","Outdated creation request; close this window and try again"),
             });
         },
-        429=>anyhow::bail!("Limite de criação atingido; tente novamente mais tarde"),
-        _=>anyhow::bail!("Criação de salas indisponível; tente novamente"),
+        429=>anyhow::bail!(crate::i18n::label("Limite de criação atingido; tente novamente mais tarde","Creation limit reached; try again later")),
+        _=>anyhow::bail!(crate::i18n::label("Criação de salas indisponível; tente novamente","Room creation unavailable; try again")),
     }
     let mut bytes=Vec::new();response.take(16385).read_to_end(&mut bytes)?;
-    ensure!(bytes.len()<=16384,"Resposta de sala excedeu o limite");
+    ensure!(bytes.len()<=16384,crate::i18n::label("Resposta de sala excedeu o limite","Room response exceeded the limit"));
     let value:serde_json::Value=serde_json::from_slice(&bytes)?;
-    let room=value["room"].as_str().ok_or_else(||anyhow::anyhow!("Resposta de sala inválida"))?;
-    let title=value["room_name"].as_str().ok_or_else(||anyhow::anyhow!("Resposta de sala inválida"))?;
-    ensure!(!room.is_empty() && room.len()<=64 && title.chars().count()<=64,"Resposta de sala inválida");
+    let room=value["room"].as_str().ok_or_else(||anyhow::anyhow!(crate::i18n::label("Resposta de sala inválida","Invalid room response")))?;
+    let title=value["room_name"].as_str().ok_or_else(||anyhow::anyhow!(crate::i18n::label("Resposta de sala inválida","Invalid room response")))?;
+    ensure!(!room.is_empty() && room.len()<=64 && title.chars().count()<=64,crate::i18n::label("Resposta de sala inválida","Invalid room response"));
     Ok(CreatedRoom{room:room.to_owned(),title:title.to_owned()})
 }
 
@@ -305,8 +310,8 @@ mod tests {
 // Linux access credentials remain in memory until a Secret Service backend is
 // implemented. Never fall back to storing a shared server key in plaintext.
 #[cfg(not(windows))]
-pub fn load_code(_address:&str)->Result<String>{anyhow::bail!("Acesso salvo indisponível nesta plataforma")}
+pub fn load_code(_address:&str)->Result<String>{anyhow::bail!(crate::i18n::label("Acesso salvo indisponível nesta plataforma","Saved access is unavailable on this platform"))}
 #[cfg(not(windows))]
-pub fn save_code(_address:&str,_code:&str)->Result<()>{anyhow::bail!("A chave permanece somente nesta sessão")}
+pub fn save_code(_address:&str,_code:&str)->Result<()>{anyhow::bail!(crate::i18n::label("A chave permanece somente nesta sessão","The key is kept only for this session"))}
 #[cfg(not(windows))]
 pub fn forget_code(_address:&str)->Result<()>{Ok(())}

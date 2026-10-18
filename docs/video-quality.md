@@ -119,3 +119,17 @@ A comparação final na RX 5700 XT precisa repetir a mesma página branca, texto
 e rolagem nos três perfis, anotando bitrate, perda e p95. Não há garantia nova de
 120 FPS estáveis nem de latência abaixo de 100 ms. Intra-refresh permanece em
 avaliação separada; não foi ativado nesta versão.
+
+## Resolução e FPS de envio
+
+Na seção de formato, escolha Nativa, Full HD (até 1920×1080) ou Quad HD
+(até 2560×1440) e 30/60/120 FPS antes de iniciar o envio. São limites da
+transmissão, independentes da configuração do monitor. Mantém-se a proporção,
+sem ampliar imagens menores; ultrawide pode resultar em 1920×804 em Full HD.
+Pare o envio para alterar os limites; trocar monitor/janela preserva a escolha.
+
+No Windows, NVENC/AMF usam redimensionamento na GPU sem leitura da textura
+para a CPU. No Linux, o conversor GStreamer pode usar CPU; HEVC por software
+permanece limitado a 30 FPS. Diminuir resolução/FPS reduz o trabalho de envio,
+mas não muda a resolução de renderização do jogo. O limite de upload continua
+sendo selecionado separadamente em 12/25/40 Mbps.

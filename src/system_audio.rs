@@ -91,7 +91,7 @@ impl SystemAudioPublisher {
                     let pushed = handle.block_on(async { tokio::time::timeout(Duration::from_millis(100), source.capture_frame(&frame)).await });
                     match pushed {
                         Ok(Ok(())) => { worker_frames.fetch_add(1, Ordering::Relaxed); }
-                        _ => { *worker_failure.lock().unwrap() = Some("Envio de áudio interrompido".into()); worker_stop.store(true, Ordering::Relaxed); break; }
+                        _ => { *worker_failure.lock().unwrap() = Some(crate::i18n::label("Envio de áudio interrompido","Audio publishing interrupted").into()); worker_stop.store(true, Ordering::Relaxed); break; }
                     }
                 }
             }
@@ -100,7 +100,7 @@ impl SystemAudioPublisher {
         let initialization = ready_rx.recv_timeout(Duration::from_secs(6));
         if !matches!(initialization, Ok(Ok(()))) {
             stop.store(true, Ordering::Relaxed); drop(activate_tx); let _ = worker.join();
-            return Err(anyhow!(match initialization { Ok(Err(text)) => text, _ => "Áudio do sistema não iniciou".into() }));
+            return Err(anyhow!(match initialization { Ok(Err(text)) => text, _ => crate::i18n::label("Áudio do sistema não iniciou","System audio did not start").into() }));
         }
         let publication = runtime.block_on(room.local_participant().publish_track(LocalTrack::Audio(track), TrackPublishOptions {
             source: TrackSource::ScreenshareAudio, audio_encoding: Some(AudioEncoding { max_bitrate: 128_000 }),
@@ -121,7 +121,7 @@ impl SystemAudioPublisher {
         let deadline=std::time::Instant::now()+Duration::from_secs(6);
         while self.applied_process.load(Ordering::Acquire)!=process {
             if let Some(error)=self.failure.lock().unwrap().clone(){return Err(anyhow!(error));}
-            if self.stop.load(Ordering::Relaxed)||std::time::Instant::now()>=deadline{return Err(anyhow!("Troca de áudio do aplicativo não respondeu"));}
+            if self.stop.load(Ordering::Relaxed)||std::time::Instant::now()>=deadline{return Err(anyhow!(crate::i18n::label("Troca de áudio do aplicativo não respondeu","App audio switching did not respond")));}
             thread::sleep(Duration::from_millis(5));
         }
         Ok(())

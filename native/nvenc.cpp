@@ -74,7 +74,7 @@ struct Encoder {
         if (FAILED(value)) throw std::runtime_error(std::string(operation) + ": HRESULT " + std::to_string(value));
     }
 
-    void open(ID3D11Device* d, uint32_t w, uint32_t h, uint32_t f, uint32_t bitrate, bool av1) {
+    void open(ID3D11Device* d, uint32_t w, uint32_t h, uint32_t f, uint32_t bitrate, bool av1, uint32_t limit_w=8192, uint32_t limit_h=8192) {
         if (!d || !hc_capture_size(w,h) || f < 1 || f > 240 || bitrate < 1000000 || bitrate > 45000000)
             throw std::runtime_error("Invalid NVENC configuration (max 8192 per axis and 32 megapixels, 1-240 FPS, 1-45 Mbps)");
         source_width=w;source_height=h;fps=f;device=d;
@@ -126,7 +126,7 @@ struct Encoder {
         caps.capsToQuery=NV_ENC_CAPS_WIDTH_MAX;check(api.nvEncGetEncodeCaps(session,codec,&caps,&max_w),"Query NVENC maximum width");
         caps.capsToQuery=NV_ENC_CAPS_HEIGHT_MAX;check(api.nvEncGetEncodeCaps(session,codec,&caps,&max_h),"Query NVENC maximum height");
         if(max_w<2 || max_h<2)throw std::runtime_error("Invalid NVENC resolution capabilities");
-        hc_fit_size(w,h,uint32_t(max_w),uint32_t(max_h));width=w;height=h;
+        hc_fit_size(w,h,std::min(uint32_t(max_w),limit_w),std::min(uint32_t(max_h),limit_h));width=w;height=h;
         NV_ENC_PRESET_CONFIG preset{};
         preset.version = NV_ENC_PRESET_CONFIG_VER;
         preset.presetCfg.version = NV_ENC_CONFIG_VER;
@@ -260,6 +260,11 @@ struct Encoder {
 extern "C" {
 unsigned hc_nvenc_live_encoders() noexcept {return live_encoders.load();}
 void hc_nvenc_size(void* handle,uint32_t* w,uint32_t* h) noexcept {if(handle && w && h){auto* e=static_cast<Encoder*>(handle);*w=e->width;*h=e->height;}}
+// Optional output cap; input dimensions still describe the original GPU texture.
+void* hc_nvenc_open_scaled(void* device,uint32_t w,uint32_t h,uint32_t fps,uint32_t bitrate,uint32_t av1,uint32_t max_w,uint32_t max_h,char* error,size_t capacity) noexcept {
+    try{auto value=std::make_unique<Encoder>();value->open(static_cast<ID3D11Device*>(device),w,h,fps,bitrate,av1!=0,max_w,max_h);return value.release();}
+    catch(const std::exception& e){report(error,capacity,e.what());}catch(...){report(error,capacity,"Unknown encoder initialization error");}return nullptr;
+}
 void* hc_nvenc_open(void* device, uint32_t w, uint32_t h, uint32_t fps, uint32_t bitrate,
                     uint32_t av1, char* error, size_t capacity) noexcept {
     try {

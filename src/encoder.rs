@@ -15,16 +15,6 @@ use windows::{
 };
 
 unsafe extern "C" {
-    fn hc_nvenc_open(
-        device: *mut c_void,
-        width: u32,
-        height: u32,
-        fps: u32,
-        bitrate: u32,
-        av1: u32,
-        error: *mut c_char,
-        capacity: usize,
-    ) -> *mut c_void;
     fn hc_nvenc_encode(
         handle: *mut c_void,
         texture: *mut c_void,
@@ -71,7 +61,9 @@ unsafe extern "C" {
         error: *mut c_char,
         capacity: usize,
     ) -> i32;
-    fn hc_amf_open_profile(device:*mut c_void,width:u32,height:u32,fps:u32,bitrate:u32,av1:u32,profile:u32,error:*mut c_char,capacity:usize)->*mut c_void;
+    fn hc_nvenc_open_scaled(device:*mut c_void,width:u32,height:u32,fps:u32,bitrate:u32,av1:u32,max_w:u32,max_h:u32,error:*mut c_char,capacity:usize)->*mut c_void;
+    fn hc_amf_open_scaled(device:*mut c_void,width:u32,height:u32,fps:u32,bitrate:u32,av1:u32,profile:u32,max_w:u32,max_h:u32,error:*mut c_char,capacity:usize)->*mut c_void;
+
     fn hc_amf_feedback(handle:*mut c_void,qp:*mut i32,bitrate:*mut u32,vbv:*mut u32,fps:*mut u32,runtime:*mut u32);
     fn hc_amf_close(handle: *mut c_void);
     fn hc_amf_preview(handle: *mut c_void) -> *mut c_void;
@@ -87,7 +79,7 @@ pub enum Codec {
 #[repr(u32)]
 pub enum AmdProfile { #[default] Fast=0, Text=1, Compatibility=2 }
 impl AmdProfile {
-    pub fn label(self)->&'static str {match self{Self::Fast=>"Fluidez",Self::Text=>"Texto · experimental",Self::Compatibility=>"Compatibilidade"}}
+    pub fn label(self)->&'static str {match self{Self::Fast=>crate::i18n::label("Fluidez","Smoothness"),Self::Text=>crate::i18n::label("Texto · experimental","Text · experimental"),Self::Compatibility=>crate::i18n::label("Compatibilidade","Compatibility")}}
 }
 #[derive(Debug,Default)]
 pub struct EncoderFeedback {pub qp:Option<u32>,pub bitrate:u32,pub vbv_bits:Option<u32>,pub fps:u32,pub vbv_runtime:Option<bool>}
@@ -151,25 +143,29 @@ impl HardwareEncoder {
         Self::new_with_profile(device,width,height,fps,bitrate,codec,AmdProfile::Fast)
     }
     pub fn new_with_profile(device:&ID3D11Device,width:u32,height:u32,fps:u32,bitrate:u32,codec:Codec,profile:AmdProfile)->Result<Self> {
+        Self::new_with_limits(device,width,height,fps,bitrate,codec,profile,crate::resolution::OutputSize::Native)
+    }
+    pub fn new_with_limits(device:&ID3D11Device,width:u32,height:u32,fps:u32,bitrate:u32,codec:Codec,profile:AmdProfile,size:crate::resolution::OutputSize)->Result<Self> {
+        let (max_w,max_h)=size.limits();
         // SAFETY: the borrowed live device supports IDXGIDevice; returned COM
         // references retain the adapter through the descriptor query.
         let backend=unsafe {
             let dxgi:windows::Win32::Graphics::Dxgi::IDXGIDevice=device.cast()?;
             let desc=dxgi.GetAdapter()?.GetDesc()?;
-            match desc.VendorId {0x10de=>Backend::Nvidia,0x1002=>Backend::Amd,_=>anyhow::bail!("GPU sem encoder suportado; use NVIDIA NVENC ou AMD AMF")}
+            match desc.VendorId {0x10de=>Backend::Nvidia,0x1002=>Backend::Amd,_=>anyhow::bail!(crate::i18n::label("GPU sem encoder suportado; use NVIDIA NVENC ou AMD AMF","GPU has no supported encoder; use NVIDIA NVENC or AMD AMF"))}
         };
         let mut error = [0; 1024];
         // SAFETY: device remains alive during open; bridge retains its own COM
         // reference. Error output is bounded. Opaque handle is uniquely owned.
         let mut actual_profile=if codec==Codec::Av1{AmdProfile::Fast}else{profile};
         let mut raw = unsafe {match backend {
-            Backend::Nvidia=>hc_nvenc_open(device.as_raw(),width,height,fps,bitrate,matches!(codec,Codec::Av1) as u32,error.as_mut_ptr(),error.len()),
-            Backend::Amd=>hc_amf_open_profile(device.as_raw(),width,height,fps,bitrate,matches!(codec,Codec::Av1) as u32,if codec==Codec::Av1{AmdProfile::Fast as u32}else{profile as u32},error.as_mut_ptr(),error.len()),
+            Backend::Nvidia=>hc_nvenc_open_scaled(device.as_raw(),width,height,fps,bitrate,matches!(codec,Codec::Av1) as u32,max_w,max_h,error.as_mut_ptr(),error.len()),
+            Backend::Amd=>hc_amf_open_scaled(device.as_raw(),width,height,fps,bitrate,matches!(codec,Codec::Av1) as u32,if codec==Codec::Av1{AmdProfile::Fast as u32}else{profile as u32},max_w,max_h,error.as_mut_ptr(),error.len()),
         }};
         if raw.is_null() && matches!(backend,Backend::Amd) && actual_profile==AmdProfile::Text {
             actual_profile=AmdProfile::Fast;
             // SAFETY: the failed native constructor has already released its partial session.
-            raw=unsafe{hc_amf_open_profile(device.as_raw(),width,height,fps,bitrate,matches!(codec,Codec::Av1) as u32,actual_profile as u32,error.as_mut_ptr(),error.len())};
+            raw=unsafe{hc_amf_open_scaled(device.as_raw(),width,height,fps,bitrate,matches!(codec,Codec::Av1) as u32,actual_profile as u32,max_w,max_h,error.as_mut_ptr(),error.len())};
         }
         let handle = NonNull::new(raw).ok_or_else(|| anyhow!(error_text(&error)))?;
         Ok(Self {
@@ -281,6 +277,27 @@ mod ultrawide_tests {
     use windows::Win32::{Foundation::HMODULE,Graphics::{
         Direct3D::{D3D_DRIVER_TYPE_UNKNOWN,D3D_FEATURE_LEVEL_11_0},
         Direct3D11::*,Dxgi::{CreateDXGIFactory1,IDXGIFactory1,Common::*}}};
+    #[test]
+    #[ignore="Requires NVENC GPU; generated textures only"]
+    fn generated_output_limits_and_fps()->Result<()> {
+        let (mut device,mut context)=(None,None);
+        unsafe {let factory:IDXGIFactory1=CreateDXGIFactory1()?;let adapter=factory.EnumAdapters1(0)?;
+            D3D11CreateDevice(&adapter,D3D_DRIVER_TYPE_UNKNOWN,HMODULE::default(),D3D11_CREATE_DEVICE_BGRA_SUPPORT,Some(&[D3D_FEATURE_LEVEL_11_0]),D3D11_SDK_VERSION,Some(&mut device),None,Some(&mut context))?;}
+        let device=device.unwrap();let context=context.unwrap();let baseline=unsafe{hc_nvenc_live_encoders()+hc_amf_live_encoders()};
+        for codec in [Codec::H265,Codec::Av1] {for (w,h,size,fps,expected) in [
+            (3840,2160,crate::resolution::OutputSize::FullHd,60,(1920,1080)),
+            (3840,2160,crate::resolution::OutputSize::QuadHd,30,(2560,1440)),
+            (3440,1440,crate::resolution::OutputSize::FullHd,120,(1920,804)),
+            (1280,720,crate::resolution::OutputSize::QuadHd,60,(1280,720))] {
+            let desc=D3D11_TEXTURE2D_DESC{Width:w,Height:h,MipLevels:1,ArraySize:1,Format:DXGI_FORMAT_B8G8R8A8_UNORM,SampleDesc:DXGI_SAMPLE_DESC{Count:1,Quality:0},Usage:D3D11_USAGE_DEFAULT,BindFlags:(D3D11_BIND_RENDER_TARGET.0|D3D11_BIND_SHADER_RESOURCE.0) as u32,..Default::default()};
+            let (mut texture,mut target)=(None,None);
+            unsafe{device.CreateTexture2D(&desc,None,Some(&mut texture))?;device.CreateRenderTargetView(texture.as_ref().unwrap(),None,Some(&mut target))?;context.ClearRenderTargetView(target.as_ref().unwrap(),&[0.2,0.5,0.8,1.0]);}
+            let mut encoder=HardwareEncoder::new_with_limits(&device,w,h,fps,12_000_000,codec,AmdProfile::Fast,size)?;
+            assert_eq!(encoder.dimensions(),expected);assert_eq!(encoder.feedback().fps,fps);
+            for frame in 0..3{let packet=encoder.encode_texture(texture.as_ref(),frame*1_000_000/fps as i64,frame==0)?;assert!(!packet.bytes.is_empty());}
+            drop(encoder);assert_eq!(unsafe{hc_nvenc_live_encoders()+hc_amf_live_encoders()},baseline);
+        }}Ok(())
+    }
     #[test]
     #[ignore = "Requires NVIDIA GPU with AV1 and HEVC hardware encoding"]
     fn generated_ultrawide_gpu_lifecycle()->Result<()> {

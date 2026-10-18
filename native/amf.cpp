@@ -54,7 +54,7 @@ struct Encoder {
         if(dll)FreeLibrary(dll);
     }
     template<class T> void property(const wchar_t* name,T value,const char* operation){check(encoder->SetProperty(name,value),operation);}
-    void open(ID3D11Device* d,uint32_t w,uint32_t h,uint32_t f,uint32_t bitrate,bool use_av1,uint32_t selected_profile=0){
+    void open(ID3D11Device* d,uint32_t w,uint32_t h,uint32_t f,uint32_t bitrate,bool use_av1,uint32_t selected_profile=0,uint32_t limit_w=8192,uint32_t limit_h=8192){
         if(!d || !hc_capture_size(w,h) || f<1 || f>240 || bitrate<1000000 || bitrate>45000000)
             throw std::runtime_error("Invalid AMF configuration (maximum 8192 per axis and 32 megapixels, 1-240 FPS, 1-45 Mbps)");
         if(selected_profile>2)throw std::runtime_error("Invalid AMF profile");
@@ -85,7 +85,7 @@ struct Encoder {
         amf_int32 min_w=0,max_w=0,min_h=0,max_h=0;
         input_caps->GetWidthRange(&min_w,&max_w);input_caps->GetHeightRange(&min_h,&max_h);
         if(max_w<2 || max_h<2)throw std::runtime_error("Invalid AMF resolution capabilities");
-        hc_fit_size(w,h,uint32_t(max_w),uint32_t(max_h));width=w;height=h;
+        hc_fit_size(w,h,std::min(uint32_t(max_w),limit_w),std::min(uint32_t(max_h),limit_h));width=w;height=h;
         if(w<uint32_t(std::max(2,min_w)) || h<uint32_t(std::max(2,min_h)))throw std::runtime_error("Source smaller than AMF minimum resolution");
         if(av1){
             property(AMF_VIDEO_ENCODER_AV1_USAGE,amf_int64(AMF_VIDEO_ENCODER_AV1_USAGE_ULTRA_LOW_LATENCY),"Set AMF AV1 low latency");
@@ -192,6 +192,11 @@ struct Encoder {
 extern "C" {
 unsigned hc_amf_live_encoders() noexcept {return live_encoders.load();}
 void hc_amf_size(void* handle,uint32_t* w,uint32_t* h) noexcept {if(handle && w && h){auto* e=static_cast<Encoder*>(handle);*w=e->width;*h=e->height;}}
+// Optional output cap; input dimensions still describe the original GPU texture.
+void* hc_amf_open_scaled(void* device,uint32_t w,uint32_t h,uint32_t fps,uint32_t bitrate,uint32_t av1,uint32_t profile,uint32_t max_w,uint32_t max_h,char* error,size_t capacity) noexcept {
+    try{auto value=std::make_unique<Encoder>();value->open(static_cast<ID3D11Device*>(device),w,h,fps,bitrate,av1!=0,profile,max_w,max_h);return value.release();}
+    catch(const std::exception& e){report(error,capacity,e.what());}catch(...){report(error,capacity,"Unknown encoder initialization error");}return nullptr;
+}
 void* hc_amf_open(void* device,uint32_t w,uint32_t h,uint32_t fps,uint32_t bitrate,uint32_t av1,char* error,size_t capacity) noexcept {
     try{auto value=std::make_unique<Encoder>();value->open(static_cast<ID3D11Device*>(device),w,h,fps,bitrate,av1!=0);return value.release();}
     catch(const std::exception& e){report(error,capacity,e.what());}catch(...){report(error,capacity,"Unknown AMF initialization error");}return nullptr;

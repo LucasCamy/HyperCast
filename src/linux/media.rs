@@ -96,19 +96,23 @@ impl Capture {
         Self::open_with_profile(source,codec,encoder,crate::bandwidth::UploadProfile::Maximum).await
     }
     pub async fn open_with_profile(source:Source,codec:Codec,encoder:Encoder,upload:crate::bandwidth::UploadProfile)->Result<Self>{
+        Self::open_with_settings(source,codec,encoder,upload,Default::default()).await
+    }
+    pub async fn open_with_settings(source:Source,codec:Codec,encoder:Encoder,upload:crate::bandwidth::UploadProfile,settings:crate::resolution::StreamSettings)->Result<Self>{
+        ensure!(settings.valid(),"Unsupported frame rate");
         eprintln!("Linux capture: stage=init source={source:?} codec={codec:?} encoder={encoder:?}");
         gst::init()?;
         let (description, lease, fd) = match source {
             Source::Portal => {
                 eprintln!("Linux capture: stage=portal_connect");
-                let portal=Screencast::new().await.context("Portal de captura indisponível; confira xdg-desktop-portal e o backend do desktop")?;
+                let portal=Screencast::new().await.context(crate::i18n::label("Portal de captura indisponível; confira xdg-desktop-portal e o backend do desktop","Screen capture portal unavailable; check xdg-desktop-portal and the desktop backend"))?;
                 let mut lease = PortalLease(Some(portal.create_session(Default::default()).await?));
                 let setup = async {
                     let sources = portal.available_source_types().await?;
                     let requested = (SourceType::Monitor | SourceType::Window) & sources;
                     ensure!(
                         !requested.is_empty(),
-                        "Este portal não oferece captura de tela/janela"
+                        crate::i18n::label("Este portal não oferece captura de tela/janela","This portal does not support screen/window capture")
                     );
                     let cursor = if portal
                         .available_cursor_modes()
@@ -138,7 +142,7 @@ impl Capture {
                     let node = response
                         .streams()
                         .first()
-                        .context("Nenhuma origem selecionada")?
+                        .context(crate::i18n::label("Nenhuma origem selecionada","No source selected"))?
                         .pipe_wire_node_id();
                     let fd = portal
                         .open_pipe_wire_remote(lease.0.as_ref().unwrap(), Default::default())
@@ -166,9 +170,9 @@ impl Capture {
             Source::X11 => {
                 ensure!(
                     std::env::var("WAYLAND_DISPLAY").is_err(),
-                    "No Wayland, escolha o seletor do sistema"
+                    crate::i18n::label("No Wayland, escolha o seletor do sistema","On Wayland, use the system picker")
                 );
-                ensure!(std::env::var("DISPLAY").is_ok(), "Sessão X11 indisponível");
+                ensure!(std::env::var("DISPLAY").is_ok(), crate::i18n::label("Sessão X11 indisponível","X11 session unavailable"));
                 (
                     "ximagesrc use-damage=false show-pointer=true do-timestamp=true".into(),
                     None,
@@ -188,29 +192,31 @@ impl Capture {
                 (format!("videotestsrc is-live=true pattern=ball ! video/x-raw,width={w},height={h}"),None,None)
             },
         };
-        Self::open_pipeline(description,lease,fd,codec,encoder,upload).await
+        Self::open_pipeline_settings(description,lease,fd,codec,encoder,upload,settings).await
     }
-    async fn open_pipeline(description:String,lease:Option<PortalLease>,fd:Option<OwnedFd>,codec:Codec,encoder:Encoder,upload:crate::bandwidth::UploadProfile)->Result<Self>{
+    async fn open_pipeline_settings(description:String,lease:Option<PortalLease>,fd:Option<OwnedFd>,codec:Codec,encoder:Encoder,upload:crate::bandwidth::UploadProfile,settings:crate::resolution::StreamSettings)->Result<Self>{
+        ensure!(settings.valid(),"Unsupported frame rate");
+        let (max_w,max_h)=settings.size.limits();
         let fps = if encoder == Encoder::Software {
-            30
+            settings.fps.min(30)
         } else {
-            120
+            settings.fps
         };
         let bitrate_limit=if encoder==Encoder::Software{upload.bps().min(12_000_000)}else{upload.bps()};
         let kbps=bitrate_limit/1000;
         eprintln!("Linux capture: stage=encoder_discovery");
         let chain=match (encoder,codec) {
             (Encoder::Software,Codec::Hevc)=>"x265enc name=encoder tune=zerolatency speed-preset=ultrafast bitrate=12000 key-int-max=30 option-string=bframes=0:rc-lookahead=0:pools=1:frame-threads=1".to_string(),
-            (Encoder::Software,Codec::Av1)=>anyhow::bail!("O modo compatível usa HEVC; AV1 exige encoder de hardware"),
+            (Encoder::Software,Codec::Av1)=>anyhow::bail!(crate::i18n::label("O modo compatível usa HEVC; AV1 exige encoder de hardware","Compatible mode uses HEVC; AV1 requires a hardware encoder")),
             (Encoder::Auto,codec)=>{
                 let candidates=if codec==Codec::Av1{["nvav1enc","nvcudaav1enc"]}else{["nvcudah265enc","nvh265enc"]};
                 let nvidia=candidates.into_iter().find(|name|gst::ElementFactory::find(name).is_some());
                 let va=if codec==Codec::Av1{"vaav1enc"}else{"vah265enc"};
                 if let Some(nvidia)=nvidia{
-                    format!("{nvidia} name=encoder bitrate={kbps} gop-size=120 rc-mode=cbr")
+                    format!("{nvidia} name=encoder bitrate={kbps} gop-size={fps} rc-mode=cbr")
                 }else if gst::ElementFactory::find(va).is_some(){
-                    format!("{va} name=encoder bitrate={kbps} key-int-max=120 rate-control=cbr")
-                }else{anyhow::bail!("Encoder de hardware indisponível. Instale os plugins nvcodec/VA-API ou selecione HEVC compatível (30 FPS)");}
+                    format!("{va} name=encoder bitrate={kbps} key-int-max={fps} rate-control=cbr")
+                }else{anyhow::bail!(crate::i18n::label("Encoder de hardware indisponível. Instale os plugins nvcodec/VA-API ou selecione HEVC compatível (30 FPS)","Hardware encoder unavailable. Install nvcodec/VA-API plugins or choose compatible HEVC (30 FPS)"));}
             }
         };
         let raw_formats:&[&str] = if encoder == Encoder::Software {
@@ -277,8 +283,8 @@ impl Capture {
         // preserving aspect ratio through square pixels and even YUV dimensions.
         let bounds=gst::Caps::builder("video/x-raw")
             .field("format",gst::List::new(raw_formats.iter().copied()))
-            .field("width",gst::IntRange::<i32>::with_step(2,8192,2))
-            .field("height",gst::IntRange::<i32>::with_step(2,8192,2))
+            .field("width",gst::IntRange::<i32>::with_step(2,max_w as i32,2))
+            .field("height",gst::IntRange::<i32>::with_step(2,max_h as i32,2))
             .field("pixel-aspect-ratio",gst::Fraction::new(1,1)).build();
         let bounds=bounds.intersect(&supported);
         ensure!(!bounds.is_empty(),"No compatible encoder resolution");
@@ -312,7 +318,7 @@ impl Capture {
         if chain.starts_with("nv") {
             ensure!(
                 enum_property(&encoder_element, "preset", "p1"),
-                "Encoder NVENC antigo; use a versão AppImage com o plugin moderno"
+                crate::i18n::label("Encoder NVENC antigo; use a versão AppImage com o plugin moderno","Old NVENC encoder; use the AppImage with the modern plugin")
             );
             enum_property(&encoder_element, "tune", "ultra-low-latency");
             for name in ["zerolatency", "zero-reorder-delay"] {
@@ -361,7 +367,7 @@ impl Capture {
                 }
                 ensure!(
                     std::time::Instant::now() < deadline,
-                    "A origem/encoder não produziu vídeo; confira o driver e a seleção"
+                    crate::i18n::label("A origem/encoder não produziu vídeo; confira o driver e a seleção","The source/encoder did not produce video; check the driver and selection")
                 );
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
@@ -394,7 +400,7 @@ impl Capture {
         {
             match message.view() {
                 gst::MessageView::Error(e) => anyhow::bail!("Captura/encoder: {}", e.error()),
-                _ => anyhow::bail!("A origem de captura foi encerrada"),
+                _ => anyhow::bail!(crate::i18n::label("A origem de captura foi encerrada","The capture source has closed")),
             }
         }
         let Some(sample) = self.sink.try_pull_sample(gst::ClockTime::ZERO) else {
@@ -455,6 +461,27 @@ mod pipewire_tests {
     use super::*;
 
     #[test]
+    #[ignore="Requires NVENC GPU and packaged GStreamer plugins; generated frames only"]
+    fn synthetic_output_limits_and_fps()->Result<()> {
+        gst::init()?;let runtime=tokio::runtime::Runtime::new()?;
+        runtime.block_on(async {
+            for codec in [Codec::Hevc,Codec::Av1] {for (size,fps,expected) in [
+                (crate::resolution::OutputSize::FullHd,30,(1920,804)),
+                (crate::resolution::OutputSize::QuadHd,60,(2560,1072)),
+                (crate::resolution::OutputSize::Native,120,(3440,1440))] {
+                let mut cap=Capture::open_with_settings(Source::Synthetic(3440,1440),codec,Encoder::Auto,crate::bandwidth::UploadProfile::Economic,crate::resolution::StreamSettings{size,fps}).await?;
+                assert_eq!(cap.fps,fps);let mut count=0;let mut first=None;let mut last=0;
+                let until=std::time::Instant::now()+Duration::from_secs(10);
+                while count<10 && std::time::Instant::now()<until {
+                    if let Some(packet)=cap.poll()?{assert_eq!((packet.width,packet.height),expected);if first.is_none(){first=Some(packet.timestamp_us);}last=packet.timestamp_us;count+=1;}
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+                cap.stop().await;ensure!(count==10,"No frames at selected output size");
+                ensure!(last-first.unwrap()>=8_000_000/fps as i64,"Capture exceeded requested FPS");
+            }}Ok(())
+        })
+    }
+    #[test]
     #[ignore = "requires the isolated synthetic PipeWire test daemon"]
     fn pipewire_first_encoded_frames() -> Result<()> {
         gst::init()?;
@@ -468,13 +495,15 @@ mod pipewire_tests {
         let codec=if std::env::var("HYPERCAST_TEST_PIPEWIRE_CODEC").as_deref()==Ok("av1"){Codec::Av1}else{Codec::Hevc};
         tokio::runtime::Runtime::new()?.block_on(async move {
             let description=format!("pipewiresrc fd={} target-object=HyperCastTest client-name=HyperCastProbe do-timestamp=true ! video/x-raw,width={w},height={h}",fd.as_raw_fd());
-            let mut capture=Capture::open_pipeline(description,None,Some(fd),codec,encoder,crate::bandwidth::UploadProfile::Economic).await?;
+            let settings=if std::env::var("HYPERCAST_TEST_PIPEWIRE_FHD").as_deref()==Ok("1"){crate::resolution::StreamSettings{size:crate::resolution::OutputSize::FullHd,fps:60}}else{Default::default()};
+            let expected=crate::resolution::fit(w,h,settings.size.limits().0,settings.size.limits().1).unwrap();
+            let mut capture=Capture::open_pipeline_settings(description,None,Some(fd),codec,encoder,crate::bandwidth::UploadProfile::Economic,settings).await?;
             let mut frames=0;
             let mut requested_key=false;
             let deadline=std::time::Instant::now()+Duration::from_secs(15);
             while frames<10 && std::time::Instant::now()<deadline {
                 if let Some(packet)=capture.poll()? {
-                    ensure!(packet.width.abs_diff(w)<=1 && packet.height.abs_diff(h)<=1,"Unexpected synthetic size: {}x{}",packet.width,packet.height);
+                    ensure!(packet.width.abs_diff(expected.0)<=1 && packet.height.abs_diff(expected.1)<=1,"Unexpected synthetic size: {}x{}",packet.width,packet.height);
                     frames+=1;
                     if frames>3 && packet.keyframe{requested_key=true;}
                     if frames==3{capture.request_keyframe();}
@@ -568,7 +597,7 @@ impl Playout {
             .pop_filtered(&[gst::MessageType::Error])
         {
             if let gst::MessageView::Error(e) = message.view() {
-                anyhow::bail!("Reprodução de áudio: {}", e.error());
+                anyhow::bail!(crate::i18n_format!("Reprodução de áudio: {}","Audio playback: {}", e.error()));
             }
         }
         if self.source.current_level_bytes() > 11520 {

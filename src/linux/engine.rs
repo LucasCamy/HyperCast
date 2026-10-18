@@ -70,6 +70,7 @@ impl Default for Layout {
 }
 pub enum Command {
     RestartReception,
+    StreamSettings(crate::resolution::StreamSettings),
     Layout(Layout),
     Share(Source, Codec, Encoder,crate::bandwidth::UploadProfile),
     Stop,
@@ -81,22 +82,24 @@ pub struct Engine {
     pub state: Arc<Mutex<State>>,
     pub tx: tokio::sync::mpsc::UnboundedSender<Command>,
     thread: Option<std::thread::JoinHandle<()>>,
+    cancel:crate::room_transition::Cancellation,
 }
 impl Engine {
     #[cfg(test)]
-    pub fn fixture(state:Arc<Mutex<State>>)->Self {let(tx,_rx)=tokio::sync::mpsc::unbounded_channel();Self{state,tx,thread:None}}
+    pub fn fixture(state:Arc<Mutex<State>>)->Self {let(tx,_rx)=tokio::sync::mpsc::unbounded_channel();Self{state,tx,thread:None,cancel:Default::default()}}
 
-    pub fn finished(&self)->bool {self.thread.as_ref().is_none_or(|t|t.is_finished())}
+    pub fn request_exit(&self){self.cancel.cancel();}
     pub fn start(address: String, token: String, ctx: egui::Context) -> Self {
         let state = Arc::new(Mutex::new(State {
-            status: "Conectando…".into(),
+            status: crate::i18n::label("Conectando…","Connecting…").into(),
             ..Default::default()
         }));
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let shared = state.clone();
+        let cancel=crate::room_transition::Cancellation::default();let stopping=cancel.clone();
         let thread = std::thread::spawn(move || {
             let runtime = tokio::runtime::Runtime::new().unwrap();
-            let result = runtime.block_on(session(address, token, rx, shared.clone(), ctx.clone()));
+            let result = runtime.block_on(session(address, token, rx, shared.clone(), ctx.clone(),stopping));
             if let Err(error) = result {
                 let mut s = shared.lock().unwrap();
                 s.status = error.to_string();
@@ -108,13 +111,14 @@ impl Engine {
         });
         Self {
             state,
-            tx,
+            tx, cancel,
             thread: Some(thread),
         }
     }
 }
 impl Drop for Engine {
     fn drop(&mut self) {
+        self.cancel.cancel();
         let _ = self.tx.send(Command::Disconnect);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -319,10 +323,11 @@ async fn session(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<Command>,
     shared: Arc<Mutex<State>>,
     ctx: egui::Context,
+    stopping:crate::room_transition::Cancellation,
 ) -> Result<()> {
     gstreamer::init()?;
     livekit::webrtc::enable_zero_playout_delay()?;
-    let connection = tokio::select! {result=network::connect(&address,&token)=>result?,_ = rx.recv()=>return Ok(())};
+    let connection = match stopping.run(network::connect(&address,&token)).await {Some(result)=>result?,None=>return Ok(())};
     let (room, mut events) = connection;
     let mut room = Arc::new(room);
     {
@@ -332,7 +337,7 @@ async fn session(
             .local_participant()
             .permission()
             .is_some_and(|grant| grant.can_publish);
-        s.status = "Conectado".into();
+        s.status = crate::i18n::label("Conectado","Connected").into();
     }
     let volume = Arc::new(AtomicU32::new(80));
     let mut layout = Layout::default();
@@ -344,6 +349,8 @@ async fn session(
     let mut wants_audio = false;
     let mut pending: Option<tokio::task::JoinHandle<Result<(Capture, Codec)>>> = None;
     let mut current_codec = Codec::Hevc;
+    let mut ever_published=false;
+    let mut settings=crate::resolution::StreamSettings::default();
     let mut publication_format:Option<(Codec,u32,u32)>=None;
     let mut last_video_bps:Option<u64>=None;
     let mut retiring:Option<tokio::task::JoinHandle<()>>=None;
@@ -358,8 +365,11 @@ async fn session(
     let outcome=async {
         loop {
             tokio::select!{
+                biased;
+                _=stopping.cancelled()=>break,
                 command=rx.recv()=>match command.unwrap_or(Command::Disconnect){
                     Command::Disconnect=>break,
+                    Command::StreamSettings(value)=>{if capture.is_none()&&pending.is_none()&&value.valid(){settings=value;}},
                     Command::RestartReception=>{
                         if reception_restart.is_none() && room.connection_state()==ConnectionState::Connected {
                             for (_,mut sink) in video_sinks.drain(){sink.0.abort();let _=(&mut sink.0).await;}
@@ -372,13 +382,13 @@ async fn session(
                     Command::Layout(value)=>{layout=value;volume.store(layout.volume,Ordering::Relaxed);last_refresh=Instant::now()-Duration::from_secs(1);},
                     Command::Share(source,codec,encoder,upload)=>{
                         if pending.is_none() && retiring.is_none() && room.local_participant().permission().is_some_and(|grant|grant.can_publish){
-                            pending=Some(tokio::spawn(async move{let cap=Capture::open_with_profile(source,codec,encoder,upload).await?;Ok((cap,codec))}));
-                            let mut s=shared.lock().unwrap();s.selecting=true;s.status="Selecione a tela ou janela no diálogo do sistema".into();
+                            pending=Some(tokio::spawn(async move{let cap=Capture::open_with_settings(source,codec,encoder,upload,settings).await?;Ok((cap,codec))}));
+                            let mut s=shared.lock().unwrap();s.selecting=true;s.status=crate::i18n::label("Selecione a tela ou janela no diálogo do sistema","Select a screen or window in the system dialog").into();
                         }
                     },
                     Command::CancelSelection=>{
                         if let Some(task)=pending.take(){task.abort();let _=task.await;}
-                        let mut s=shared.lock().unwrap();s.selecting=false;s.status=if s.sharing{"Seleção cancelada; origem anterior mantida"}else{"Seleção cancelada"}.into();
+                        let mut s=shared.lock().unwrap();s.selecting=false;s.status=if s.sharing{crate::i18n::label("Seleção cancelada; origem anterior mantida","Selection cancelled; previous source kept")}else{crate::i18n::label("Seleção cancelada","Selection cancelled")}.into();
                     },
                     Command::Stop=>{
                         if let Some(task)=pending.take(){task.abort();let _=task.await;}
@@ -392,9 +402,9 @@ async fn session(
                 },
                 event=events.recv()=>match event {
                     None=>break,
-                    Some(RoomEvent::Disconnected{..})=>{let mut s=shared.lock().unwrap();s.connected=false;s.reconnecting=false;s.status="Conexão encerrada após as tentativas de reconexão".into();break;},
-                    Some(RoomEvent::Reconnecting)=>{let mut s=shared.lock().unwrap();s.reconnecting=true;s.status="Reconectando… mantendo o último quadro".into();},
-                    Some(RoomEvent::Reconnected)=>{if let Some(p)=&mut publisher{p.restart_keyframe();}if let Some(c)=&capture{c.request_keyframe();}let mut s=shared.lock().unwrap();s.reconnecting=false;s.status="Conectado".into();},
+                    Some(RoomEvent::Disconnected{..})=>{let mut s=shared.lock().unwrap();s.connected=false;s.reconnecting=false;s.status=crate::i18n::label("Conexão encerrada após as tentativas de reconexão","Connection ended after the reconnection attempts").into();break;},
+                    Some(RoomEvent::Reconnecting)=>{let mut s=shared.lock().unwrap();s.reconnecting=true;s.status=crate::i18n::label("Reconectando… mantendo o último quadro","Reconnecting… keeping the last frame").into();},
+                    Some(RoomEvent::Reconnected)=>{if let Some(p)=&mut publisher{p.restart_keyframe();}if let Some(c)=&capture{c.request_keyframe();}let mut s=shared.lock().unwrap();s.reconnecting=false;s.status=crate::i18n::label("Conectado","Connected").into();},
                     Some(RoomEvent::TrackSubscribed{track:RemoteTrack::Video(_),publication,..})=>{
                         if reception_restart.is_some() || !publication.is_desired(){continue;}
                         let Some(RemoteTrack::Video(track))=publication.track() else{continue;};
@@ -425,17 +435,18 @@ async fn session(
                         match result {
                             Ok((cap,codec))=>{
                                 let next_format=(codec,cap.fps,cap.bitrate_limit);
-                                if publication_format.is_some_and(|previous|previous!=next_format) {
+                                if (ever_published && current_codec!=codec) || publication_format.is_some_and(|previous|previous!=next_format) {
                                     eprintln!("Linux publish: stage=reconfigure codec={codec:?} fps={} bitrate={}",cap.fps,cap.bitrate_limit);
                                     // A fresh Linux media connection avoids retaining the previous
                                     // codec/transport after the sole video transceiver is stopped.
-                                    {let mut s=shared.lock().unwrap();s.reconnecting=true;s.status="Reconectando para alterar o formato da transmissão…".into();}
+                                    {let mut s=shared.lock().unwrap();s.reconnecting=true;s.status=crate::i18n::label("Reconectando para alterar o formato da transmissão…","Reconnecting to change the stream format…").into();}
                                     if let Some(a)=audio.take(){a.stop(&room).await;}
                                     if let Some(p)=publisher.take(){let _=p.stop().await;}
                                     for (_,mut sink) in video_sinks.drain(){sink.0.abort();let _=(&mut sink.0).await;}
                                     for (_,mut sink) in audio_sinks.drain(){sink.0.abort();let _=(&mut sink.0).await;}
+                                    let current_token=room.token();
                                     room.close().await?;
-                                    let (next_room,next_events)=network::connect(&address,&token).await?;
+                                    let (next_room,next_events)=match stopping.run(network::connect(&address,&current_token)).await{Some(result)=>result?,None=>break};
                                     room=Arc::new(next_room);events=next_events;
                                     reception_restart=None;last_refresh=Instant::now()-Duration::from_secs(1);
                                     {let mut s=shared.lock().unwrap();s.reconnecting=false;s.reception_resetting=false;}
@@ -443,7 +454,7 @@ async fn session(
                                 }
                                 if let Some(bps)=last_video_bps.filter(|bps|*bps>0){cap.bitrate(bps.min(cap.bitrate_limit as u64) as u32);}
                                 current_codec=codec;
-                                {let mut s=shared.lock().unwrap();s.sharing=true;s.status=format!("Captura Linux · {} · até {} FPS",cap.backend,cap.fps);s.quality.send=None;}
+                                {let mut s=shared.lock().unwrap();s.sharing=true;s.status=crate::i18n_format!("Captura Linux · {} · até {} FPS","Linux capture · {} · up to {} FPS",cap.backend,cap.fps);s.quality.send=None;}
                                 if let Some(mut old)=capture.replace(cap) {
                                     retiring=Some(tokio::spawn(async move{
                                         eprintln!("Linux capture: stage=retire_previous_start");
@@ -502,8 +513,8 @@ async fn session(
                                 if publisher.is_none(){
                                     if !packet.keyframe{cap.request_keyframe();continue;}
                                     match EncodedPublisher::in_room(room.clone(),packet.width,packet.height,cap.fps,cap.bitrate_limit,current_codec==Codec::Av1).await{
-                                        Ok(p)=>{publisher=Some(p);publication_format=Some((current_codec,cap.fps,cap.bitrate_limit));shared.lock().unwrap().sharing=true;},
-                                        Err(error)=>{shared.lock().unwrap().status=format!("Publicação rejeitada: {error}");cap.stop().await;capture=None;shared.lock().unwrap().sharing=false;continue;}
+                                        Ok(p)=>{ever_published=true;publisher=Some(p);publication_format=Some((current_codec,cap.fps,cap.bitrate_limit));shared.lock().unwrap().sharing=true;},
+                                        Err(error)=>{shared.lock().unwrap().status=crate::i18n_format!("Publicação rejeitada: {error}","Publication rejected: {error}");cap.stop().await;capture=None;shared.lock().unwrap().sharing=false;continue;}
                                     }
                                 }
                                 let p=publisher.as_mut().unwrap();
@@ -591,6 +602,11 @@ mod reception_tests {
             (640,360,Codec::Hevc,Encoder::Auto),
             (640,360,Codec::Av1,Encoder::Auto),
         ].into_iter().enumerate() {
+            if step>=3 {
+                publisher.tx.send(Command::Stop)?;
+                let until=Instant::now()+Duration::from_secs(5);
+                while publisher.state.lock().unwrap().sharing{anyhow::ensure!(Instant::now()<until,"Stop did not finish");std::thread::sleep(Duration::from_millis(10));}
+            }
             let before=viewer.state.lock().unwrap().received;
             publisher.tx.send(Command::Share(Source::Synthetic(w,h),codec,encoder,crate::bandwidth::UploadProfile::Economic))?;
             let deadline=Instant::now()+Duration::from_secs(15);

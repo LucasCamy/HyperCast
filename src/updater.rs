@@ -31,17 +31,17 @@ impl Drop for VerifiedInstaller {
 }
 impl VerifiedInstaller {
     pub fn launch(&self,installation:&Installation)->Result<()> {
-        let Installation::Installed(directory)=installation else {bail!("Use o download pelo navegador para a versão portátil");};
+        let Installation::Installed(directory)=installation else {bail!(crate::i18n::label("Use o download pelo navegador para a versão portátil","Use the browser download for the portable version"));};
         // Recheck registry association before replacing an installation.
-        let Installation::Installed(current)=detect_installation()? else {bail!("Instalação não encontrada");};
-        ensure!(&current==directory,"O diretório instalado mudou; verifique novamente");
+        let Installation::Installed(current)=detect_installation()? else {bail!(crate::i18n::label("Instalação não encontrada","Installation not found"));};
+        ensure!(&current==directory,crate::i18n::label("O diretório instalado mudou; verifique novamente","The installation directory changed; check again"));
         // _lock denies write/delete sharing until the loader has opened the image.
         // Inno accepts drive/UNC paths, not Rust's canonical \\?\ device prefix.
         // Keep installer error dialogs visible; only normal wizard pages are silent.
         Command::new(&self.path).args(["/SILENT","/NORESTART","/HYPERCASTUPDATE=1"])
             .arg(installer_path_argument("/DIR=",directory))
             .arg(installer_path_argument("/LOG=",&self.directory.join("install.log")))
-            .spawn().context("Não foi possível iniciar a atualização")?;
+            .spawn().context(crate::i18n::label("Não foi possível iniciar a atualização","Could not start the update"))?;
         Ok(())
     }
 }
@@ -73,17 +73,17 @@ impl Updater {
         while let Ok(event)=self.rx.try_recv(){
             self.busy=false;
             match event{
-                Event::Checked(Ok(Check::Available(release)))=>{self.status=format!("Versão {} disponível",release.version);self.release=Some(release);}
-                Event::Checked(Ok(Check::Current))=>self.status="Você está na versão mais recente".into(),
-                Event::Checked(Ok(Check::NoRelease))=>self.status="Ainda não há versões publicadas para baixar".into(),
-                Event::Downloaded(Ok(installer))=>{self.installer=Some(installer);self.status="Download verificado. Pronto para instalar".into();}
-                Event::Checked(Err(e))|Event::Downloaded(Err(e))=>self.status=format!("Atualização: {e:#}"),
+                Event::Checked(Ok(Check::Available(release)))=>{self.status=crate::i18n_format!("Versão {} disponível","Version {} available",release.version);self.release=Some(release);}
+                Event::Checked(Ok(Check::Current))=>self.status=crate::i18n::label("Você está na versão mais recente","You are using the latest version").into(),
+                Event::Checked(Ok(Check::NoRelease))=>self.status=crate::i18n::label("Ainda não há versões publicadas para baixar","No releases are available to download yet").into(),
+                Event::Downloaded(Ok(installer))=>{self.installer=Some(installer);self.status=crate::i18n::label("Download verificado. Pronto para instalar","Download verified. Ready to install").into();}
+                Event::Checked(Err(e))|Event::Downloaded(Err(e))=>self.status=crate::i18n_format!("Atualização: {e:#}","Update: {e:#}"),
             }
         }
     }
     pub fn check(&mut self,ctx:eframe::egui::Context){
         if self.busy{return;}
-        self.busy=true;self.status="Verificando atualização…".into();self.release=None;self.installer=None;
+        self.busy=true;self.status=crate::i18n::label("Verificando atualização…","Checking for updates…").into();self.release=None;self.installer=None;
         let tx=self.tx.clone();std::thread::spawn(move||{
             let result=latest().and_then(|release|match release{
                 Some(release) if release.version>Version::parse(env!("CARGO_PKG_VERSION"))?=>Ok(Check::Available(release)),
@@ -95,7 +95,7 @@ impl Updater {
         if self.busy{return;}
         let Some(release)=self.release.clone() else{return;};
         if !matches!(self.installation,Installation::Installed(_)){return;}
-        self.busy=true;self.bytes.store(0,Ordering::Relaxed);self.status="Baixando atualização…".into();
+        self.busy=true;self.bytes.store(0,Ordering::Relaxed);self.status=crate::i18n::label("Baixando atualização…","Downloading update…").into();
         let tx=self.tx.clone();let progress=self.bytes.clone();std::thread::spawn(move||{
             let result=download(&release,&progress);let _=tx.send(Event::Downloaded(result));ctx.request_repaint();
         });
@@ -117,51 +117,51 @@ fn client(seconds:u64)->Result<Client>{
         .connect_timeout(Duration::from_secs(10)).timeout(Duration::from_secs(seconds))
         .redirect(reqwest::redirect::Policy::custom(|attempt|{
             if attempt.previous().len()<4 && trusted_transport(attempt.url()){attempt.follow()}
-            else{attempt.error("Redirecionamento de atualização não autorizado")}
+            else{attempt.error(crate::i18n::label("Redirecionamento de atualização não autorizado","Unauthorized update redirect"))}
         })).build()?)
 }
 fn digest(text:&str)->Result<[u8;32]>{
-    let hex=text.strip_prefix("sha256:").context("Release não tem digest SHA-256")?;
-    ensure!(hex.len()==64 && hex.bytes().all(|c|c.is_ascii_hexdigit()),"Digest SHA-256 inválido");
+    let hex=text.strip_prefix("sha256:").context(crate::i18n::label("Release não tem digest SHA-256","Release has no SHA-256 digest"))?;
+    ensure!(hex.len()==64 && hex.bytes().all(|c|c.is_ascii_hexdigit()),crate::i18n::label("Digest SHA-256 inválido","Invalid SHA-256 digest"));
     let mut output=[0;32];for(i,byte)in output.iter_mut().enumerate(){*byte=u8::from_str_radix(&hex[i*2..i*2+2],16)?;}Ok(output)
 }
 fn parse_release(value:&Value)->Result<Release>{
-    ensure!(value["draft"]==false && value["prerelease"]==false,"Somente versões estáveis são aceitas");
-    let tag=value["tag_name"].as_str().context("Release sem versão")?;
+    ensure!(value["draft"]==false && value["prerelease"]==false,crate::i18n::label("Somente versões estáveis são aceitas","Only stable releases are accepted"));
+    let tag=value["tag_name"].as_str().context(crate::i18n::label("Release sem versão","Release has no version"))?;
     let version=Version::parse(tag.strip_prefix('v').unwrap_or(tag))?;
-    ensure!(version.pre.is_empty() && version.build.is_empty(),"Somente versões estáveis são aceitas");
+    ensure!(version.pre.is_empty() && version.build.is_empty(),crate::i18n::label("Somente versões estáveis são aceitas","Only stable releases are accepted"));
     let prefix=format!("https://github.com/LucasCamy/HyperCast/releases/");
     let page=format!("{prefix}tag/{tag}");
-    ensure!(value["html_url"].as_str()==Some(page.as_str()),"Release não pertence ao HyperCast");
+    ensure!(value["html_url"].as_str()==Some(page.as_str()),crate::i18n::label("Release não pertence ao HyperCast","Release does not belong to HyperCast"));
     let name=format!("HyperCast-{version}-windows-x64-setup.exe");
-    let assets=value["assets"].as_array().context("Release sem assets")?;
+    let assets=value["assets"].as_array().context(crate::i18n::label("Release sem assets","Release has no assets"))?;
     let mut found=assets.iter().filter(|a|a["name"].as_str()==Some(name.as_str()));
-    let asset=found.next().context("Instalador Windows não publicado nesta versão")?;
-    ensure!(found.next().is_none(),"Instaladores duplicados na release");
+    let asset=found.next().context(crate::i18n::label("Instalador Windows não publicado nesta versão","Windows installer is not available for this release"))?;
+    ensure!(found.next().is_none(),crate::i18n::label("Instaladores duplicados na release","Duplicate installers in the release"));
     let expected=format!("{prefix}download/{tag}/{name}");
-    ensure!(asset["browser_download_url"].as_str()==Some(expected.as_str()) && asset["state"]=="uploaded","URL do instalador inválida");
-    let size=asset["size"].as_u64().context("Tamanho de instalador inválido")?;
-    ensure!(size>0 && size<=LIMIT,"Instalador excede o limite permitido");
-    Ok(Release{version,page,asset:expected,size,digest:digest(asset["digest"].as_str().context("Digest do instalador indisponível")?)?})
+    ensure!(asset["browser_download_url"].as_str()==Some(expected.as_str()) && asset["state"]=="uploaded",crate::i18n::label("URL do instalador inválida","Invalid installer URL"));
+    let size=asset["size"].as_u64().context(crate::i18n::label("Tamanho de instalador inválido","Invalid installer size"))?;
+    ensure!(size>0 && size<=LIMIT,crate::i18n::label("Instalador excede o limite permitido","Installer exceeds the size limit"));
+    Ok(Release{version,page,asset:expected,size,digest:digest(asset["digest"].as_str().context(crate::i18n::label("Digest do instalador indisponível","Installer digest unavailable"))?)?})
 }
 pub fn latest()->Result<Option<Release>>{
     let mut response=client(20)?.get(API).header("Accept","application/vnd.github+json")
         .header("X-GitHub-Api-Version","2022-11-28").send()?;
     if response.status()==reqwest::StatusCode::NOT_FOUND{return Ok(None);}
     if response.status()==reqwest::StatusCode::FORBIDDEN || response.status()==reqwest::StatusCode::TOO_MANY_REQUESTS {
-        bail!("GitHub limitou as consultas; tente novamente mais tarde");
+        bail!(crate::i18n::label("GitHub limitou as consultas; tente novamente mais tarde","GitHub rate limit reached; try again later"));
     }
     response.error_for_status_ref()?;
     let mut bytes=Vec::new();Read::by_ref(&mut response).take(1024*1024+1).read_to_end(&mut bytes)?;
-    ensure!(bytes.len()<=1024*1024,"Resposta de atualização excede o limite");
+    ensure!(bytes.len()<=1024*1024,crate::i18n::label("Resposta de atualização excede o limite","Update response exceeded the limit"));
     Ok(Some(parse_release(&serde_json::from_slice(&bytes)?)?))
 }
 fn safe_directory(path:&Path)->Result<()> {
     let metadata=fs::symlink_metadata(path)?;
-    ensure!(metadata.is_dir() && metadata.file_attributes()&REPARSE_POINT==0,"Diretório de atualização não pode ser link/reparse point");Ok(())
+    ensure!(metadata.is_dir() && metadata.file_attributes()&REPARSE_POINT==0,crate::i18n::label("Diretório de atualização não pode ser link/reparse point","Update directory cannot be a link or reparse point"));Ok(())
 }
 fn cache_root()->Result<PathBuf>{
-    let local=PathBuf::from(std::env::var_os("LOCALAPPDATA").context("LOCALAPPDATA indisponível")?).canonicalize()?;
+    let local=PathBuf::from(std::env::var_os("LOCALAPPDATA").context(crate::i18n::label("LOCALAPPDATA indisponível","LOCALAPPDATA unavailable"))?).canonicalize()?;
     let base=local.join("HyperCast");if !base.exists(){fs::create_dir(&base)?;}safe_directory(&base)?;
     let updates=base.join("updates");if !updates.exists(){fs::create_dir(&updates)?;}safe_directory(&updates)?;Ok(updates)
 }
@@ -189,24 +189,24 @@ pub fn clean_old_downloads(){
 }
 fn verify_file(path:&Path,expected:&[u8;32],size:u64)->Result<File>{
     let mut file=OpenOptions::new().read(true).share_mode(1).open(path)?; // FILE_SHARE_READ: no write/delete.
-    ensure!(file.metadata()?.file_attributes()&REPARSE_POINT==0,"Instalador não pode ser link/reparse point");
+    ensure!(file.metadata()?.file_attributes()&REPARSE_POINT==0,crate::i18n::label("Instalador não pode ser link/reparse point","Installer cannot be a link or reparse point"));
     let mut hash=Sha256::new();let mut buffer=[0;65536];let mut total=0;
-    loop{let n=file.read(&mut buffer)?;if n==0{break;}total+=n as u64;ensure!(total<=size,"Tamanho do instalador não confere");hash.update(&buffer[..n]);}
-    ensure!(total==size && hash.finalize().as_slice()==expected,"SHA-256 ou tamanho do instalador não confere");Ok(file)
+    loop{let n=file.read(&mut buffer)?;if n==0{break;}total+=n as u64;ensure!(total<=size,crate::i18n::label("Tamanho do instalador não confere","Installer size mismatch"));hash.update(&buffer[..n]);}
+    ensure!(total==size && hash.finalize().as_slice()==expected,crate::i18n::label("SHA-256 ou tamanho do instalador não confere","Installer SHA-256 or size mismatch"));Ok(file)
 }
 pub fn download(release:&Release,progress:&AtomicU64)->Result<VerifiedInstaller>{
-    ensure!(trusted_transport(&url::Url::parse(&release.asset)?),"Transporte de atualização inválido");
+    ensure!(trusted_transport(&url::Url::parse(&release.asset)?),crate::i18n::label("Transporte de atualização inválido","Invalid update transport"));
     let directory=cache_root()?.join(uuid::Uuid::new_v4().to_string());fs::create_dir(&directory)?;
     let path=directory.join(format!("HyperCast-{}-windows-x64-setup.exe",release.version));
     let mut prepared=VerifiedInstaller{path,directory,_lock:None};
     let mut response=client(300)?.get(&release.asset).send()
-        .map_err(|_|anyhow::anyhow!("Não foi possível baixar o instalador; verifique sua conexão"))?;
+        .map_err(|_|anyhow::anyhow!(crate::i18n::label("Não foi possível baixar o instalador; verifique sua conexão","Could not download the installer; check your connection")))?;
     ensure!(response.status().is_success(),"Download recusado pelo GitHub (HTTP {})",response.status().as_u16());
-    if let Some(length)=response.content_length(){ensure!(length==release.size,"Tamanho de download não confere");}
+    if let Some(length)=response.content_length(){ensure!(length==release.size,crate::i18n::label("Tamanho de download não confere","Download size mismatch"));}
     let mut file=OpenOptions::new().write(true).create_new(true).share_mode(0).open(&prepared.path)?;
     let mut buffer=[0;65536];let mut total=0;
     loop{let n=response.read(&mut buffer)?;if n==0{break;}total+=n as u64;
-        ensure!(total<=release.size && total<=LIMIT,"Download excede o tamanho esperado");
+        ensure!(total<=release.size && total<=LIMIT,crate::i18n::label("Download excede o tamanho esperado","Download exceeds the expected size"));
         file.write_all(&buffer[..n])?;progress.store(total,Ordering::Relaxed);
     }
     file.sync_all()?;drop(file);
@@ -219,8 +219,8 @@ pub fn detect_installation()->Result<Installation>{
     let result=unsafe{RegGetValueW(HKEY_CURRENT_USER,w!("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{34FA3F08-63D0-4A64-9E61-F79E7078B39D}_is1"),
         w!("InstallLocation"),RRF_RT_REG_SZ,None,Some(text.as_mut_ptr().cast()),Some(&mut bytes))};
     if result==ERROR_FILE_NOT_FOUND{return Ok(Installation::Portable);}
-    result.ok().context("Não foi possível identificar a instalação")?;
-    let len=text.iter().position(|c|*c==0).context("Registro de instalação inválido")?;
+    result.ok().context(crate::i18n::label("Não foi possível identificar a instalação","Could not identify the installation"))?;
+    let len=text.iter().position(|c|*c==0).context(crate::i18n::label("Registro de instalação inválido","Invalid installation registry entry"))?;
     let directory=PathBuf::from(String::from_utf16(&text[..len])?).canonicalize()?;
     let executable=std::env::current_exe()?.canonicalize()?;
     Ok(if executable.parent()==Some(directory.as_path()){Installation::Installed(directory)}else{Installation::Portable})

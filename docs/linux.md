@@ -8,7 +8,7 @@ GStreamer ou codecs manualmente para executar o AppImage.
 
 ## Abrir no Bazzite
 
-Baixe `HyperCast-0.8.13-linux-x86_64.AppImage` na página de versões e abra pelo
+Baixe `HyperCast-0.8.14-linux-x86_64.AppImage` na página de versões e abra pelo
 Gear Lever. Se preferir abrir diretamente, habilite a permissão de execução nas
 propriedades do arquivo. Sem suporte a FUSE, use `--appimage-extract-and-run`.
 
@@ -160,6 +160,20 @@ O teste `publisher_source_and_codec_switches` gera imagens e exige que outro
 cliente decodifique cada troca, preservando SID apenas na troca compatível.
 `tests/integration_linux_publisher_switch.py` executa esse teste na sala isolada
 do ambiente de desenvolvimento Windows/WSL, com as bibliotecas do AppImage.
+
+A 0.8.14 acrescenta resolução de envio Nativa, Full HD (máximo 1920×1080)
+e Quad HD (máximo 2560×1440), além de 30, 60 ou 120 FPS. As opções ficam na
+seção de formato antes de compartilhar. O redimensionamento mantém a proporção,
+não amplia fontes menores e não muda a resolução do monitor. Por exemplo,
+3440×1440 enviado como Full HD resulta em aproximadamente 1920×804.
+O modo HEVC por software continua limitado a 30 FPS. Pare o compartilhamento
+para alterar esses limites; a troca de janela mantém os limites selecionados.
+
+Sair cancela a admissão HTTP ou a conexão WebRTC pendente por um sinal separado
+da fila de comandos. Trocas rápidas preservam uma única tarefa de encerramento
+e apenas o último destino escolhido. Sair durante essa espera cancela também
+o próximo ingresso. Os testes simulam servidores que não respondem, encerram
+conexões durante o handshake e verificam cancelamento e liberação dos workers.
 
 ## Desenvolver
 
