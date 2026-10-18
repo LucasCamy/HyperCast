@@ -30,7 +30,7 @@ def main():
     env={k:v for k,v in os.environ.items() if not k.startswith(('HYPERCAST_','LIVEKIT_','GH_','GITHUB_'))}
     env.update(HYPERCAST_URL='wss://hypercast.cloudlane.com.br',HYPERCAST_PUBLISH_TOKEN=token(True),HYPERCAST_ROOM_TOKEN=token(False),HYPERCAST_AUDIO_TEST_SILENT_OUTPUT='1')
     env['HYPERCAST_SWITCH_CASE']=os.environ.get('HYPERCAST_SWITCH_CASE','publisher_source_and_codec_switches')
-    assert env['HYPERCAST_SWITCH_CASE'] in ('publisher_source_and_codec_switches','synthetic_output_limits_and_fps','cancel_pending_room_connections')
+    assert env['HYPERCAST_SWITCH_CASE'] in ('publisher_source_and_codec_switches','synthetic_output_limits_and_fps','cancel_pending_room_connections','worker_failure_can_reconnect')
     env['WSLENV']=':'.join(name+'/u' for name in env if name.startswith('HYPERCAST_'))
     windows=os.environ.get('HYPERCAST_SWITCH_WINDOWS')=='1'
     if windows:
@@ -43,7 +43,7 @@ def main():
             child=subprocess.run(command,env=env,stdout=log,stderr=errors,timeout=100)
             assert child.returncode==0,'Linux publisher switch failed; inspect .tools/linux-publisher-switch.log'
         assert b'test result: ok. 1 passed' in (ROOT/'.tools/linux-publisher-switch.log').read_bytes(),'Test filter did not execute exactly one case'
-        if env['HYPERCAST_SWITCH_CASE']=='cancel_pending_room_connections':
+        if env['HYPERCAST_SWITCH_CASE'] in ('cancel_pending_room_connections','worker_failure_can_reconnect'):
             operator=rt.sign({'iss':key,'sub':'cancellation-check','nbf':now-5,'exp':now+180,'video':{'roomList':True}},secret)
             deadline=time.monotonic()+5
             while True:

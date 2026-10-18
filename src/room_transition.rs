@@ -84,6 +84,32 @@ mod cancellation_tests {
         }
     }
     #[test]
+    #[ignore="Requires a scoped token for an isolated test room"]
+    fn worker_failure_can_reconnect(){
+        let address=std::env::var("HYPERCAST_URL").unwrap();let token=std::env::var("HYPERCAST_ROOM_TOKEN").unwrap();
+        for _ in 0..2 {
+            #[cfg(windows)]
+            let engine=crate::desktop_engine::Engine::connect(address.clone(),token.clone(),Default::default(),0,false);
+            #[cfg(target_os="linux")]
+            let engine=crate::linux::engine::Engine::start(address.clone(),token.clone(),Default::default());
+            let until=Instant::now()+Duration::from_secs(35);
+            loop {
+                #[cfg(windows)] let connected=engine.shared.lock().unwrap().connected;
+                #[cfg(target_os="linux")] let connected=engine.state.lock().unwrap().connected;
+                if connected{break;}
+                assert!(!engine.finished(),"Worker failed before injection");assert!(Instant::now()<until,"No connection before injection");std::thread::sleep(Duration::from_millis(10));
+            }
+            #[cfg(windows)] engine.commands.send(crate::desktop_engine::Command::FailWorker).unwrap();
+            #[cfg(target_os="linux")] engine.tx.send(crate::linux::engine::Command::FailWorker).unwrap();
+            let until=Instant::now()+Duration::from_secs(5);
+            while !engine.finished(){assert!(Instant::now()<until,"Failed worker did not finish");std::thread::sleep(Duration::from_millis(10));}
+            #[cfg(windows)] let state=engine.shared.lock().unwrap();
+            #[cfg(target_os="linux")] let state=engine.state.lock().unwrap();
+            assert!(!state.connected);assert_eq!(state.status,crate::resilience::worker_failure());assert!(state.frames.is_empty());drop(state);
+            drop(engine);
+        }
+    }
+    #[test]
     fn closing_during_http_admission_discards_late_results(){
         let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=format!("ws://{}",listener.local_addr().unwrap());
         let (tx,rx)=mpsc::channel();let (release,wait)=mpsc::channel();

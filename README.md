@@ -212,3 +212,7 @@ Integrações de mídia exigem GPU e SFU local. Screenshots de QA ficam apenas e
 Interface publica AV1 (padrão) ou HEVC, selecionável antes de compartilhar, camada única, P1 ultra-low-latency, CBR, sem B-frames/lookahead e GOP de um segundo. DXGI é não bloqueante; timer de alta resolução descarta ticks perdidos. Desktop estático repete a última imagem: 120 frames codificados/s não significam 120 mudanças distintas de conteúdo.
 
 Capturas HDR em scRGB/FP16 são convertidas na GPU para SDR antes do NVENC; a transmissão não preserva HDR. Não há composição de cursor separado, miniaturas vivas em camada reduzida ou recuperação automática completa após falha de rede/dispositivo. `ACCESS_LOST` tenta reconstruir DXGI no mesmo dispositivo. Há dois peer connections **para o mesmo SFU** por conflito ICE observado no modo single-PC da combinação fixada. Latência, jitter/perda, alta movimentação e 1440p@120 precisam de medição antes de uso em produção.
+
+## Desenvolvimento da 0.9.0
+
+[Plano e andamento](docs/0.9.0.md), com [decisões de arquitetura e critérios de aceite](docs/adr/README.md). O marco permanece em desenvolvimento; a versão estável disponível não foi alterada.

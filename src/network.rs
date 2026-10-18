@@ -87,6 +87,21 @@ pub(crate) async fn connect_with_policy(
     Ok(Room::connect(address, token, options).await?)
 }
 
+/// Initial desktop joins only. Established rooms retain the SDK reconnect policy.
+#[cfg(feature="desktop")]
+pub(crate) async fn connect_desktop(address:&str,token:&str,relay:bool,waiting:impl FnMut(u32,std::time::Duration))
+    ->Result<(Room,tokio::sync::mpsc::UnboundedReceiver<RoomEvent>)> {
+    crate::resilience::retry(||connect_with_policy(address,token,relay),transient_connection_error,waiting).await
+}
+#[cfg(feature="desktop")]
+fn transient_connection_error(error:&anyhow::Error)->bool {
+    use livekit::{RoomError,rtc_engine::EngineError};
+    if matches!(error.downcast_ref::<RoomError>(),Some(RoomError::Engine(EngineError::Connection(_)))){return true;}
+    error.chain().any(|cause|cause.downcast_ref::<std::io::Error>().is_some_and(|e|matches!(e.kind(),
+        std::io::ErrorKind::TimedOut|std::io::ErrorKind::ConnectionRefused|std::io::ErrorKind::ConnectionReset|
+        std::io::ErrorKind::ConnectionAborted|std::io::ErrorKind::NotConnected|std::io::ErrorKind::Interrupted)))
+}
+
 pub async fn diagnostic(address: &str, token: &str, seconds: u32) -> Result<()> {
     let (room, mut events) = connect(address, token).await?;
     println!(
@@ -425,4 +440,18 @@ pub fn video_stats_lines(publisher:&[livekit::webrtc::stats::RtcStats],subscribe
         }
     }
     lines.truncate(8);lines
+}
+
+#[cfg(all(test,feature="desktop"))]
+mod recovery_tests {
+    use super::*;
+    #[test]fn only_typed_transport_failures_are_retried(){
+        use livekit::{RoomError,rtc_engine::EngineError};
+        assert!(transient_connection_error(&anyhow::Error::new(RoomError::Engine(EngineError::Connection("timeout".into())))));
+        assert!(transient_connection_error(&anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::ConnectionReset))));
+        assert!(!transient_connection_error(&anyhow::anyhow!("401 unauthorized timeout")));
+        assert!(!transient_connection_error(&anyhow::Error::new(RoomError::Internal("invalid token".into()))));
+        assert!(!transient_connection_error(&anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied))));
+        assert!(!transient_connection_error(&anyhow::anyhow!("Use WSS")));
+    }
 }

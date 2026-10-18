@@ -1,3 +1,4 @@
+use crate::resilience::StateMutex as Mutex;
 use super::media::{AudioCapture, Capture, Codec, Encoder, Playout, Source};
 use crate::{
     network::{self, EncodedPublisher},
@@ -20,7 +21,7 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicU32, Ordering},
     },
     time::{Duration, Instant},
@@ -69,6 +70,10 @@ impl Default for Layout {
     }
 }
 pub enum Command {
+    #[cfg(test)]
+    FailWorker,
+    #[cfg(test)]
+    FailCapture,
     RestartReception,
     StreamSettings(crate::resolution::StreamSettings),
     Layout(Layout),
@@ -88,6 +93,7 @@ impl Engine {
     #[cfg(test)]
     pub fn fixture(state:Arc<Mutex<State>>)->Self {let(tx,_rx)=tokio::sync::mpsc::unbounded_channel();Self{state,tx,thread:None,cancel:Default::default()}}
 
+    pub fn finished(&self)->bool{self.thread.as_ref().is_none_or(|t|t.is_finished())}
     pub fn request_exit(&self){self.cancel.cancel();}
     pub fn start(address: String, token: String, ctx: egui::Context) -> Self {
         let state = Arc::new(Mutex::new(State {
@@ -97,17 +103,21 @@ impl Engine {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let shared = state.clone();
         let cancel=crate::room_transition::Cancellation::default();let stopping=cancel.clone();
+        let failure_state=state.clone();let failure_ctx=ctx.clone();
         let thread = std::thread::spawn(move || {
-            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let healthy=crate::resilience::guard(|| {
+            let Ok(runtime)=tokio::runtime::Runtime::new() else {shared.lock().unwrap().status=crate::resilience::worker_failure().into();ctx.request_repaint();return;};
             let result = runtime.block_on(session(address, token, rx, shared.clone(), ctx.clone(),stopping));
             if let Err(error) = result {
                 let mut s = shared.lock().unwrap();
                 s.status = error.to_string();
                 s.connected = false;
-                s.sharing = false;
+                s.sharing = false;s.selecting=false;s.reconnecting=false;s.reception_resetting=false;s.can_publish=false;
             }
             ctx.request_repaint();
             runtime.shutdown_timeout(Duration::from_secs(2));
+            });
+            if !healthy {let mut s=failure_state.lock().unwrap();*s=State::default();s.status=crate::resilience::worker_failure().into();drop(s);failure_ctx.request_repaint();}
         });
         Self {
             state,
@@ -327,7 +337,7 @@ async fn session(
 ) -> Result<()> {
     gstreamer::init()?;
     livekit::webrtc::enable_zero_playout_delay()?;
-    let connection = match stopping.run(network::connect(&address,&token)).await {Some(result)=>result?,None=>return Ok(())};
+    let connection = match stopping.run(network::connect_desktop(&address,&token,std::env::var("HYPERCAST_RELAY_ONLY").as_deref()==Ok("1"),|attempt,_|{shared.lock().unwrap().status=crate::i18n_format!("Tentando conectar novamente… {attempt}/3","Retrying connection… {attempt}/3");ctx.request_repaint();})).await {Some(result)=>result?,None=>return Ok(())};
     let (room, mut events) = connection;
     let mut room = Arc::new(room);
     {
@@ -364,10 +374,13 @@ async fn session(
     let mut sent_bytes=0u64;
     let outcome=async {
         loop {
+            anyhow::ensure!(!shared.was_reset(),crate::resilience::worker_failure());
             tokio::select!{
                 biased;
                 _=stopping.cancelled()=>break,
                 command=rx.recv()=>match command.unwrap_or(Command::Disconnect){
+                    #[cfg(test)] Command::FailWorker=>panic!("injected worker failure"),
+                    #[cfg(test)] Command::FailCapture=>{pending=Some(tokio::spawn(async{panic!("injected capture task failure")}));shared.lock().unwrap().selecting=true;},
                     Command::Disconnect=>break,
                     Command::StreamSettings(value)=>{if capture.is_none()&&pending.is_none()&&value.valid(){settings=value;}},
                     Command::RestartReception=>{
@@ -426,11 +439,11 @@ async fn session(
                 },
                 _=ticks.tick()=>{
                     if retiring.as_ref().is_some_and(|task|task.is_finished()) {
-                        retiring.take().unwrap().await?;
+                        if retiring.take().unwrap().await.is_err(){shared.lock().unwrap().status=crate::i18n::label("A origem anterior falhou ao encerrar; você pode tentar novamente.","The previous source failed to stop; you can try again.").into();}
                         shared.lock().unwrap().selecting=pending.is_some();
                     }
                     if pending.as_ref().is_some_and(|t|t.is_finished()) {
-                        let result=pending.take().unwrap().await?;
+                        let result=pending.take().unwrap().await.unwrap_or_else(|_|Err(anyhow::anyhow!(crate::i18n::label("A captura falhou internamente. Selecione a origem para tentar novamente.","Capture failed internally. Select the source to try again."))));
                         shared.lock().unwrap().selecting=false;
                         match result {
                             Ok((cap,codec))=>{
@@ -520,7 +533,18 @@ async fn session(
                                 let p=publisher.as_mut().unwrap();
                                 p.set_resolution_if_changed(packet.width,packet.height);
                                 if p.take_keyframe_request(){cap.request_keyframe();if !packet.keyframe{continue;}}
-                                if p.push(&packet.bytes,started.elapsed().as_micros() as i64,packet.keyframe)?{let mut state=shared.lock().unwrap();state.sent+=1;sent_bytes+=packet.bytes.len() as u64;state.quality.resolution=Some((packet.width,packet.height));}
+                                match p.push(&packet.bytes,started.elapsed().as_micros() as i64,packet.keyframe){
+                                    Ok(true)=>{let mut state=shared.lock().unwrap();state.sent+=1;sent_bytes+=packet.bytes.len() as u64;state.quality.resolution=Some((packet.width,packet.height));},
+                                    Ok(false)=>{},
+                                    Err(error)=>{
+                                        cap.stop().await;capture=None;
+                                        if let Some(p)=publisher.take(){let _=p.stop().await;}
+                                        if let Some(a)=audio.take(){a.stop(&room).await;}
+                                        publication_format=None;last_video_bps=None;transmit_paused=false;
+                                        let mut s=shared.lock().unwrap();s.sharing=false;
+                                        s.status=crate::i18n_format!("Envio interrompido: {error}. Tente compartilhar novamente.","Sending stopped: {error}. Try sharing again.");
+                                    }
+                                }
                             },
                             Ok(None)=>{},
                             Err(error)=>{shared.lock().unwrap().status=error.to_string();cap.stop().await;capture=None;if let Some(p)=publisher.take(){let _=p.stop().await;}if let Some(a)=audio.take(){a.stop(&room).await;}
@@ -592,6 +616,13 @@ mod reception_tests {
         while !publisher.state.lock().unwrap().connected || !viewer.state.lock().unwrap().connected {
             anyhow::ensure!(Instant::now()<deadline,"Switch test clients did not connect");
             std::thread::sleep(Duration::from_millis(25));
+        }
+        publisher.tx.send(Command::FailCapture)?;
+        let until=Instant::now()+Duration::from_secs(5);
+        loop {
+            let s=publisher.state.lock().unwrap();
+            if !s.selecting && s.status==crate::i18n::label("A captura falhou internamente. Selecione a origem para tentar novamente.","Capture failed internally. Select the source to try again."){anyhow::ensure!(s.connected,"Capture failure disconnected the room");break;}
+            anyhow::ensure!(Instant::now()<until,"Capture task failure did not become retryable");drop(s);std::thread::sleep(Duration::from_millis(10));
         }
         let mut previous_sid=None;
         for (step,(w,h,codec,encoder)) in [

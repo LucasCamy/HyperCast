@@ -43,3 +43,6 @@ pub mod room_creation;
 
 #[cfg(all(target_os = "linux", feature = "desktop"))]
 pub mod linux;
+
+#[cfg(feature="desktop")]
+pub mod resilience;

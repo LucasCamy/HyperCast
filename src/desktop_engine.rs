@@ -1,3 +1,4 @@
+use crate::resilience::StateMutex as Mutex;
 use crate::{
     encoder::{Codec, HardwareEncoder,AmdProfile},
     network::{self, EncodedPublisher},
@@ -15,7 +16,7 @@ use livekit::{
 };
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, mpsc, atomic::{AtomicU64, Ordering}},
+    sync::{Arc, mpsc, atomic::{AtomicU64, Ordering}},
     time::{Duration, Instant},
 };
 use tokio_stream::StreamExt;
@@ -81,6 +82,8 @@ pub struct Layout {
     pub volume: u32,
 }
 pub enum Command {
+    #[cfg(test)]
+    FailWorker,
     RestartReception,
     Layout(Layout),
     Share {
@@ -389,7 +392,9 @@ impl Engine {
         }));
         let state = shared.clone();
         let cancel=crate::room_transition::Cancellation::default();let stopping=cancel.clone();
+        let failure_state=shared.clone();let failure_ctx=ctx.clone();
         let thread = std::thread::spawn(move || {
+            let healthy=crate::resilience::guard(|| {
             let Ok(runtime)=tokio::runtime::Runtime::new() else {state.lock().unwrap().status=crate::i18n::label("Não foi possível iniciar a conexão","Could not start the connection").into();return;};
             let admission=runtime.block_on(stopping.run(async {
                 match access {
@@ -408,7 +413,7 @@ impl Engine {
             let result = (|| -> Result<()> {
                 let _runtime_guard = runtime.enter();
                 livekit::webrtc::enable_zero_playout_delay()?;
-                let (room, mut events) = match runtime.block_on(stopping.run(network::connect_with_policy(&address, &token, relay_only))){Some(result)=>result?,None=>return Ok(())};
+                let (room, mut events) = match runtime.block_on(stopping.run(network::connect_desktop(&address, &token, relay_only,|attempt,_|{state.lock().unwrap().status=crate::i18n_format!("Tentando conectar novamente… {attempt}/3","Retrying connection… {attempt}/3");ctx.request_repaint();}))){Some(result)=>result?,None=>return Ok(())};
                 let room = Arc::new(room);
                 crate::diagnostics::write("connection", "Room connected", "");
                 {
@@ -462,6 +467,7 @@ impl Engine {
                 let(mut send_meter,mut receive_meter)=(crate::video_metrics::TrafficMeter::default(),crate::video_metrics::TrafficMeter::default());
                 let mut send_origin=None;
                 'session: loop {
+                    if state.was_reset(){break 'session;}
                     if stopping.is_cancelled(){break 'session;}
                     if trace_reception && reception_trace.elapsed()>=Duration::from_secs(1) {
                         let shared=state.lock().unwrap();println!("Receive progress: {}",serde_json::to_string(&shared.received_streams).unwrap_or_default());
@@ -519,6 +525,7 @@ impl Engine {
                     while let Ok(command) = commands.try_recv() {
                         if stopping.is_cancelled(){break 'session;}
                         match command {
+                            #[cfg(test)] Command::FailWorker=>panic!("injected worker failure"),
                             Command::StreamSettings(value)=>{if cast.is_none()&&recovery.is_none()&&value.valid(){settings=value;}},
                             Command::AmdProfile(profile)=>{if cast.is_none(){amd_profile=profile;}},
                             Command::UploadProfile(profile)=>{if cast.is_none()&&recovery.is_none(){upload=profile;}},
@@ -714,11 +721,19 @@ impl Engine {
                             RoomEvent::Reconnected => {
                                 state.lock().unwrap().reconnecting=false;
                                 reconnect_attempt = 0;
+                                let mut encoder_error=None;
                                 if let Some(c)=&mut cast {
-                                    // A replaced WebRTC encoder must see one bootstrap frame to bind
-                                    // its rate mailbox. Use only 64 kbps if the old sender was paused.
-                                    if let Some(e)=&mut c.encoder{c.rate_blocked=!e.reconfigure(c.upload.active_rate(c.last_rate.0),c.fps)?;c.paused=c.rate_blocked;}
+                                    // A new WebRTC encoder needs a bootstrap frame after reconnect.
+                                    if let Some(e)=&mut c.encoder{match e.reconfigure(c.upload.active_rate(c.last_rate.0),c.fps){
+                                        Ok(applied)=>{c.rate_blocked=!applied;c.paused=c.rate_blocked;},
+                                        Err(error)=>encoder_error=Some(error),
+                                    }}
                                     if let Some(p)=&mut c.publisher {p.restart_keyframe();}
+                                }
+                                if let Some(error)=encoder_error {
+                                    if let Some(c)=cast.take(){c.stop(&runtime);}
+                                    let mut s=state.lock().unwrap();s.publishing=false;
+                                    s.source_error=crate::i18n_format!("Encoder: {error}. Tente compartilhar novamente.","Encoder: {error}. Try sharing again.").replace(&token,"[token]");
                                 }
                                 if reception_restart.is_none(){update_subscriptions(&room,&layout);}
                                 state.lock().unwrap().status="Reconectado".into();
@@ -917,11 +932,13 @@ impl Engine {
                     Ok(()) | Err(livekit::RoomError::AlreadyClosed) => {}
                     Err(error) => return Err(error.into()),
                 }
+                anyhow::ensure!(!state.was_reset(),crate::resilience::worker_failure());
                 Ok(())
             })();
             let mut state = state.lock().unwrap();
             crate::diagnostics::write("session_summary", &format!("sent={} received={}", state.sent, state.received), "");
             state.connected = false;
+            state.reconnecting=false;state.reception_resetting=false;state.can_publish=false;
             state.publishing = false;
             state.frames.clear();
             state.frozen.clear();
@@ -933,6 +950,8 @@ impl Engine {
             drop(state);
             ctx.request_repaint();
             runtime.shutdown_timeout(Duration::from_secs(2));
+            });
+            if !healthy {let mut s=failure_state.lock().unwrap();*s=Shared::default();s.status=crate::resilience::worker_failure().into();drop(s);failure_ctx.request_repaint();}
         });
         Self {
             commands: tx,

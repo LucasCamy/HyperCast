@@ -257,6 +257,9 @@ impl App {
                     ui.label(RichText::new(self.server_status.label()).size(11.0).color(if self.server_status.status==crate::server_status::Status::Online{ACCENT}else{MUTED})).on_hover_text(crate::i18n_format!("Servidor: {}","Server: {}",self.server_status.detail));
                     if reconnecting {ui.label(RichText::new(crate::i18n::label("Sala: reconectando…","Room: reconnecting…")).size(11.0).color(MUTED));}
                     ui.add_space(12.0);
+                    if !connected && self.departure.is_none() && self.joining.is_none() && self.engine.as_ref().is_some_and(|e|e.finished()) && (self.saved_room.is_some() || !self.invite.is_empty()) {
+                        if button(ui,crate::i18n::label("Tentar novamente","Try again"),true,true).clicked(){self.leave_room(ctx,true);}
+                    }
                     if !self.access.authenticated(){
                         ui.label(RichText::new(crate::i18n::label("ACESSO AO SERVIDOR","SERVER ACCESS")).size(11.0).color(MUTED));
                         ui.collapsing(crate::i18n::label("Servidor","Server"),|ui|{input(ui,&mut self.address,"wss://servidor",false,512);});
@@ -533,7 +536,7 @@ mod tests {
     fn occupied_media_state_does_not_block_the_ui() {
         let ctx=egui::Context::default();let mut app=App::new(&ctx);
         app.address="ws://127.0.0.1:9".into();
-        let shared=std::sync::Arc::new(std::sync::Mutex::new(State::default()));
+        let shared=std::sync::Arc::new(crate::resilience::StateMutex::new(State::default()));
         app.engine=Some(Engine::fixture(shared.clone()));
         let(held,started)=mpsc::channel();let(release,wait)=mpsc::channel();
         let worker=std::thread::spawn(move||{let _guard=shared.lock().unwrap();held.send(()).unwrap();let _=wait.recv_timeout(Duration::from_secs(2));});

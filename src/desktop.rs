@@ -772,6 +772,9 @@ impl eframe::App for App {
 
                         });
                         ui.add_space(8.0);
+                        if !connected && self.departure.is_none() && self.engine.as_ref().is_some_and(|e|e.finished()) && (self.saved_room.is_some() || !self.invite.is_empty() || !self.token.is_empty()) {
+                            if crate::desktop_ui::action(ui,crate::i18n::label("Tentar novamente","Try again"),true,true).clicked(){self.leave_room(&ctx,true);}
+                        }
                         section_title(ui, crate::i18n::label("PARTICIPANTES","PARTICIPANTS"), &crate::i18n_format!("{} na sala","{} in the room", people.len() + usize::from(connected)));
                         ui.add_space(8.0);
                         if connected {
