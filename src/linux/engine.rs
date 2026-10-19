@@ -372,6 +372,8 @@ async fn session(
     let mut reception_restart:Option<Instant>=None;
     let(mut send_meter,mut receive_meter)=(crate::video_metrics::TrafficMeter::default(),crate::video_metrics::TrafficMeter::default());
     let mut sent_bytes=0u64;
+    let mut diagnostic_tick=Instant::now();
+    let mut diagnostic_task:Option<tokio::task::JoinHandle<Option<crate::video_metrics::VideoNetwork>>>=None;
     let outcome=async {
         loop {
             anyhow::ensure!(!shared.was_reset(),crate::resilience::worker_failure());
@@ -438,6 +440,12 @@ async fn session(
                     _=>{last_refresh=Instant::now()-Duration::from_secs(1);},
                 },
                 _=ticks.tick()=>{
+                    if diagnostic_task.as_ref().is_some_and(|t|t.is_finished()){
+                        shared.lock().unwrap().quality.network=diagnostic_task.take().unwrap().await.ok().flatten();
+                    }
+                    if diagnostic_task.is_none() && diagnostic_tick.elapsed()>=Duration::from_secs(5){
+                        let observed=room.clone();diagnostic_task=Some(tokio::spawn(async move{tokio::time::timeout(Duration::from_secs(3),observed.get_stats()).await.ok()?.ok().and_then(|s|network::video_network_sample(&s.subscriber_stats))}));diagnostic_tick=Instant::now();
+                    }
                     if retiring.as_ref().is_some_and(|task|task.is_finished()) {
                         if retiring.take().unwrap().await.is_err(){shared.lock().unwrap().status=crate::i18n::label("A origem anterior falhou ao encerrar; você pode tentar novamente.","The previous source failed to stop; you can try again.").into();}
                         shared.lock().unwrap().selecting=pending.is_some();
@@ -565,6 +573,8 @@ async fn session(
                 let now=Instant::now();let mut state=shared.lock().unwrap();
                 if capture.is_some(){if let Some(sample)=send_meter.sample(now,state.sent,sent_bytes){state.quality.send=Some(sample);}}
                 else{send_meter=Default::default();state.quality.send=None;state.quality.resolution=None;}
+                state.quality.encoder_backend=capture.as_ref().and_then(|c|match c.backend.as_str(){"nvh265enc"=>Some("nvh265enc"),"nvav1enc"=>Some("nvav1enc"),"x265enc"=>Some("x265enc"),"vah265enc"=>Some("vah265enc"),"vaav1enc"=>Some("vaav1enc"),_=>None});
+                state.quality.codec=capture.as_ref().map(|_|if current_codec==Codec::Av1{"AV1"}else{"HEVC"});
                 state.quality.send_paused=capture.is_some()&&transmit_paused;
                 if let Some(sample)=receive_meter.sample(now,state.received,0){state.quality.receive=Some(sample);}
             }
@@ -572,6 +582,7 @@ async fn session(
         }
         Ok::<(),anyhow::Error>(())
     }.await;
+    if let Some(task)=diagnostic_task.take(){task.abort();let _=task.await;}
     if let Some(task) = pending.take() {
         task.abort();
         let _ = task.await;

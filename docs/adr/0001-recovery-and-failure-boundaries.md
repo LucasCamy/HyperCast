@@ -1,7 +1,7 @@
 # ADR 0001 — Recuperação e limites de falha
 
 - Data: 2026-10-18
-- Estado: Aceito; primeira etapa em implementação
+- Estado: Aceito; escopo mínimo implementado e validado
 - Marco: 0.9.0
 
 ## Contexto e decisão

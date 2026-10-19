@@ -37,7 +37,7 @@ def main():
         executable=max((ROOT/'target/x86_64-pc-windows-msvc/debug/deps').glob('hypercast-*.exe'),key=lambda p:p.stat().st_mtime)
         command=[str(executable),env['HYPERCAST_SWITCH_CASE'],'--ignored','--nocapture']
         env['PATH']=str(ROOT/'.tools/ffmpeg/bin')+os.pathsep+env['PATH']
-    else:command=['wsl','-d','Ubuntu','--','python3','-m','tests.integration_linux_publisher_switch','--linux-probe',binary]
+    else:command=['wsl','-d',os.environ.get('HYPERCAST_WSL_DISTRO','Ubuntu'),'--','python3','-m','tests.integration_linux_publisher_switch','--linux-probe',binary]
     try:
         with (ROOT/'.tools/linux-publisher-switch.log').open('wb') as log, (ROOT/'.tools/linux-publisher-switch-stderr.log').open('wb') as errors:
             child=subprocess.run(command,env=env,stdout=log,stderr=errors,timeout=100)

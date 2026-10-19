@@ -455,3 +455,26 @@ mod recovery_tests {
         assert!(!transient_connection_error(&anyhow::anyhow!("Use WSS")));
     }
 }
+
+/// Only numeric counters; never copy SDK identifiers into the exported snapshot.
+pub fn video_network_sample(stats:&[livekit::webrtc::stats::RtcStats])->Option<crate::video_metrics::VideoNetwork>{
+    use livekit::webrtc::stats::RtcStats;
+    let mut n=crate::video_metrics::VideoNetwork::default();
+    for entry in stats{match entry{
+        RtcStats::Transport(t)=>{if let Some(pair)=stats.iter().find_map(|p|match p{RtcStats::CandidatePair(p) if !t.transport.selected_candidate_pair_id.is_empty() && p.rtc.id==t.transport.selected_candidate_pair_id=>Some(p),_=>None}){let ms=pair.candidate_pair.current_round_trip_time*1000.0;if ms.is_finite()&&ms>=0.0{n.rtt_ms=Some(ms);}}},
+        RtcStats::InboundRtp(r) if r.stream.kind=="video"=>{n.streams+=1;n.bytes=n.bytes.saturating_add(r.inbound.bytes_received);n.packets=n.packets.saturating_add(r.received.packets_received);n.lost=n.lost.saturating_add(r.received.packets_lost);n.decoded+=r.inbound.frames_decoded as u64;n.dropped+=r.inbound.frames_dropped as u64;n.decode_ms+=r.inbound.total_decode_time*1000.0;},
+        _=>{}
+    }}
+    (n.rtt_ms.is_some()||n.streams>0).then_some(n)
+}
+
+#[cfg(all(test,feature="desktop"))]mod network_sample_tests{
+    use super::*;
+    #[test]fn only_video_counters_and_selected_transport_are_exported(){
+        use livekit::webrtc::stats::{RtcStats,InboundRtpStats};
+        let mut video=InboundRtpStats::default();video.stream.kind="video".into();video.inbound.track_identifier="private-screen-name".into();video.inbound.bytes_received=6000;video.received.packets_received=5;video.received.packets_lost=1;video.inbound.frames_decoded=3;video.inbound.total_decode_time=0.006;
+        let mut audio=video.clone();audio.stream.kind="audio".into();audio.inbound.bytes_received=999999;
+        let sample=video_network_sample(&[RtcStats::InboundRtp(video),RtcStats::InboundRtp(audio)]).unwrap();
+        assert_eq!(sample.streams,1);assert_eq!(sample.bytes,6000);assert_eq!(sample.packets,5);assert_eq!(sample.lost,1);assert_eq!(sample.decoded,3);assert_eq!(sample.decode_ms,6.0);assert!(sample.rtt_ms.is_none());
+    }
+}

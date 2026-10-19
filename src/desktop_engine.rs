@@ -881,17 +881,20 @@ impl Engine {
                         let now=Instant::now();let mut shared=state.lock().unwrap();
                         if let Some(value)=&cast {
                             shared.upload=value.upload;
-                            if send_origin!=Some(value.start){send_origin=Some(value.start);send_meter=Default::default();shared.quality.send=None;}
+                            if send_origin!=Some(value.start){send_origin=Some(value.start);send_meter=Default::default();shared.quality.send=None;shared.quality.applied_encoder=None;}
                             if let Some(sample)=send_meter.sample(now,value.count,value.sent_bytes){shared.quality.send=Some(sample);}
                             shared.quality.resolution=value.encoder.as_ref().map(|e|e.dimensions());
+                            shared.quality.encoder_backend=value.encoder.as_ref().map(|e|e.backend_name());
+                            shared.quality.codec=Some(if value.selection.1==Codec::Av1{"AV1"}else{"HEVC"});
                             shared.quality.send_paused=value.paused;
-                        }else{send_origin=None;send_meter=Default::default();shared.quality.send=None;shared.quality.resolution=None;shared.quality.send_paused=false;}
+                        }else{send_origin=None;send_meter=Default::default();shared.quality.send=None;shared.quality.resolution=None;shared.quality.send_paused=false;shared.quality.encoder_backend=None;shared.quality.codec=None;shared.quality.applied_encoder=None;}
                         if let Some(sample)=receive_meter.sample(now,shared.received,0){shared.quality.receive=Some(sample);}
                     }
                     if diagnostic_tick.elapsed() >= Duration::from_secs(5) {
                         if let Some(value)=&mut cast {
                             if let Some(encoder)=&value.encoder{
                                 let feedback=encoder.feedback();
+                                state.lock().unwrap().quality.applied_encoder=(feedback.bitrate>0&&feedback.fps>0).then_some((feedback.bitrate,feedback.fps));
                                 let summary=format!("backend={} profile={:?} applied_profile={:?} requested_bps={} applied_bps={} fps={} vbv_bits={:?} vbv_runtime={:?} rate_blocked={} {}",
                                     encoder.backend_name(),value.profile,encoder.profile(),value.last_rate.0,feedback.bitrate,feedback.fps,feedback.vbv_bits,feedback.vbv_runtime,value.rate_blocked,value.metrics.summary_and_reset());
                                 crate::diagnostics::write("encoder_window",&summary,"");state.lock().unwrap().encoder_stats=summary;
@@ -902,9 +905,11 @@ impl Engine {
                         crate::diagnostics::write("media", &format!("sent={} received={} receivers={} publishing={}", shared.sent, shared.received, sinks.len(), shared.publishing), "");
                         crate::diagnostics::write("audio_stats", &format!("sent={} received={} receivers={}", cast.as_ref().and_then(|value| value.audio.as_ref()).map_or(0, |audio| audio.frames.load(Ordering::Relaxed)), audio_received.load(Ordering::Relaxed), audio_sinks.len()), "");
                         drop(shared);
-                        let diagnostic_room = room.clone();
+                        let diagnostic_room = room.clone();let diagnostic_state=state.clone();
                         runtime.spawn(async move {
-                            if let Ok(stats) = diagnostic_room.get_stats().await {
+                            let sample=tokio::time::timeout(Duration::from_secs(3),diagnostic_room.get_stats()).await.ok().and_then(Result::ok);
+                            diagnostic_state.lock().unwrap().quality.network=sample.as_ref().and_then(|stats|network::video_network_sample(&stats.subscriber_stats));
+                            if let Some(stats)=sample {
                                 for line in network::video_stats_lines(&stats.publisher_stats,&stats.subscriber_stats){crate::diagnostics::write("video_rtp",&line,"");}
                                 network::print_ice_path("publisher", &stats.publisher_stats);
                                 network::print_ice_path("subscriber", &stats.subscriber_stats);

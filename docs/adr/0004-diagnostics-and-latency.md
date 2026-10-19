@@ -1,7 +1,7 @@
 # ADR 0004 — Diagnóstico e medição de latência
 
 - Data: 2026-10-18
-- Estado: Aceito; planejado
+- Estado: Aceito; relatório mínimo implementado; instrumentação completa planejada
 - Marco: 0.9.0
 
 ## Contexto e decisão
@@ -13,3 +13,7 @@ Exportar relatório com versão/esquema, sem JWT, chave compartilhada, cabeçalh
 RTT não mede latência fim a fim. Comprovar sub-100 ms exige bancada com referência visual/relógio e método documentado; não inferir isso da soma de métricas incompletas.
 
 Aceite: teste de sanitização com credenciais sintéticas, buffers limitados, overhead medido e relatório útil Windows/Linux.
+
+## Entrega mínima da 0.9.0
+
+[Relatório técnico](../technical-report.md) com lista permitida, contadores/FPS, RTT e configuração conhecida pelo backend. Tempos individuais de captura, encode e apresentação, histórico de eventos estruturado e medição visual fim a fim permanecem fora deste incremento.

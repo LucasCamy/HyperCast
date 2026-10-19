@@ -152,12 +152,14 @@ struct App {
     window_previews:HashMap<usize,crate::video_capture::WindowPreview>,
     fullscreen:bool,
     debug_open:bool,
+    report_copied:Option<Instant>,
     updater:crate::updater::Updater,
     creator:crate::room_creation::Creator,
     catalog:crate::room_creation::Catalog,
     departure:Option<crate::room_transition::Departure>,
     pending_join:bool,
     stream_settings:crate::resolution::StreamSettings,
+    preferences:crate::preferences::Store,
     server_access:crate::room_creation::ServerAccess,
     server_status:crate::server_status::ServerStatus,
     before_fullscreen_mode:ViewMode,
@@ -206,17 +208,19 @@ impl App {
             Some(RawWindowHandle::Win32(window)) => window.hwnd.get() as usize,
             _ => 0,
         };
+        let prefs=crate::preferences::Settings::load();
         Self {
+            preferences:crate::preferences::Store::new(prefs),
             engine: None,
             address: std::env::var("HYPERCAST_URL")
                 .unwrap_or_else(|_| "wss://hypercast.cloudlane.com.br".into()),
             token: std::env::var("HYPERCAST_ROOM_TOKEN").unwrap_or_default(),
             invite: std::env::var("HYPERCAST_INVITE").unwrap_or_default(),saved_room:None,
             name: crate::preferences::load_name(),
-            sidebar_open: true, self_preview: true, single_view: false,
+            sidebar_open: prefs.sidebar, self_preview: prefs.self_preview, single_view: false,
             client_id: crate::invitation::client_id(),
             token_mode: std::env::var("HYPERCAST_ROOM_TOKEN").is_ok(),
-            mode: if std::env::var("HYPERCAST_VIEW_MODE").as_deref() == Ok("grid") {
+            mode: if std::env::var("HYPERCAST_VIEW_MODE").map_or(prefs.grid,|v|v=="grid") {
                 ViewMode::Grid
             } else {
                 ViewMode::Spotlight
@@ -224,13 +228,13 @@ impl App {
             focus: std::env::var("HYPERCAST_FOCUS").ok(),
             paused: false,
             system_audio: std::env::var("HYPERCAST_SYSTEM_AUDIO").as_deref() == Ok("1"),
-            volume: 80,
-            sound_muted: false,
+            volume: prefs.volume,
+            sound_muted: prefs.muted,
             displays: crate::screen_capture::displays().unwrap_or_default(),
             selected_display: 0,
-            window_mode:false,windows:crate::video_capture::windows(),selected_window:None,window_picker_open:false,window_previews:HashMap::new(),fullscreen:false,debug_open:false,updater:crate::updater::Updater::default(),creator:crate::room_creation::Creator::default(),catalog:crate::room_creation::Catalog::default(),departure:None,pending_join:false,stream_settings:Default::default(),server_access:crate::room_creation::ServerAccess::default(),server_status:crate::server_status::ServerStatus::default(),before_fullscreen_mode:ViewMode::Spotlight,
+            window_mode:false,windows:crate::video_capture::windows(),selected_window:None,window_picker_open:false,window_previews:HashMap::new(),fullscreen:false,debug_open:false,report_copied:None,updater:crate::updater::Updater::default(),creator:crate::room_creation::Creator::default(),catalog:crate::room_creation::Catalog::default(),departure:None,pending_join:false,stream_settings:prefs.stream,server_access:crate::room_creation::ServerAccess::default(),server_status:crate::server_status::ServerStatus::default(),before_fullscreen_mode:ViewMode::Spotlight,
             amd_profile:crate::encoder::AmdProfile::Fast,
-            upload:crate::bandwidth::UploadProfile::initial(),
+            upload:if std::env::var_os("HYPERCAST_SMOKE_SECONDS").is_some(){crate::bandwidth::UploadProfile::initial()}else{prefs.upload},
             codec: if std::env::var("HYPERCAST_CODEC").as_deref() == Ok("av1") {
                 crate::encoder::Codec::Av1
             } else {
@@ -254,6 +258,7 @@ impl App {
             smoke_sound_stage: 0,smoke_source_stage:0,
         }
     }
+    fn save_preferences(&mut self){self.preferences.update(crate::preferences::Settings{stream:self.stream_settings,upload:self.upload,volume:self.volume,muted:self.sound_muted,sidebar:self.sidebar_open,self_preview:self.self_preview,grid:if self.fullscreen{self.before_fullscreen_mode==ViewMode::Grid}else{self.mode==ViewMode::Grid}});}
     fn target(&self)->Option<crate::video_capture::CaptureTarget>{
         let display=self.displays.get(self.selected_display)?;
         Some(if self.window_mode{
@@ -471,6 +476,7 @@ impl App {
 }
 impl Drop for App {
     fn drop(&mut self) {
+        self.save_preferences();
         if let Some(engine)=&self.engine{engine.request_exit();}
         let _ = crate::preferences::save_name(&self.name);
         self.presenters.clear();self.last_presented.clear();self.engine=None;
@@ -479,6 +485,7 @@ impl Drop for App {
 }
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.save_preferences();
         let ctx = ui.ctx().clone();
         if ctx.input(|i|i.key_pressed(egui::Key::F5)) && self.engine.as_ref().is_some_and(|e|{let s=e.shared.lock().unwrap();s.connected&&!s.reception_resetting}) {
             self.restart_reception();
@@ -1202,6 +1209,11 @@ impl eframe::App for App {
                     }
                     ui.add_enabled(idle,egui::Checkbox::new(&mut self.relay_only,crate::i18n::label("Forçar TURN/TLS (teste)","Force TURN/TLS (test)")))
                         .on_hover_text(crate::i18n::label("Ative antes de entrar para testar o relay; desativado escolhe a rota de menor custo","Enable before joining to test the relay; otherwise the lowest-cost route is selected"));
+                    crate::desktop_ui::network_summary(ui,&quality);
+                    if update_action(ui,if self.report_copied.is_some_and(|at|at.elapsed()<Duration::from_secs(2)){crate::i18n::label("Relatório copiado","Report copied")}else{crate::i18n::label("Copiar relatório técnico","Copy technical report")},false).clicked(){
+                        let restarts=self.engine.as_ref().and_then(|e|e.shared.try_lock().ok().map(|s|s.reception_restarts)).unwrap_or(0);
+                        ctx.copy_text(crate::video_metrics::technical_report(&quality,crate::video_metrics::ReportState{connected,reconnecting,publishing,sent,received,restarts},self.stream_settings,self.upload));self.report_copied=Some(Instant::now());ctx.request_repaint_after(Duration::from_secs(2));
+                    }
                     if update_action(ui,crate::i18n::label("Copiar diagnóstico","Copy diagnostics"),false).on_hover_text(crate::i18n::label("Copiar o log da sessão, sem token ou imagens","Copy the session log without tokens or images")).clicked(){
                         match crate::diagnostics::export_text(){Ok(text)=>ctx.copy_text(text),Err(error)=>self.error=crate::i18n_format!("Diagnóstico: {error}","Diagnostics: {error}")}
                     }

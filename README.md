@@ -213,6 +213,6 @@ Interface publica AV1 (padrão) ou HEVC, selecionável antes de compartilhar, ca
 
 Capturas HDR em scRGB/FP16 são convertidas na GPU para SDR antes do NVENC; a transmissão não preserva HDR. Não há composição de cursor separado, miniaturas vivas em camada reduzida ou recuperação automática completa após falha de rede/dispositivo. `ACCESS_LOST` tenta reconstruir DXGI no mesmo dispositivo. Há dois peer connections **para o mesmo SFU** por conflito ICE observado no modo single-PC da combinação fixada. Latência, jitter/perda, alta movimentação e 1440p@120 precisam de medição antes de uso em produção.
 
-## Desenvolvimento da 0.9.0
+## Estabilidade e preferências — 0.9.0
 
-[Plano e andamento](docs/0.9.0.md), com [decisões de arquitetura e critérios de aceite](docs/adr/README.md). O marco permanece em desenvolvimento; a versão estável disponível não foi alterada.
+[Plano e andamento](docs/0.9.0.md), com [decisões de arquitetura e critérios de aceite](docs/adr/README.md). O escopo mínimo inclui recuperação de falhas, nova tentativa de conexão, [preferências salvas](docs/preferences.md) e [relatório técnico](docs/technical-report.md). Adaptação adicional e recuperação automática por faixa ficam para incrementos seguintes.

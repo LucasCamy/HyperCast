@@ -49,9 +49,11 @@ struct App {
     encoder: Encoder,
     upload:crate::bandwidth::UploadProfile,
     stream_settings:crate::resolution::StreamSettings,
+    preferences:crate::preferences::Store,
     audio: bool,
     fullscreen: bool,
     debug: bool,
+    report_copied:Option<Instant>,
     updates:bool,
     textures: HashMap<String, (u64, egui::TextureHandle)>,
     started: Instant,
@@ -67,11 +69,13 @@ impl App {
         style.spacing.button_padding = Vec2::new(16.0, 10.0);
         style.animation_time = 0.0;
         ctx.set_style_of(egui::Theme::Dark, style);
+        let prefs=crate::preferences::Settings::load();
         let mut app = Self {
+            preferences:crate::preferences::Store::new(prefs),
             address: std::env::var("HYPERCAST_URL")
                 .unwrap_or("wss://hypercast.cloudlane.com.br".into()),
             name: crate::preferences::load_name(),
-            sidebar_open: true,
+            sidebar_open: prefs.sidebar,
             invite: std::env::var("HYPERCAST_INVITE").unwrap_or_default(),saved_room:None,
             device: crate::invitation::client_id(),
             access: ServerAccess::default(),
@@ -81,13 +85,13 @@ impl App {
             engine: None,snapshot:State::default(),departure:None,pending_join:false,applied_layout:false,
             joining: None,
             status: String::new(),
-            layout: Layout::default(),
+            layout: Layout{volume:if prefs.muted{0}else{prefs.volume},mode:if prefs.grid{ViewMode::Grid}else{ViewMode::Spotlight},..Default::default()},
             codec: Codec::Hevc,
             encoder: Encoder::Auto,
-            upload:crate::bandwidth::UploadProfile::initial(),stream_settings:Default::default(),
+            upload:if std::env::var_os("HYPERCAST_SMOKE_SECONDS").is_some(){crate::bandwidth::UploadProfile::initial()}else{prefs.upload},stream_settings:prefs.stream,
             audio: false,
             fullscreen: false,
-            debug: false,
+            debug: false,report_copied:None,
             updates:false,
             textures: HashMap::new(),
             started: Instant::now(),
@@ -103,6 +107,7 @@ impl App {
         }
         app
     }
+    fn save_preferences(&mut self){self.preferences.update(crate::preferences::Settings{stream:self.stream_settings,upload:self.upload,volume:self.layout.volume,muted:false,sidebar:self.sidebar_open,self_preview:true,grid:self.layout.mode==ViewMode::Grid});}
     fn send(&self, command: Command) {
         if let Some(engine) = &self.engine {
             let _ = engine.tx.send(command);
@@ -198,10 +203,11 @@ impl App {
     }
 }
 impl Drop for App {
-    fn drop(&mut self) { #[cfg(not(test))] {let _ = crate::preferences::save_name(&self.name);} }
+    fn drop(&mut self) { self.save_preferences(); #[cfg(not(test))] {let _ = crate::preferences::save_name(&self.name);} }
 }
 impl App {
     fn render(&mut self, root: &mut egui::Ui) {
+        self.save_preferences();
         let context = root.ctx().clone();
         let ctx = &context;
         self.access.poll(&self.address, &self.device, ctx.clone());
@@ -428,6 +434,10 @@ impl App {
                 ui.label(format!("HyperCast {} · Linux",env!("CARGO_PKG_VERSION")));
                 ui.label(crate::i18n_format!("Decodificadores ativos: {}","Active decoders: {}",super::media::decoder_count()));
                 ui.label(crate::i18n_format!("Quadros enviados: {} · recebidos: {}","Frames sent: {} · received: {}",self.snapshot.sent,self.snapshot.received));
+                crate::desktop_ui::network_summary(ui,&self.snapshot.quality);
+                if crate::desktop_ui::action(ui,if self.report_copied.is_some_and(|at|at.elapsed()<Duration::from_secs(2)){crate::i18n::label("Relatório copiado","Report copied")}else{crate::i18n::label("Copiar relatório técnico","Copy technical report")},true,false).clicked(){
+                    let s=&self.snapshot;ctx.copy_text(crate::video_metrics::technical_report(&s.quality,crate::video_metrics::ReportState{connected:s.connected,reconnecting:s.reconnecting,publishing:s.sharing,sent:s.sent,received:s.received,restarts:s.reception_restarts},self.stream_settings,self.upload));self.report_copied=Some(Instant::now());ctx.request_repaint_after(Duration::from_secs(2));
+                }
                 ui.label(crate::i18n::label("A chave de acesso fica somente na memória desta sessão.","The access key is kept only in memory for this session."));
                 ui.label(crate::i18n::label("Renderização portátil com transferência para RAM; desempenho QHD 120 FPS ainda requer validação.","Portable rendering with RAM transfer; QHD 120 FPS performance still requires validation."));
             });

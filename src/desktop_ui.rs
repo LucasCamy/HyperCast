@@ -172,3 +172,12 @@ pub fn stream_settings(ui:&mut egui::Ui,value:&mut crate::resolution::StreamSett
     });});
     ui.label(RichText::new(crate::i18n::label("Mantém a proporção; fontes menores não são ampliadas.","Keeps the aspect ratio; smaller sources are not upscaled.")).size(11.0).color(MUTED));
 }
+
+/// Compact measurements; label the transport RTT separately from end-to-end latency.
+pub fn network_summary(ui:&mut egui::Ui,q:&crate::video_metrics::QualitySnapshot){
+    if let Some(n)=q.network{
+        if let Some(ms)=n.rtt_ms.filter(|v|v.is_finite()&&*v>=0.0){ui.label(crate::i18n_format!("RTT da rede: {ms:.1} ms","Network RTT: {ms:.1} ms"));}
+        if n.streams>0{ui.label(crate::i18n_format!("RTP acumulado · perdidos: {} · descartados: {}","Cumulative RTP · lost: {} · dropped: {}",n.lost,n.dropped));}
+    }else{ui.small(crate::i18n::label("Métricas da rede ainda indisponíveis","Network measurements not available yet"));}
+    ui.small(crate::i18n::label("RTT não representa a latência fim a fim.","RTT does not represent end-to-end latency."));
+}

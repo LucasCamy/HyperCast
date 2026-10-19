@@ -4,6 +4,7 @@ use std::time::Duration;
 pub struct Throughput {pub fps:f64,pub mbps:f64}
 #[derive(Clone,Debug,Default)]
 pub struct QualitySnapshot {
+    pub network:Option<VideoNetwork>,pub encoder_backend:Option<&'static str>,pub codec:Option<&'static str>,pub applied_encoder:Option<(u32,u32)>,
     pub send:Option<Throughput>,pub receive:Option<Throughput>,
     pub resolution:Option<(u32,u32)>,pub send_paused:bool,
 }
@@ -58,5 +59,33 @@ mod tests {
         assert_eq!(window.durations.len(),1200);
         let text=window.summary_and_reset();assert!(text.contains("frames=1500 bytes=30000"));assert!(text.contains("qp_avg=unavailable"));
         assert!(window.summary_and_reset().contains("frames=0 bytes=0"));
+    }
+}
+
+/// Aggregated cumulative counters. No ICE address, participant or track identifiers.
+#[derive(Clone,Copy,Debug,Default)]
+pub struct VideoNetwork {pub rtt_ms:Option<f64>,pub streams:u32,pub bytes:u64,pub packets:u64,pub lost:i64,pub decoded:u64,pub dropped:u64,pub decode_ms:f64}
+#[cfg(feature="desktop")]
+pub struct ReportState {pub connected:bool,pub reconnecting:bool,pub publishing:bool,pub sent:u64,pub received:u64,pub restarts:u64}
+#[cfg(feature="desktop")]
+pub fn technical_report(q:&QualitySnapshot,state:ReportState,settings:crate::resolution::StreamSettings,upload:crate::bandwidth::UploadProfile)->String{
+    fn number(v:f64)->Option<f64>{v.is_finite().then_some(v).filter(|v|*v>=0.0)}
+    let network=q.network.map(|n|serde_json::json!({"sample_interval_seconds":5,"rtt_ms":n.rtt_ms.and_then(number),"video_rtp":if n.streams==0{serde_json::Value::Null}else{serde_json::json!({"streams":n.streams,"bytes":n.bytes,"packets_received":n.packets,"packets_lost":n.lost,"frames_decoded":n.decoded,"frames_dropped":n.dropped,"average_decode_ms":if n.decoded==0{None}else{number(n.decode_ms/n.decoded as f64)}})}}));
+    serde_json::to_string_pretty(&serde_json::json!({
+        "schema":1,"version":env!("CARGO_PKG_VERSION"),"os":std::env::consts::OS,
+        "session":{"connected":state.connected,"reconnecting":state.reconnecting,"publishing":state.publishing,"receive_restarts":state.restarts},
+        "requested":{"resolution":match settings.size{crate::resolution::OutputSize::Native=>"native",crate::resolution::OutputSize::FullHd=>"1080p",crate::resolution::OutputSize::QuadHd=>"1440p"},"fps":settings.fps,"video_bitrate_ceiling_bps":upload.bps()},
+        "video":{"encoder":q.encoder_backend.filter(|v|matches!(*v,"NVENC"|"AMF"|"nvh265enc"|"nvav1enc"|"x265enc"|"vaav1enc"|"vah265enc")),"codec":q.codec.filter(|v|matches!(*v,"HEVC"|"AV1")),"accepted_encoder_config":q.applied_encoder.map(|(bps,fps)|serde_json::json!({"bitrate_bps":bps,"fps":fps})),"encoded_resolution":q.resolution,"send_paused":q.send_paused,"sent_frames":state.sent,"received_sink_frames":state.received,"send_fps":q.send.and_then(|v|number(v.fps)),"send_encoded_mbps":q.send.and_then(|v|number(v.mbps)),"receive_sink_fps":q.receive.and_then(|v|number(v.fps))},
+        "network":network,"end_to_end_latency_ms":serde_json::Value::Null,
+        "notes":["RTT is not end-to-end latency","Accepted encoder settings are not measured throughput","RTP counters and average decode time are cumulative across current receivers","Missing or unsupported measurements are null","No tokens, addresses, room names or participant names are included"]
+    })).unwrap_or_else(|_|"{}".into())
+}
+#[cfg(all(test,feature="desktop"))]mod report_tests {
+    use super::*;
+    #[test]fn export_allowlist_excludes_untrusted_strings_and_invalid_numbers(){
+        let q=QualitySnapshot{encoder_backend:Some("Bearer PRIVATE-SECRET"),codec:Some("room-private"),send:Some(Throughput{fps:f64::NAN,mbps:f64::INFINITY}),network:Some(VideoNetwork{rtt_ms:Some(-1.0),..Default::default()}),..Default::default()};
+        let text=technical_report(&q,ReportState{connected:true,reconnecting:false,publishing:false,sent:0,received:0,restarts:2},Default::default(),Default::default());
+        assert!(!text.contains("PRIVATE-SECRET"));assert!(!text.contains("room-private"));assert!(text.len()<4096);
+        let v:serde_json::Value=serde_json::from_str(&text).unwrap();assert_eq!(v["schema"],1);assert!(v["video"]["send_fps"].is_null());assert!(v["network"]["rtt_ms"].is_null());assert!(v["network"]["video_rtp"].is_null());assert!(v["end_to_end_latency_ms"].is_null());
     }
 }
