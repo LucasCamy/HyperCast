@@ -579,6 +579,7 @@ impl eframe::App for App {
         let mut screens = Vec::new();
         let mut videos = Vec::new();
         let mut frozen = Vec::new();
+        let mut recovering = std::collections::HashMap::new();
         let mut received = 0;
         let mut sent = 0;
         if let Some(engine) = &self.engine {
@@ -598,6 +599,7 @@ impl eframe::App for App {
             people = state.participants.clone();
             screens = state.screens.clone();
             frozen = state.frozen.keys().cloned().collect();
+            recovering=state.recovering.clone();
             videos = state
                 .frames
                 .iter()
@@ -1045,6 +1047,8 @@ impl eframe::App for App {
                             egui::Align2::LEFT_CENTER,
                             if frozen.contains(identity) {
                                 crate::i18n::label("Reconectando • último quadro","Reconnecting • last frame").into()
+                            } else if let Some(exhausted)=recovering.get(identity) {
+                                crate::reception_recovery::status_label(*exhausted).into()
                             } else if thumbnail && !frame.local() {
                                 crate::i18n::label("Último quadro • pausada","Last frame • paused").into()
                             } else {

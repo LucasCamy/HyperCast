@@ -7,6 +7,8 @@
 - [0005 — Capacidades reais de GPU e matriz de compatibilidade](0005-hardware-capabilities.md)
 - [0006 — Preferências persistentes e restauração segura](0006-persistent-preferences.md)
 
-A 0.9.0 será publicada depois dos critérios de aceite. Primeira etapa: recuperação e limites de falha (0001); depois observabilidade (0004), recuperação de recepção (0002), adaptação (0003), capacidades (0005) e preferências (0006). Estados planejados não indicam funcionalidades já entregues.
+A 0.9.0 foi publicada com o escopo mínimo documentado abaixo. A ordem de implementação original foi: recuperação e limites de falha (0001); depois observabilidade (0004), recuperação de recepção (0002), adaptação (0003), capacidades (0005) e preferências (0006). Estados planejados não indicam funcionalidades já entregues.
 
 Em 2026-10-19 foi definido um [escopo mínimo estável](../0.9.0.md): recuperação, relatório técnico seguro e preferências. Adaptação adicional, recuperação automática por faixa e novos backends permanecem incrementos futuros; não são bloqueadores dessa entrega reduzida.
+
+Em 2026-10-19 começou o incremento posterior à versão estável: recuperação automática conservadora por publicação (0002), apoiada por contadores no relatório (0004). Os detalhes e limites estão nos respectivos ADRs e no [manual de recepção](../reception-recovery.md).

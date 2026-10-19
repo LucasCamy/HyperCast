@@ -56,6 +56,8 @@ pub struct Shared {
     pub encoder_stats:String,
     pub reception_resetting: bool,
     pub reception_restarts: u64,
+    /// Recovering streams; true means the automatic retry budget is exhausted.
+    pub recovering: HashMap<String,bool>,
     pub publishing: bool,
     pub can_publish: bool,
     pub identity: String,
@@ -67,6 +69,8 @@ pub struct Shared {
     /// One retained surface per interrupted screen, bounded to the three slots.
     pub frozen: HashMap<String, Instant>,
     pub received: u64,
+    #[cfg(test)]
+    pub audio_received:u64,
     pub received_streams: HashMap<String,u64>,
     pub sent: u64,
     pub audio_status: String,
@@ -82,6 +86,8 @@ pub struct Layout {
     pub volume: u32,
 }
 pub enum Command {
+    #[cfg(test)]
+    StallReader(String),
     #[cfg(test)]
     FailWorker,
     RestartReception,
@@ -142,6 +148,8 @@ struct Cast {
     audio: Option<SystemAudioPublisher>,
 }
 struct Sink {
+    #[cfg(test)]
+    stall: Arc<std::sync::atomic::AtomicBool>,
     owner: String,
     task: tokio::task::JoinHandle<()>,
 }
@@ -285,7 +293,7 @@ impl Cast {
     }
 }
 
-fn update_subscriptions(room: &Room, layout: &Layout) {
+fn update_subscriptions(room: &Room, layout: &Layout, receive_monitor: &crate::reception_recovery::runtime::Monitor) {
     let mut screens = Vec::new();
     for participant in room.remote_participants().into_values() {
         for publication in participant.track_publications().into_values() {
@@ -308,6 +316,7 @@ fn update_subscriptions(room: &Room, layout: &Layout) {
     for (identity, publication) in &screens {
         let enabled = !layout.paused
             && count < 3
+            && !receive_monitor.held(&publication.sid().to_string())
             && (layout.mode == ViewMode::Grid || Some(identity.as_str()) == focus);
         if count<3 {crate::subscription::keep_receiver(publication,enabled);count+=1;}
         else if publication.is_desired(){publication.set_subscribed(false);}
@@ -336,9 +345,15 @@ fn attach_video(runtime:&tokio::runtime::Runtime, track:RemoteVideoTrack, owner_
     let ctx = ctx.clone();
     let enabled_track=track.rtc_track();
     let mut stream = NativeVideoStream::with_options(enabled_track.clone(),NativeVideoStreamOptions{queue_size_frames:Some(1)});
+    #[cfg(test)]
+    let stall=Arc::new(std::sync::atomic::AtomicBool::new(false));
+    #[cfg(test)]
+    let reader_stall=stall.clone();
     let task = runtime.spawn(async move {
         while let Some(frame) = stream.next().await {
             if !enabled_track.enabled(){continue;}
+            #[cfg(test)]
+            if reader_stall.load(Ordering::Relaxed){continue;}
             let mut state = state.lock().unwrap();
             // A new live screen takes precedence over a departed
             // participant's frozen surface, keeping the GPU bound.
@@ -368,7 +383,7 @@ fn attach_video(runtime:&tokio::runtime::Runtime, track:RemoteVideoTrack, owner_
             ctx.request_repaint();
         }
     });
-    Sink { owner, task }
+    Sink { owner, task, #[cfg(test)] stall }
 }
 
 impl Engine {
@@ -457,7 +472,8 @@ impl Engine {
                 let audio_volume = Arc::new(AtomicU64::new(80));
                 let audio_received = Arc::new(AtomicU64::new(0));
                 let mut pacer = FramePacer::new(120)?;
-                update_subscriptions(&room, &layout);
+                let mut receive_monitor=crate::reception_recovery::runtime::Monitor::default();
+                update_subscriptions(&room, &layout, &receive_monitor);
                 let mut reception_restart:Option<Instant>=None;
                 let mut reception_tick=Instant::now();
                 let mut reception_trace=Instant::now();
@@ -475,17 +491,26 @@ impl Engine {
                         reception_trace=Instant::now();
                     }
                     if reception_restart.is_some_and(|until|Instant::now()>=until) {
-                        reception_restart=None;update_subscriptions(&room,&layout);
+                        reception_restart=None;update_subscriptions(&room,&layout,&receive_monitor);
                         state.lock().unwrap().reception_resetting=false;
                         crate::diagnostics::write("reception","Receive settings restored; waiting for fresh frames","");
                     }
                     if reception_restart.is_none() && reception_tick.elapsed()>=Duration::from_millis(250) {
-                        update_subscriptions(&room,&layout);
+                        let repairs=runtime.block_on(receive_monitor.tick(&room,!layout.paused,|_,owner|state.lock().unwrap().received_streams.get(owner).copied().unwrap_or(0)));
+                        for repair in repairs {
+                            if let Some(sid)=sinks.keys().find(|sid|sid.to_string()==repair.sid).cloned(){
+                                if let Some(old)=sinks.remove(&sid){old.abort();runtime.block_on(async{let _=old.task.await;});}
+                            }
+                            crate::diagnostics::write("receive_recovery",&format!("action={:?} reason={:?} total={}",repair.action,repair.reason,receive_monitor.summary.actions),"");
+                        }
+                        {let mut s=state.lock().unwrap();#[cfg(test)] {s.audio_received=audio_received.load(Ordering::Relaxed);}
+                            s.quality.network=receive_monitor.network;s.quality.automatic_recovery=receive_monitor.summary;s.recovering=receive_monitor.recovering().into_iter().map(|(_,owner,exhausted)|(owner,exhausted)).collect();}
+                        update_subscriptions(&room,&layout,&receive_monitor);
                         for participant in room.remote_participants().into_values() {
                             for p in participant.track_publications().into_values() {
                                 if !p.is_desired(){continue;}
                                 match p.track() {
-                                    Some(RemoteTrack::Video(track)) if p.source()==TrackSource::Screenshare && sinks.get(&p.sid()).is_none_or(|s|s.task.is_finished()) && (sinks.contains_key(&p.sid()) || sinks.len()<3) => {
+                                    Some(RemoteTrack::Video(track)) if p.source()==TrackSource::Screenshare && !receive_monitor.held(&p.sid().to_string()) && sinks.get(&p.sid()).is_none_or(|s|s.task.is_finished()) && (sinks.contains_key(&p.sid()) || sinks.len()<3) => {
                                         if let Some(old)=sinks.remove(&p.sid()){old.abort();}
                                         sinks.insert(p.sid(),attach_video(&runtime,track,&participant.identity().to_string(),&state,&ctx));
                                     },
@@ -513,7 +538,7 @@ impl Engine {
                         window_hidden = hidden;
                         layout = manual_layout.clone();
                         layout.paused |= hidden;
-                        if reception_restart.is_none(){update_subscriptions(&room, &layout);}
+                        if reception_restart.is_none(){update_subscriptions(&room, &layout, &receive_monitor);}
                         if std::env::var("HYPERCAST_SMOKE_SECONDS").is_ok() {
                             println!(
                                 "GUI viewport: {} at {} frames",
@@ -533,7 +558,10 @@ impl Engine {
                                 crate::diagnostics::write("connection", "User disconnected", "");
                                 break 'session;
                             }
+                            #[cfg(test)]
+                            Command::StallReader(owner)=>{if let Some(sink)=sinks.values().find(|s|s.owner==owner){sink.stall.store(true,Ordering::Relaxed);}},
                             Command::RestartReception if reception_restart.is_none() && room.connection_state()==ConnectionState::Connected => {
+                                receive_monitor.reset();
                                 for (_,sink) in sinks.drain(){sink.abort();let _=runtime.block_on(sink.task);}
                                 audio_sinks.clear();
                                 crate::subscription::reset_receivers(&room);
@@ -548,7 +576,7 @@ impl Engine {
                                 manual_layout = next;
                                 layout = manual_layout.clone();
                                 layout.paused |= window_hidden;
-                                if reception_restart.is_none(){update_subscriptions(&room, &layout);}
+                                if reception_restart.is_none(){update_subscriptions(&room, &layout, &receive_monitor);}
                             }
                             Command::Share { adapter, output, codec } if cast.is_none() => {
                                 let target=CaptureTarget::Monitor{adapter,output};
@@ -636,7 +664,7 @@ impl Engine {
                         match event {
                             RoomEvent::TrackSubscribed { track: RemoteTrack::Audio(_), publication, .. } => {
                                 if reception_restart.is_some() || !publication.is_desired(){continue;}
-                                update_subscriptions(&room,&layout);
+                                update_subscriptions(&room,&layout,&receive_monitor);
                                 audio_sinks.remove(&publication.sid());
                                 let Some(RemoteTrack::Audio(track))=publication.track() else{continue;};
                                 if publication.source()==TrackSource::ScreenshareAudio && publication.is_enabled() && audio_sinks.len()<3 {
@@ -648,7 +676,7 @@ impl Engine {
                                 publication,
                                 participant,
                             } => {
-                                if reception_restart.is_some() || !publication.is_desired(){continue;}
+                                if reception_restart.is_some() || !publication.is_desired() || receive_monitor.held(&publication.sid().to_string()){continue;}
                                 let Some(RemoteTrack::Video(track))=publication.track() else{continue;};
                                 if let Some(previous) = sinks.remove(&publication.sid()) {
                                     previous.task.abort();
@@ -668,7 +696,7 @@ impl Engine {
                                 }
                                 // Retain the last GPU surface as a static paused
                                 // thumbnail. It consumes no RTP or decoder work.
-                                if reception_restart.is_none(){update_subscriptions(&room, &layout);}
+                                if reception_restart.is_none(){update_subscriptions(&room, &layout, &receive_monitor);}
                             }
                             RoomEvent::TrackUnpublished {
                                 publication,
@@ -683,7 +711,7 @@ impl Engine {
                                     let identity = participant.identity().to_string();
                                     if !shared.frozen.contains_key(&identity) { shared.frames.remove(&identity); }
                                 }
-                                if reception_restart.is_none(){update_subscriptions(&room, &layout);}
+                                if reception_restart.is_none(){update_subscriptions(&room, &layout, &receive_monitor);}
                             }
                             RoomEvent::ParticipantDisconnected(participant) => {
                                 let identity = participant.identity().to_string();
@@ -701,11 +729,11 @@ impl Engine {
                                     crate::diagnostics::write("recovery_view", "Retained screen during participant interruption", "");
                                 }
                                 drop(shared);
-                                if reception_restart.is_none(){update_subscriptions(&room, &layout);}
+                                if reception_restart.is_none(){update_subscriptions(&room, &layout, &receive_monitor);}
                             }
                             RoomEvent::TrackPublished { .. }
                             | RoomEvent::ParticipantConnected(_) => {
-                                update_subscriptions(&room, &layout)
+                                update_subscriptions(&room, &layout, &receive_monitor)
                             }
                             RoomEvent::ReconnectAttempt { attempt, maximum } => {
                                 reconnect_attempt = attempt;
@@ -713,6 +741,7 @@ impl Engine {
                                 crate::diagnostics::write("connection", &format!("Reconnect attempt {attempt}/{maximum}"), "");
                             }
                             RoomEvent::Reconnecting => {
+                                receive_monitor.suspend();
                                 state.lock().unwrap().reconnecting=true;
                                 state.lock().unwrap().status=crate::i18n_format!("Reconectando… tentativa {}/3","Reconnecting… attempt {}/3", reconnect_attempt.max(1));
                                 if let Some(c)=&mut cast {if let Some(p)=&mut c.publisher {p.restart_keyframe();}}
@@ -735,7 +764,7 @@ impl Engine {
                                     let mut s=state.lock().unwrap();s.publishing=false;
                                     s.source_error=crate::i18n_format!("Encoder: {error}. Tente compartilhar novamente.","Encoder: {error}. Try sharing again.").replace(&token,"[token]");
                                 }
-                                if reception_restart.is_none(){update_subscriptions(&room,&layout);}
+                                if reception_restart.is_none(){update_subscriptions(&room,&layout,&receive_monitor);}
                                 state.lock().unwrap().status="Reconectado".into();
                                 crate::diagnostics::write("connection","Reconnected; requesting keyframe","");
                             }
@@ -905,16 +934,6 @@ impl Engine {
                         crate::diagnostics::write("media", &format!("sent={} received={} receivers={} publishing={}", shared.sent, shared.received, sinks.len(), shared.publishing), "");
                         crate::diagnostics::write("audio_stats", &format!("sent={} received={} receivers={}", cast.as_ref().and_then(|value| value.audio.as_ref()).map_or(0, |audio| audio.frames.load(Ordering::Relaxed)), audio_received.load(Ordering::Relaxed), audio_sinks.len()), "");
                         drop(shared);
-                        let diagnostic_room = room.clone();let diagnostic_state=state.clone();
-                        runtime.spawn(async move {
-                            let sample=tokio::time::timeout(Duration::from_secs(3),diagnostic_room.get_stats()).await.ok().and_then(Result::ok);
-                            diagnostic_state.lock().unwrap().quality.network=sample.as_ref().and_then(|stats|network::video_network_sample(&stats.subscriber_stats));
-                            if let Some(stats)=sample {
-                                for line in network::video_stats_lines(&stats.publisher_stats,&stats.subscriber_stats){crate::diagnostics::write("video_rtp",&line,"");}
-                                network::print_ice_path("publisher", &stats.publisher_stats);
-                                network::print_ice_path("subscriber", &stats.subscriber_stats);
-                            }
-                        });
                         diagnostic_tick = Instant::now();
                     }
                     let fps = cast

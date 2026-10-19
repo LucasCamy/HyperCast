@@ -183,10 +183,11 @@ impl App {
             .show(ui, |ui| {
                 ui.set_min_size(size - Vec2::splat(20.0));
                 ui.label(RichText::new(name).color(MUTED).size(12.0));
+                if let Some(exhausted)=self.snapshot.recovering.get(sid){ui.label(RichText::new(crate::reception_recovery::status_label(*exhausted)).color(MUTED).size(12.0));}
                 if let Some((_, texture)) = self.textures.get(sid) {
                     ui.add(
                         egui::Image::new(texture)
-                            .max_size(size - Vec2::new(20.0, 50.0))
+                            .max_size(size - Vec2::new(20.0, if self.snapshot.recovering.contains_key(sid){68.0}else{50.0}))
                             .maintain_aspect_ratio(true),
                     );
                 } else {

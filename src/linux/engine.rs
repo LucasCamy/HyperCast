@@ -40,6 +40,8 @@ pub struct State {
     pub quality:crate::video_metrics::QualitySnapshot,
     pub reception_resetting: bool,
     pub reception_restarts: u64,
+    /// Recovering streams; true means the automatic retry budget is exhausted.
+    pub recovering: HashMap<String,bool>,
     pub reconnecting: bool,
     pub sharing: bool,
     pub selecting: bool,
@@ -70,6 +72,8 @@ impl Default for Layout {
     }
 }
 pub enum Command {
+    #[cfg(test)]
+    StallReader(String),
     #[cfg(test)]
     FailWorker,
     #[cfg(test)]
@@ -135,7 +139,7 @@ impl Drop for Engine {
         }
     }
 }
-struct Sink(tokio::task::JoinHandle<()>);
+struct Sink(tokio::task::JoinHandle<()>, #[cfg(test)] Arc<std::sync::atomic::AtomicBool>);
 impl Drop for Sink {
     fn drop(&mut self) {
         self.0.abort();
@@ -146,10 +150,16 @@ fn attach_video(track:RemoteVideoTrack,sid:&str,shared:&Arc<Mutex<State>>,ctx:&e
     let enabled_track=track.rtc_track();
     let mut stream=NativeVideoStream::with_options(enabled_track.clone(),NativeVideoStreamOptions{queue_size_frames:Some(1)});
     let state=shared.clone();let repaint=ctx.clone();let key=sid.to_owned();
-    Sink(tokio::spawn(async move{
-        while let Some(frame)=stream.next().await {if !enabled_track.enabled(){continue;}let w=frame.buffer.width();let h=frame.buffer.height();if !crate::resolution::valid(w,h){continue;}
+    #[cfg(test)]
+    let stall=Arc::new(std::sync::atomic::AtomicBool::new(false));
+    #[cfg(test)]
+    let reader_stall=stall.clone();
+    let task=tokio::spawn(async move{
+        while let Some(frame)=stream.next().await {if !enabled_track.enabled(){continue;}#[cfg(test)]
+            if reader_stall.load(Ordering::Relaxed){continue;}let w=frame.buffer.width();let h=frame.buffer.height();if !crate::resolution::valid(w,h){continue;}
             let mut s=state.lock().unwrap();s.received+=1;let sequence=s.received;s.frames.insert(key.clone(),(sequence,Arc::new(frame)));drop(s);repaint.request_repaint();}
-    }))
+    });
+    Sink(task, #[cfg(test)] stall)
 }
 fn attach_audio(track:RemoteAudioTrack,volume:&Arc<AtomicU32>,shared:&Arc<Mutex<State>>)->Sink {
     let gain=volume.clone();let state=shared.clone();
@@ -159,7 +169,7 @@ fn attach_audio(track:RemoteAudioTrack,volume:&Arc<AtomicU32>,shared:&Arc<Mutex<
         while let Some(frame)=stream.next().await {if frame.sample_rate==48000&&frame.num_channels==2{let gain=if std::env::var("HYPERCAST_AUDIO_TEST_SILENT_OUTPUT").as_deref()==Ok("1"){0}else{gain.load(Ordering::Relaxed)};
                 let mut s=state.lock().unwrap();s.audio_received+=1;drop(s);
                 if let Err(e)=output.push(&frame.data,gain){state.lock().unwrap().status=e.to_string();break;}}}
-    }))
+    }), #[cfg(test)] Arc::new(std::sync::atomic::AtomicBool::new(false)))
 }
 
 fn refresh(
@@ -167,6 +177,7 @@ fn refresh(
     layout: &Layout,
     shared: &Arc<Mutex<State>>,
     mute_playback: bool,
+    recovery: &crate::reception_recovery::runtime::Monitor,
 ) -> HashMap<String, String> {
     let mut screens: Vec<_> = room
         .remote_participants()
@@ -205,7 +216,7 @@ fn refresh(
             publication.simulcasted(),
         );
         let enabled = wanted != Demand::Paused;
-        crate::subscription::keep_receiver(publication,enabled);
+        crate::subscription::keep_receiver(publication,enabled && !recovery.held(&screen.sid));
         if enabled {
             active.insert(screen.sid.clone(), screen.owner.clone());
             if publication.simulcasted() {
@@ -372,8 +383,7 @@ async fn session(
     let mut reception_restart:Option<Instant>=None;
     let(mut send_meter,mut receive_meter)=(crate::video_metrics::TrafficMeter::default(),crate::video_metrics::TrafficMeter::default());
     let mut sent_bytes=0u64;
-    let mut diagnostic_tick=Instant::now();
-    let mut diagnostic_task:Option<tokio::task::JoinHandle<Option<crate::video_metrics::VideoNetwork>>>=None;
+    let mut recovery=crate::reception_recovery::runtime::Monitor::default();
     let outcome=async {
         loop {
             anyhow::ensure!(!shared.was_reset(),crate::resilience::worker_failure());
@@ -383,10 +393,12 @@ async fn session(
                 command=rx.recv()=>match command.unwrap_or(Command::Disconnect){
                     #[cfg(test)] Command::FailWorker=>panic!("injected worker failure"),
                     #[cfg(test)] Command::FailCapture=>{pending=Some(tokio::spawn(async{panic!("injected capture task failure")}));shared.lock().unwrap().selecting=true;},
+                    #[cfg(test)] Command::StallReader(sid)=>{if let Some(sink)=video_sinks.get(&sid){sink.1.store(true,Ordering::Relaxed);}},
                     Command::Disconnect=>break,
                     Command::StreamSettings(value)=>{if capture.is_none()&&pending.is_none()&&value.valid(){settings=value;}},
                     Command::RestartReception=>{
                         if reception_restart.is_none() && room.connection_state()==ConnectionState::Connected {
+                            recovery.reset();
                             for (_,mut sink) in video_sinks.drain(){sink.0.abort();let _=(&mut sink.0).await;}
                             for (_,mut sink) in audio_sinks.drain(){sink.0.abort();let _=(&mut sink.0).await;}
                             crate::subscription::reset_receivers(&room);
@@ -418,10 +430,10 @@ async fn session(
                 event=events.recv()=>match event {
                     None=>break,
                     Some(RoomEvent::Disconnected{..})=>{let mut s=shared.lock().unwrap();s.connected=false;s.reconnecting=false;s.status=crate::i18n::label("Conexão encerrada após as tentativas de reconexão","Connection ended after the reconnection attempts").into();break;},
-                    Some(RoomEvent::Reconnecting)=>{let mut s=shared.lock().unwrap();s.reconnecting=true;s.status=crate::i18n::label("Reconectando… mantendo o último quadro","Reconnecting… keeping the last frame").into();},
+                    Some(RoomEvent::Reconnecting)=>{recovery.suspend();let mut s=shared.lock().unwrap();s.reconnecting=true;s.status=crate::i18n::label("Reconectando… mantendo o último quadro","Reconnecting… keeping the last frame").into();},
                     Some(RoomEvent::Reconnected)=>{if let Some(p)=&mut publisher{p.restart_keyframe();}if let Some(c)=&capture{c.request_keyframe();}let mut s=shared.lock().unwrap();s.reconnecting=false;s.status=crate::i18n::label("Conectado","Connected").into();},
                     Some(RoomEvent::TrackSubscribed{track:RemoteTrack::Video(_),publication,..})=>{
-                        if reception_restart.is_some() || !publication.is_desired(){continue;}
+                        if reception_restart.is_some() || !publication.is_desired() || recovery.held(&publication.sid().to_string()){continue;}
                         let Some(RemoteTrack::Video(track))=publication.track() else{continue;};
                         let sid=publication.sid().to_string();
                         eprintln!("Linux reception: stage=subscribed sid={sid}");
@@ -440,12 +452,6 @@ async fn session(
                     _=>{last_refresh=Instant::now()-Duration::from_secs(1);},
                 },
                 _=ticks.tick()=>{
-                    if diagnostic_task.as_ref().is_some_and(|t|t.is_finished()){
-                        shared.lock().unwrap().quality.network=diagnostic_task.take().unwrap().await.ok().flatten();
-                    }
-                    if diagnostic_task.is_none() && diagnostic_tick.elapsed()>=Duration::from_secs(5){
-                        let observed=room.clone();diagnostic_task=Some(tokio::spawn(async move{tokio::time::timeout(Duration::from_secs(3),observed.get_stats()).await.ok()?.ok().and_then(|s|network::video_network_sample(&s.subscriber_stats))}));diagnostic_tick=Instant::now();
-                    }
                     if retiring.as_ref().is_some_and(|task|task.is_finished()) {
                         if retiring.take().unwrap().await.is_err(){shared.lock().unwrap().status=crate::i18n::label("A origem anterior falhou ao encerrar; você pode tentar novamente.","The previous source failed to stop; you can try again.").into();}
                         shared.lock().unwrap().selecting=pending.is_some();
@@ -468,7 +474,7 @@ async fn session(
                                     let current_token=room.token();
                                     room.close().await?;
                                     let (next_room,next_events)=match stopping.run(network::connect(&address,&current_token)).await{Some(result)=>result?,None=>break};
-                                    room=Arc::new(next_room);events=next_events;
+                                    room=Arc::new(next_room);events=next_events;recovery.reset();
                                     reception_restart=None;last_refresh=Instant::now()-Duration::from_secs(1);
                                     {let mut s=shared.lock().unwrap();s.reconnecting=false;s.reception_resetting=false;}
                                     publication_format=None;last_video_bps=None;transmit_paused=false;
@@ -496,13 +502,19 @@ async fn session(
                         last_refresh=Instant::now()-Duration::from_secs(1);
                     }
                     if reception_restart.is_none() && room.connection_state()==ConnectionState::Connected && last_refresh.elapsed()>Duration::from_millis(250){
-                        let _=refresh(&room,&layout,&shared,audio.is_some());
+                        let repairs=recovery.tick(&room,!layout.paused,|sid,_|shared.lock().unwrap().frames.get(sid).map_or(0,|v|v.0)).await;
+                        for repair in repairs {
+                            if let Some(mut old)=video_sinks.remove(&repair.sid){old.0.abort();let _=(&mut old.0).await;}
+                            eprintln!("Linux reception: stage=recovery action={:?} reason={:?} total={}",repair.action,repair.reason,recovery.summary.actions);
+                        }
+                        {let mut s=shared.lock().unwrap();s.quality.network=recovery.network;s.quality.automatic_recovery=recovery.summary;s.recovering=recovery.recovering().into_iter().map(|(sid,_,exhausted)|(sid,exhausted)).collect();}
+                        let _=refresh(&room,&layout,&shared,audio.is_some(),&recovery);
                         for participant in room.remote_participants().into_values(){
                             for p in participant.track_publications().into_values(){
                                 if !p.is_desired(){continue;}
                                 let sid=p.sid().to_string();
                                 match p.track(){
-                                    Some(RemoteTrack::Video(track)) if p.source()==TrackSource::Screenshare && video_sinks.get(&sid).is_none_or(|s|s.0.is_finished()) && (video_sinks.contains_key(&sid)||video_sinks.len()<3)=>{
+                                    Some(RemoteTrack::Video(track)) if p.source()==TrackSource::Screenshare && !recovery.held(&sid) && video_sinks.get(&sid).is_none_or(|s|s.0.is_finished()) && (video_sinks.contains_key(&sid)||video_sinks.len()<3)=>{
                                         video_sinks.insert(sid.clone(),attach_video(track,&sid,&shared,&ctx));
                                     },
                                     Some(RemoteTrack::Audio(track)) if p.source()==TrackSource::ScreenshareAudio && p.is_enabled() && audio.is_none() && !layout.paused && layout.volume>0 && !audio_sinks.contains_key(&sid) && audio_sinks.len()<3=>{
@@ -562,7 +574,7 @@ async fn session(
                     }
                     if wants_audio && publisher.is_some()&&audio.is_none(){
                         volume.store(0,Ordering::Relaxed);audio_sinks.clear();
-                        if reception_restart.is_none(){let _=refresh(&room,&layout,&shared,true);}
+                        if reception_restart.is_none(){let _=refresh(&room,&layout,&shared,true,&recovery);}
                         match AudioCast::open(&room).await{Ok(a)=>{audio=Some(a);volume.store(0,Ordering::Relaxed);audio_sinks.clear();},Err(e)=>{shared.lock().unwrap().status=e.to_string();wants_audio=false;}}
                     }
                     if let Some(a)=&mut audio {if let Err(e)=a.tick().await{shared.lock().unwrap().status=e.to_string();if let Some(a)=audio.take(){a.stop(&room).await;}wants_audio=false;}}
@@ -582,7 +594,7 @@ async fn session(
         }
         Ok::<(),anyhow::Error>(())
     }.await;
-    if let Some(task)=diagnostic_task.take(){task.abort();let _=task.await;}
+    recovery.reset();
     if let Some(task) = pending.take() {
         task.abort();
         let _ = task.await;
