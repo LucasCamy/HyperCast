@@ -21,6 +21,7 @@ static std::atomic<unsigned> live_encoders{0};
 #include <string>
 #include "capture_color.h"
 #include "capture_size.h"
+#include "encode_caps.h"
 #include <amf/components/ComponentCaps.h>
 using Microsoft::WRL::ComPtr;
 namespace {
@@ -34,6 +35,7 @@ void hr(HRESULT result,const char* operation){if(FAILED(result))throw std::runti
 struct Encoder {
     Encoder(){++live_encoders;}
     HMODULE dll=nullptr;
+    amf::AMFFactory* factory=nullptr; // Runtime-owned; DLL outlives context/components.
     amf::AMFContextPtr amf_context;
     amf::AMFComponentPtr converter,encoder;
     ComPtr<ID3D11Device> device;
@@ -41,6 +43,7 @@ struct Encoder {
     ComPtr<ID3D11Texture2D> input;
     ComPtr<ID3D11Query> fence;
     CaptureColor color;
+    HcEncodeCaps capabilities;
     uint32_t width=0,height=0,fps=0,source_width=0,source_height=0;
     bool av1=false,ready=false,initialized=false;
     uint32_t profile=0,applied_bitrate=0,vbv_bits=0,vbv_frames=2,submissions=0;
@@ -54,12 +57,8 @@ struct Encoder {
         if(dll)FreeLibrary(dll);
     }
     template<class T> void property(const wchar_t* name,T value,const char* operation){check(encoder->SetProperty(name,value),operation);}
-    void open(ID3D11Device* d,uint32_t w,uint32_t h,uint32_t f,uint32_t bitrate,bool use_av1,uint32_t selected_profile=0,uint32_t limit_w=8192,uint32_t limit_h=8192){
-        if(!d || !hc_capture_size(w,h) || f<1 || f>240 || bitrate<1000000 || bitrate>45000000)
-            throw std::runtime_error("Invalid AMF configuration (maximum 8192 per axis and 32 megapixels, 1-240 FPS, 1-45 Mbps)");
-        if(selected_profile>2)throw std::runtime_error("Invalid AMF profile");
-        profile=selected_profile;vbv_frames=profile==2?1:2;
-        source_width=w;source_height=h;fps=f;av1=use_av1;device=d;
+    bool connect_device(ID3D11Device* d,bool use_av1) {
+        if(!d)throw std::runtime_error("Invalid capability device");device=d;av1=use_av1;
         ComPtr<IDXGIDevice> dxgi;ComPtr<IDXGIAdapter> adapter;DXGI_ADAPTER_DESC desc{};
         hr(device.As(&dxgi),"Query AMF adapter");hr(dxgi->GetAdapter(&adapter),"Get AMF adapter");hr(adapter->GetDesc(&desc),"Describe AMF adapter");
         if(desc.VendorId!=0x1002)throw std::runtime_error("AMF requires a capture device on an AMD GPU");
@@ -72,12 +71,39 @@ struct Encoder {
         if(!init || !version)throw std::runtime_error("Driver AMD sem API AMF válida; reinstale o Adrenalin.");
         amf_uint64 runtime=0;check(version(&runtime),"Query AMF runtime version");
         if(AMF_GET_MAJOR_VERSION(runtime)!=1 || runtime<AMF_MAKE_FULL_VERSION(1,4,18,0))throw std::runtime_error("Driver AMD AMF antigo; atualize o Adrenalin.");
-        amf::AMFFactory* factory=nullptr;check(init(std::min(runtime,static_cast<amf_uint64>(AMF_FULL_VERSION)),&factory),"Initialize AMF runtime");
+        check(init(std::min(runtime,static_cast<amf_uint64>(AMF_FULL_VERSION)),&factory),"Initialize AMF runtime");
         if(!factory)throw std::runtime_error("Invalid AMF factory");
         check(factory->CreateContext(&amf_context),"Create AMF context");
         check(amf_context->InitDX11(device.Get()),"Initialize AMF D3D11 interop");
         AMF_RESULT result=factory->CreateComponent(amf_context,av1?AMFVideoEncoder_AV1:AMFVideoEncoder_HEVC,&encoder);
-        if(result!=AMF_OK || !encoder)throw std::runtime_error(av1?"Esta GPU AMD não oferece codificação AV1 por hardware. Selecione HEVC (H.265).":"HEVC por hardware indisponível nesta GPU/driver AMD.");
+        if(result==AMF_NOT_SUPPORTED || result==AMF_CODEC_NOT_SUPPORTED || result==AMF_NOT_FOUND)return false;
+        check(result,"Create AMF codec component");if(!encoder)throw std::runtime_error("Invalid AMF component");return true;
+    }
+    HcEncodeCaps query_caps() {
+        HcEncodeCaps out;amf::AMFCapsPtr caps;
+        if(encoder->GetCaps(&caps)!=AMF_OK || !caps)return out;
+        const auto acceleration=caps->GetAccelerationType();
+        if(acceleration==amf::AMF_ACCEL_SOFTWARE || acceleration==amf::AMF_ACCEL_NOT_SUPPORTED){out.support=2;return out;}
+        if(acceleration==amf::AMF_ACCEL_HARDWARE)out.support=1;
+        amf::AMFIOCapsPtr input;
+        if(caps->GetInputCaps(&input)!=AMF_OK || !input)return out;
+        amf_int32 min_w=0,max_w=0,min_h=0,max_h=0;
+        input->GetWidthRange(&min_w,&max_w);input->GetHeightRange(&min_h,&max_h);
+        if(min_w>0)out.min_width=static_cast<uint32_t>(min_w);if(min_h>0)out.min_height=static_cast<uint32_t>(min_h);
+        if(max_w>0)out.max_width=static_cast<uint32_t>(max_w);if(max_h>0)out.max_height=static_cast<uint32_t>(max_h);
+        const auto alignment=input->GetVertAlign();if(alignment>0)out.align_height=static_cast<uint32_t>(alignment);
+        // No claim of a standalone FPS ceiling or live bitrate reconfiguration.
+        return out;
+    }
+    void open(ID3D11Device* d,uint32_t w,uint32_t h,uint32_t f,uint32_t bitrate,bool use_av1,uint32_t selected_profile=0,uint32_t limit_w=8192,uint32_t limit_h=8192){
+        if(!d || !hc_capture_size(w,h) || f<1 || f>240 || bitrate<1000000 || bitrate>45000000)
+            throw std::runtime_error("Invalid AMF configuration (maximum 8192 per axis and 32 megapixels, 1-240 FPS, 1-45 Mbps)");
+        if(selected_profile>2)throw std::runtime_error("Invalid AMF profile");
+        profile=selected_profile;vbv_frames=profile==2?1:2;
+        source_width=w;source_height=h;fps=f;av1=use_av1;device=d;
+        if(!connect_device(d,use_av1))throw std::runtime_error("Selected hardware encode codec is not supported by this AMD GPU/driver");
+        capabilities=query_caps();
+        if(capabilities.support==2)throw std::runtime_error("AMF hardware encode is unavailable; software fallback is not allowed");
         amf::AMFCapsPtr caps;check(encoder->GetCaps(&caps),"Query AMF encoder capabilities");
         if(!caps)throw std::runtime_error("Invalid AMF encoder capabilities");
         amf::AMFIOCapsPtr input_caps;check(caps->GetInputCaps(&input_caps),"Query AMF input capabilities");
@@ -107,7 +133,7 @@ struct Encoder {
         rates(bitrate,f);
         property(av1?AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_SKIP_FRAME:AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_SKIP_FRAME_ENABLE,
                  false,"Disable AMF rate-control frame skips");
-        result=encoder->Init(amf::AMF_SURFACE_NV12,w,h);
+        AMF_RESULT result=encoder->Init(amf::AMF_SURFACE_NV12,w,h);
         if(result!=AMF_OK)throw std::runtime_error(av1?"AV1 por hardware indisponível nesta GPU AMD. Selecione HEVC (H.265).":"Não foi possível iniciar HEVC na AMD (AMF status "+std::to_string(result)+"). Confira o driver e o diagnóstico.");
         initialized=true;
         check(factory->CreateComponent(amf_context,AMFVideoConverter,&converter),"Create GPU AMF converter");
@@ -190,6 +216,12 @@ struct Encoder {
 };
 }
 extern "C" {
+int hc_amf_probe(void* device,uint32_t av1,HcEncodeCaps* out) noexcept {
+    if(!out)return -1;*out={};if(!device)return -1;
+    try{Encoder probe;if(!probe.connect_device(static_cast<ID3D11Device*>(device),av1!=0)){out->support=2;return 0;}*out=probe.query_caps();return 0;}catch(...){*out={};return -1;}
+}
+void hc_amf_caps(void* handle,HcEncodeCaps* out) noexcept {if(out){*out={};if(handle)*out=static_cast<Encoder*>(handle)->capabilities;}}
+
 unsigned hc_amf_live_encoders() noexcept {return live_encoders.load();}
 void hc_amf_size(void* handle,uint32_t* w,uint32_t* h) noexcept {if(handle && w && h){auto* e=static_cast<Encoder*>(handle);*w=e->width;*h=e->height;}}
 // Optional output cap; input dimensions still describe the original GPU texture.

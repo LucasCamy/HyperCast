@@ -18,6 +18,7 @@ static std::atomic<unsigned> live_encoders{0};
 #include <vector>
 #include "capture_color.h"
 #include "capture_size.h"
+#include "encode_caps.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -47,6 +48,7 @@ struct Encoder {
     uint32_t width = 0, height = 0, fps = 0, source_width = 0, source_height = 0;
     bool input_ready = false;
     CaptureColor capture_color;
+    HcEncodeCaps capabilities;
 
     ~Encoder() noexcept {
         --live_encoders;
@@ -74,10 +76,9 @@ struct Encoder {
         if (FAILED(value)) throw std::runtime_error(std::string(operation) + ": HRESULT " + std::to_string(value));
     }
 
-    void open(ID3D11Device* d, uint32_t w, uint32_t h, uint32_t f, uint32_t bitrate, bool av1, uint32_t limit_w=8192, uint32_t limit_h=8192) {
-        if (!d || !hc_capture_size(w,h) || f < 1 || f > 240 || bitrate < 1000000 || bitrate > 45000000)
-            throw std::runtime_error("Invalid NVENC configuration (max 8192 per axis and 32 megapixels, 1-240 FPS, 1-45 Mbps)");
-        source_width=w;source_height=h;fps=f;device=d;
+    void connect_device(ID3D11Device* d) {
+        if(!d)throw std::runtime_error("Invalid capability device");
+        device=d;
         ComPtr<IDXGIDevice> dxgi_device;
         ComPtr<IDXGIAdapter> adapter;
         DXGI_ADAPTER_DESC adapter_desc{};
@@ -85,7 +86,7 @@ struct Encoder {
         hr(dxgi_device->GetAdapter(&adapter), "Get capture adapter");
         hr(adapter->GetDesc(&adapter_desc), "Get capture adapter description");
         if (adapter_desc.VendorId != 0x10DE)
-            throw std::runtime_error("The capture GPU is not NVIDIA. Select a monitor connected to NVIDIA; AMF is not available in this build.");
+            throw std::runtime_error("NVENC requires a capture device on an NVIDIA GPU. Use the backend for the selected capture GPU.");
         device->GetImmediateContext(&context);
         dll = LoadLibraryExW(L"nvEncodeAPI64.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
         if (!dll) throw std::runtime_error("NVIDIA NVENC driver DLL not found in System32");
@@ -106,8 +107,9 @@ struct Encoder {
         open.device = d;
         open.deviceType = NV_ENC_DEVICE_TYPE_DIRECTX;
         check(api.nvEncOpenEncodeSessionEx(&open, &session), "Open D3D11 NVENC session (device must be NVIDIA)");
-        const GUID codec = av1 ? NV_ENC_CODEC_AV1_GUID : NV_ENC_CODEC_HEVC_GUID;
-        // Check the selected GPU, not its generation/name: decode support does not imply encode support.
+    }
+    bool supports_codec(bool av1) {
+        const GUID codec=av1?NV_ENC_CODEC_AV1_GUID:NV_ENC_CODEC_HEVC_GUID;
         uint32_t codec_count = 0;
         check(api.nvEncGetEncodeGUIDCount(session, &codec_count), "Query supported encode codecs");
         if (!codec_count || codec_count > 64) throw std::runtime_error("Invalid NVENC codec capability count");
@@ -117,10 +119,28 @@ struct Encoder {
         if (written > codec_count) throw std::runtime_error("Invalid NVENC codec capability result");
         const bool supported = std::any_of(codecs.begin(), codecs.begin() + written,
             [&codec](const GUID& candidate) { return IsEqualGUID(candidate, codec); });
-        if (!supported)
-            throw std::runtime_error(av1
-                ? "AV1 hardware encoding is not supported by this GPU. Select HEVC/H.265 (Test-Streaming.ps1 -Role Publisher -Codec h265)."
-                : "HEVC/H.265 hardware encoding is not supported by this GPU.");
+        return supported;
+    }
+    HcEncodeCaps query_caps(bool av1) {
+        HcEncodeCaps out;out.support=1;
+        const GUID codec=av1?NV_ENC_CODEC_AV1_GUID:NV_ENC_CODEC_HEVC_GUID;
+        auto query=[&](NV_ENC_CAPS key)->uint32_t {NV_ENC_CAPS_PARAM param{};param.version=NV_ENC_CAPS_PARAM_VER;param.capsToQuery=key;int value=0;
+            return api.nvEncGetEncodeCaps(session,codec,&param,&value)==NV_ENC_SUCCESS && value>0?static_cast<uint32_t>(value):0;};
+        out.min_width=query(NV_ENC_CAPS_WIDTH_MIN);out.min_height=query(NV_ENC_CAPS_HEIGHT_MIN);
+        out.max_width=query(NV_ENC_CAPS_WIDTH_MAX);out.max_height=query(NV_ENC_CAPS_HEIGHT_MAX);
+        NV_ENC_CAPS_PARAM param{};param.version=NV_ENC_CAPS_PARAM_VER;param.capsToQuery=NV_ENC_CAPS_SUPPORT_DYN_BITRATE_CHANGE;int dynamic=0;
+        if(api.nvEncGetEncodeCaps(session,codec,&param,&dynamic)==NV_ENC_SUCCESS)out.dynamic_bitrate=dynamic?1:2;
+        return out;
+    }
+    void open(ID3D11Device* d, uint32_t w, uint32_t h, uint32_t f, uint32_t bitrate, bool av1, uint32_t limit_w=8192, uint32_t limit_h=8192) {
+        if (!d || !hc_capture_size(w,h) || f < 1 || f > 240 || bitrate < 1000000 || bitrate > 45000000)
+            throw std::runtime_error("Invalid NVENC configuration (max 8192 per axis and 32 megapixels, 1-240 FPS, 1-45 Mbps)");
+        source_width=w;source_height=h;fps=f;device=d;
+        connect_device(d);
+        const GUID codec = av1 ? NV_ENC_CODEC_AV1_GUID : NV_ENC_CODEC_HEVC_GUID;
+        // Check the selected GPU, not its generation/name: decode support does not imply encode support.
+        if(!supports_codec(av1))throw std::runtime_error("Selected hardware encode codec is not supported by this GPU");
+        capabilities=query_caps(av1);
         NV_ENC_CAPS_PARAM caps{};caps.version=NV_ENC_CAPS_PARAM_VER;
         int max_w=0,max_h=0;
         caps.capsToQuery=NV_ENC_CAPS_WIDTH_MAX;check(api.nvEncGetEncodeCaps(session,codec,&caps,&max_w),"Query NVENC maximum width");
@@ -258,6 +278,12 @@ struct Encoder {
 };
 
 extern "C" {
+int hc_nvenc_probe(void* device,uint32_t av1,HcEncodeCaps* out) noexcept {
+    if(!out)return -1;*out={};if(!device)return -1;
+    try {Encoder probe;probe.connect_device(static_cast<ID3D11Device*>(device));if(!probe.supports_codec(av1!=0)){out->support=2;return 0;}*out=probe.query_caps(av1!=0);return 0;}catch(...){*out={};return -1;}
+}
+void hc_nvenc_caps(void* handle,HcEncodeCaps* out) noexcept {if(out){*out={};if(handle)*out=static_cast<Encoder*>(handle)->capabilities;}}
+
 unsigned hc_nvenc_live_encoders() noexcept {return live_encoders.load();}
 void hc_nvenc_size(void* handle,uint32_t* w,uint32_t* h) noexcept {if(handle && w && h){auto* e=static_cast<Encoder*>(handle);*w=e->width;*h=e->height;}}
 // Optional output cap; input dimensions still describe the original GPU texture.

@@ -70,6 +70,32 @@ pub struct Packet {
     pub width: u32,
     pub height: u32,
 }
+/// Registry availability is not a claim of driver/session support.
+pub(crate) fn factory_available(codec:Codec,encoder:Encoder)->Option<bool>{
+    gst::INITIALIZED.load(std::sync::atomic::Ordering::SeqCst).then(||encoder_factory(codec,encoder).is_some())
+}
+pub(crate) fn encoder_factory(codec:Codec,encoder:Encoder)->Option<&'static str> {
+    if !gst::INITIALIZED.load(std::sync::atomic::Ordering::SeqCst){return None;}
+
+    if encoder==Encoder::Software{return (codec==Codec::Hevc&&gst::ElementFactory::find("x265enc").is_some()).then_some("x265enc");}
+    let candidates=if codec==Codec::Av1{["nvav1enc","nvcudaav1enc","vaav1enc"]}else{["nvcudah265enc","nvh265enc","vah265enc"]};
+    candidates.into_iter().find(|name|gst::ElementFactory::find(name).is_some())
+}
+fn advertised_caps(element:&gst::Element,supported:&gst::Caps)->crate::encode_caps::EncodeCaps {
+    let mut out=crate::encode_caps::EncodeCaps::default();
+    if supported.is_any()||supported.is_empty(){return out;}
+    out.support=1;
+    let mut incomplete=[false;2];
+    for structure in supported.iter() {
+        for (index,(key,minimum,maximum)) in [("width",&mut out.min_width,&mut out.max_width),("height",&mut out.min_height,&mut out.max_height)].into_iter().enumerate() {
+            let range=structure.get::<gst::IntRange<i32>>(key).ok().map(|r|(r.min(),r.max())).or_else(||structure.get::<i32>(key).ok().map(|v|(v,v)));
+            if let Some((low,high))=range.filter(|(a,b)|*a>0&&*b>=*a){let(low,high)=(low as u32,high as u32);*minimum=if *minimum==0{low}else{(*minimum).min(low)};*maximum=(*maximum).max(high);}else{incomplete[index]=true;}
+        }
+    }
+    if incomplete[0]{out.min_width=0;out.max_width=0;}if incomplete[1]{out.min_height=0;out.max_height=0;}
+    if let Some(spec)=element.find_property("bitrate"){out.dynamic_bitrate=if spec.flags().contains(gst::PARAM_FLAG_MUTABLE_PLAYING){1}else{2};}
+    out
+}
 pub struct Capture {
     pipeline: gst::Pipeline,
     sink: AppSink,
@@ -79,6 +105,7 @@ pub struct Capture {
     pub backend: String,
     pub fps: u32,
     pub bitrate_limit:u32,
+    pub capabilities:crate::encode_caps::EncodeCaps,
     ready: Option<Packet>,
     counters:std::sync::Arc<CaptureCounters>,
     last_report:std::time::Instant,
@@ -209,14 +236,10 @@ impl Capture {
             (Encoder::Software,Codec::Hevc)=>"x265enc name=encoder tune=zerolatency speed-preset=ultrafast bitrate=12000 key-int-max=30 option-string=bframes=0:rc-lookahead=0:pools=1:frame-threads=1".to_string(),
             (Encoder::Software,Codec::Av1)=>anyhow::bail!(crate::i18n::label("O modo compatível usa HEVC; AV1 exige encoder de hardware","Compatible mode uses HEVC; AV1 requires a hardware encoder")),
             (Encoder::Auto,codec)=>{
-                let candidates=if codec==Codec::Av1{["nvav1enc","nvcudaav1enc"]}else{["nvcudah265enc","nvh265enc"]};
-                let nvidia=candidates.into_iter().find(|name|gst::ElementFactory::find(name).is_some());
-                let va=if codec==Codec::Av1{"vaav1enc"}else{"vah265enc"};
-                if let Some(nvidia)=nvidia{
-                    format!("{nvidia} name=encoder bitrate={kbps} gop-size={fps} rc-mode=cbr")
-                }else if gst::ElementFactory::find(va).is_some(){
-                    format!("{va} name=encoder bitrate={kbps} key-int-max={fps} rate-control=cbr")
-                }else{anyhow::bail!(crate::i18n::label("Encoder de hardware indisponível. Instale os plugins nvcodec/VA-API ou selecione HEVC compatível (30 FPS)","Hardware encoder unavailable. Install nvcodec/VA-API plugins or choose compatible HEVC (30 FPS)"));}
+                let name=encoder_factory(codec,encoder).ok_or_else(||anyhow::anyhow!(crate::i18n::label("Encoder de hardware indisponível. Instale nvcodec/VA-API ou selecione HEVC compatível (30 FPS)","Hardware encoder unavailable. Install nvcodec/VA-API or choose compatible HEVC (30 FPS)")))?;
+                if name.starts_with("nv"){format!("{name} name=encoder bitrate={kbps} gop-size={fps} rc-mode=cbr")}
+                else{format!("{name} name=encoder bitrate={kbps} key-int-max={fps} rate-control=cbr")}
+
             }
         };
         let raw_formats:&[&str] = if encoder == Encoder::Software {
@@ -276,6 +299,7 @@ impl Capture {
             }
         }
         let supported=encoder_element.static_pad("sink").context("Encoder input missing")?.query_caps(None);
+        let capabilities=advertised_caps(&encoder_element,&supported);
         // Negotiate bounds before starting PipeWire. Changing capsfilter from a
         // downstream CAPS probe sends RECONFIGURE upstream and can reconnect or
         // deadlock the PipeWire stream while its state transition is in flight.
@@ -333,6 +357,13 @@ impl Capture {
                 encoder_element.set_property("rc-lookahead", 0_u32);
             }
         }
+        pipeline.by_name("source_bounds").unwrap().static_pad("src").unwrap().add_probe(gst::PadProbeType::EVENT_DOWNSTREAM,move|pad,info|{
+            if let Some(gst::PadProbeData::Event(event))=&info.data {if let gst::EventView::Caps(event)=event.view(){
+                if let Some((w,h))=event.caps().structure(0).and_then(|s|Some((s.get::<i32>("width").ok()?,s.get::<i32>("height").ok()?))) {
+                    if w>0&&h>0 {if let Some((out_w,out_h))=crate::resolution::fit(w as u32,h as u32,max_w,max_h){if let Some(reason)=capabilities.rejection(out_w,out_h,fps){if let Some(e)=pad.parent_element(){gst::element_error!(e,gst::StreamError::Format,["{}",reason.label()]);}return gst::PadProbeReturn::Drop;}}}
+                }
+            }}gst::PadProbeReturn::Ok
+        });
         let mut result = Self {
             pipeline,
             sink,
@@ -341,7 +372,7 @@ impl Capture {
             _fd: fd,
             backend: chain.split_whitespace().next().unwrap_or("encoder").into(),
             fps,
-            bitrate_limit,
+            bitrate_limit,capabilities,
             ready: None,
             counters,
             last_report:std::time::Instant::now(),
@@ -465,6 +496,17 @@ impl Drop for Capture {
 mod pipewire_tests {
     use super::*;
 
+    #[test]fn advertised_caps_envelope_preserves_unknown_and_runtime_flags(){
+        gst::init().unwrap();let element=gst::ElementFactory::make("identity").build().unwrap();
+        assert_eq!(advertised_caps(&element,&gst::Caps::new_any()),crate::encode_caps::EncodeCaps::default());
+        let caps:gstreamer::Caps="video/x-raw,width=(int)[16,4096],height=(int)[16,2160]".parse().unwrap();
+        let advertised=advertised_caps(&element,&caps);
+        assert_eq!((advertised.min_width,advertised.max_width,advertised.max_height),(16,4096,2160));assert_eq!(advertised.dynamic_bitrate,0);assert_eq!(advertised.max_fps,0);
+        assert_eq!(advertised.rejection(4588,1920,120),Some(crate::encode_caps::Rejection::Dimensions));
+        let union:gst::Caps="video/x-raw,width=(int)[16,4096],height=(int)[16,2160]; video/x-raw,format=(string)NV12".parse().unwrap();
+        let uncertain=advertised_caps(&element,&union);assert_eq!((uncertain.min_width,uncertain.max_width,uncertain.max_height),(0,0,0));
+        assert_eq!(uncertain.rejection(4588,1920,120),None);
+    }
     #[test]
     #[ignore="Needs packaged GStreamer and NVENC GPU; synthetic frames only"]
     fn adaptive_bitrate_reconfigures_gstreamer_encoders()->Result<()> {

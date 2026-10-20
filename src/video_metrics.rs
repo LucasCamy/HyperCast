@@ -4,6 +4,7 @@ use std::time::Duration;
 pub struct Throughput {pub fps:f64,pub mbps:f64}
 #[derive(Clone,Debug,Default)]
 pub struct QualitySnapshot {
+    pub encode_caps:Option<crate::encode_caps::EncodeCaps>,
     pub adaptive_upload:Option<crate::adaptive_upload::Snapshot>,
     pub encoder_rate_rejected:bool,
     pub automatic_recovery:crate::reception_recovery::Summary,
@@ -79,6 +80,7 @@ pub fn technical_report(q:&QualitySnapshot,state:ReportState,settings:crate::res
         "session":{"connected":state.connected,"reconnecting":state.reconnecting,"publishing":state.publishing,"receive_restarts":state.restarts},
         "requested":{"resolution":match settings.size{crate::resolution::OutputSize::Native=>"native",crate::resolution::OutputSize::FullHd=>"1080p",crate::resolution::OutputSize::QuadHd=>"1440p"},"fps":settings.fps,"video_bitrate_ceiling_bps":upload.bps()},
         "video":{"encoder":q.encoder_backend.filter(|v|matches!(*v,"NVENC"|"AMF"|"nvh265enc"|"nvav1enc"|"x265enc"|"vaav1enc"|"vah265enc")),"codec":q.codec.filter(|v|matches!(*v,"HEVC"|"AV1")),"accepted_encoder_config":q.applied_encoder.map(|(bps,fps)|serde_json::json!({"bitrate_bps":bps,"fps":fps})),"encoded_resolution":q.resolution,"send_paused":q.send_paused,"sent_frames":state.sent,"received_sink_frames":state.received,"send_fps":q.send.and_then(|v|number(v.fps)),"send_encoded_mbps":q.send.and_then(|v|number(v.mbps)),"receive_sink_fps":q.receive.and_then(|v|number(v.fps))},
+        "encode_capabilities":q.encode_caps.map(|c|serde_json::json!({"source":if cfg!(target_os="linux"){"gstreamer_element_caps"}else{"driver"},"surface_height_alignment":(1..=4096).contains(&c.align_height).then_some(c.align_height),"support":match c.support{1=>Some(true),2=>Some(false),_=>None},"min_width":(1..=32768).contains(&c.min_width).then_some(c.min_width),"min_height":(1..=32768).contains(&c.min_height).then_some(c.min_height),"max_width":(1..=32768).contains(&c.max_width).then_some(c.max_width),"max_height":(1..=32768).contains(&c.max_height).then_some(c.max_height),"max_fps":(1..=1000).contains(&c.max_fps).then_some(c.max_fps),"dynamic_bitrate":match c.dynamic_bitrate{1=>Some(true),2=>Some(false),_=>None},"decode_support":serde_json::Value::Null,"performance_validated":false})),
         "encoder_rate_rejected":q.encoder_rate_rejected,
         "adaptive_upload":q.adaptive_upload.map(|a|serde_json::json!({"mode":match a.mode{crate::adaptive_upload::Mode::Manual=>"manual",crate::adaptive_upload::Mode::Automatic=>"automatic"},"ceiling_bps":a.ceiling,"network_limit_bps":a.network,"target_bps":a.target,"reductions":a.reductions,"increases":a.increases})),
         "automatic_recovery":{"observed":q.automatic_recovery.observed,"mapped":q.automatic_recovery.mapped,"recovering":q.automatic_recovery.recovering,"exhausted":q.automatic_recovery.exhausted,"actions":q.automatic_recovery.actions,"reader_stalls":q.automatic_recovery.reader_stalls,"decoder_stalls":q.automatic_recovery.decoder_stalls,"unmapped_samples":q.automatic_recovery.unmapped},

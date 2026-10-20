@@ -1,4 +1,5 @@
 fn main() {
+    println!("cargo:rerun-if-changed=native/encode_caps.h");
     println!("cargo:rerun-if-changed=native/capture_size.h");
     println!("cargo:rerun-if-changed=native/nvenc.cpp");
     println!("cargo:rerun-if-changed=native/amf.cpp");

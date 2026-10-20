@@ -299,20 +299,22 @@ impl App {
                     crate::desktop_ui::stream_settings(ui,&mut self.stream_settings,!sharing&&!selecting,if self.encoder==Encoder::Software{30}else{120});
                     if before!=self.stream_settings{self.send(Command::StreamSettings(self.stream_settings));}
                     crate::desktop_ui::upload_selector(ui,&mut self.upload,!sharing&&!selecting);
-                    if crate::desktop_ui::rate_mode_selector(ui,&mut self.rate_mode,!sharing&&!selecting){self.send(Command::RateMode(self.rate_mode));}
+                    if crate::desktop_ui::rate_mode_selector(ui,&mut self.rate_mode,!sharing&&!selecting,true){self.send(Command::RateMode(self.rate_mode));}
                     ui.add_enabled_ui(!sharing&&!selecting,|ui|{
                         ui.columns(2,|columns|{
-                            if crate::desktop_ui::action(&mut columns[0],"HEVC / H.265",true,self.codec==Codec::Hevc).clicked(){self.codec=Codec::Hevc;}
-                            if crate::desktop_ui::action(&mut columns[1],"AV1",self.encoder!=Encoder::Software,self.codec==Codec::Av1).clicked(){self.codec=Codec::Av1;}
+                            if crate::desktop_ui::action(&mut columns[0],"HEVC / H.265",super::media::factory_available(Codec::Hevc,self.encoder).unwrap_or(true),self.codec==Codec::Hevc).clicked(){self.codec=Codec::Hevc;}
+                            if crate::desktop_ui::action(&mut columns[1],"AV1",super::media::factory_available(Codec::Av1,self.encoder).unwrap_or(true),self.codec==Codec::Av1).clicked(){self.codec=Codec::Av1;}
                         });
                         egui::ComboBox::from_id_salt("encoder").width(ui.available_width()).selected_text(if self.encoder==Encoder::Auto{"GPU · NVENC / VA-API"}else{crate::i18n::label("Compatível · HEVC 30 FPS","Compatible · HEVC 30 FPS")}).show_ui(ui,|ui|{
                             ui.selectable_value(&mut self.encoder,Encoder::Auto,"GPU · NVENC / VA-API");ui.selectable_value(&mut self.encoder,Encoder::Software,crate::i18n::label("Compatível · HEVC 30 FPS","Compatible · HEVC 30 FPS"));
                         });
                         if self.encoder==Encoder::Software{self.codec=Codec::Hevc;}
+                        if super::media::factory_available(self.codec,self.encoder)==Some(false){ui.add(egui::Label::new(RichText::new(crate::i18n::label("Nenhum encoder disponível para este formato. Escolha outro formato ou instale o plugin/driver.","No encoder is available for this format. Choose another format or install the plugin/driver.")).color(MUTED).size(11.0)).wrap());}
                     });
                     });
-                    if button(ui,if sharing{crate::i18n::label("Trocar tela ou janela","Change screen or window")}else{crate::i18n::label("Compartilhar tela/janela","Share screen/window")},connected&&can_publish&&!selecting,true).clicked(){self.send(Command::StreamSettings(self.stream_settings));self.send(Command::Share(Source::Portal,self.codec,self.encoder,self.upload));}
-                    if std::env::var("WAYLAND_DISPLAY").is_err()&&!sharing&&button(ui,crate::i18n::label("Tela inteira (X11)","Entire screen (X11)"),connected&&can_publish&&!selecting,false).clicked(){self.send(Command::StreamSettings(self.stream_settings));self.send(Command::Share(Source::X11,self.codec,self.encoder,self.upload));}
+                    if super::media::factory_available(self.codec,self.encoder)==Some(false){ui.add(egui::Label::new(RichText::new(crate::i18n::label("Encoder indisponível: escolha outro formato em Formato de vídeo.","Encoder unavailable: choose another format in Video format.")).color(MUTED).size(11.0)).wrap());}
+                    if button(ui,if sharing{crate::i18n::label("Trocar tela ou janela","Change screen or window")}else{crate::i18n::label("Compartilhar tela/janela","Share screen/window")},connected&&can_publish&&!selecting&&super::media::factory_available(self.codec,self.encoder).unwrap_or(true),true).clicked(){self.send(Command::StreamSettings(self.stream_settings));self.send(Command::Share(Source::Portal,self.codec,self.encoder,self.upload));}
+                    if std::env::var("WAYLAND_DISPLAY").is_err()&&!sharing&&button(ui,crate::i18n::label("Tela inteira (X11)","Entire screen (X11)"),connected&&can_publish&&!selecting&&super::media::factory_available(self.codec,self.encoder).unwrap_or(true),false).clicked(){self.send(Command::StreamSettings(self.stream_settings));self.send(Command::Share(Source::X11,self.codec,self.encoder,self.upload));}
                     if (sharing||selecting)&&button(ui,if selecting{crate::i18n::label("Cancelar seleção","Cancel selection")}else{crate::i18n::label("Parar compartilhamento","Stop sharing")},true,false).clicked(){self.send(if selecting{Command::CancelSelection}else{Command::Stop});}
                     if ui.checkbox(&mut self.audio,crate::i18n::label("Áudio do sistema","System audio")).changed(){self.send(Command::Audio(self.audio));}
                     if self.audio{ui.label(RichText::new(crate::i18n::label("O áudio recebido fica silenciado durante o envio para evitar eco.","Received audio is muted while sharing to prevent echo.")).size(11.0).color(MUTED));}

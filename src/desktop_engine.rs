@@ -187,6 +187,7 @@ impl Cast {
             upload.bps(),
             codec,profile,settings.size,
         )?;
+        if rate_mode==crate::adaptive_upload::Mode::Automatic{if let Some(reason)=encoder.capabilities().automatic_rejection(){anyhow::bail!(reason.label());}}
         crate::diagnostics::write("encoder",encoder.backend_name(),"");
         // No Desktop Duplication frame is held while waiting for publication acknowledgment.
         let (send_width,send_height)=encoder.dimensions();
@@ -915,7 +916,7 @@ impl Engine {
                     {
                         let now=Instant::now();let mut shared=state.lock().unwrap();
                         if let Some(value)=&cast {
-                            shared.upload=value.upload;
+                            shared.upload=value.upload;shared.quality.encode_caps=value.encoder.as_ref().map(|e|e.capabilities());
                             shared.quality.adaptive_upload=Some(value.rate_control.snapshot());
                             if send_origin!=Some(value.start){send_origin=Some(value.start);send_meter=Default::default();shared.quality.send=None;shared.quality.applied_encoder=None;}
                             if let Some(sample)=send_meter.sample(now,value.count,value.sent_bytes){shared.quality.send=Some(sample);}
@@ -923,7 +924,7 @@ impl Engine {
                             shared.quality.encoder_backend=value.encoder.as_ref().map(|e|e.backend_name());
                             shared.quality.codec=Some(if value.selection.1==Codec::Av1{"AV1"}else{"HEVC"});
                             shared.quality.send_paused=value.paused;shared.quality.encoder_rate_rejected=value.rate_blocked;
-                        }else{shared.quality.adaptive_upload=None;shared.quality.encoder_rate_rejected=false;send_origin=None;send_meter=Default::default();shared.quality.send=None;shared.quality.resolution=None;shared.quality.send_paused=false;shared.quality.encoder_backend=None;shared.quality.codec=None;shared.quality.applied_encoder=None;}
+                        }else{shared.quality.encode_caps=None;shared.quality.adaptive_upload=None;shared.quality.encoder_rate_rejected=false;send_origin=None;send_meter=Default::default();shared.quality.send=None;shared.quality.resolution=None;shared.quality.send_paused=false;shared.quality.encoder_backend=None;shared.quality.codec=None;shared.quality.applied_encoder=None;}
                         if let Some(sample)=receive_meter.sample(now,shared.received,0){shared.quality.receive=Some(sample);}
                     }
                     if diagnostic_tick.elapsed() >= Duration::from_secs(5) {

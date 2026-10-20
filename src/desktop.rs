@@ -145,6 +145,7 @@ struct App {
     sound_muted: bool,
     displays: Vec<crate::screen_capture::Display>,
     selected_display: usize,
+    cap_probe:crate::encoder::CapabilityProbe,
     window_mode:bool,
     windows:Vec<crate::video_capture::ApplicationWindow>,
     selected_window:Option<usize>,
@@ -233,6 +234,7 @@ impl App {
             sound_muted: prefs.muted,
             displays: crate::screen_capture::displays().unwrap_or_default(),
             selected_display: 0,
+            cap_probe:Default::default(),
             window_mode:false,windows:crate::video_capture::windows(),selected_window:None,window_picker_open:false,window_previews:HashMap::new(),fullscreen:false,debug_open:false,report_copied:None,updater:crate::updater::Updater::default(),creator:crate::room_creation::Creator::default(),catalog:crate::room_creation::Catalog::default(),departure:None,pending_join:false,stream_settings:prefs.stream,server_access:crate::room_creation::ServerAccess::default(),server_status:crate::server_status::ServerStatus::default(),before_fullscreen_mode:ViewMode::Spotlight,
             amd_profile:crate::encoder::AmdProfile::Fast,
             rate_mode:prefs.rate_mode,
@@ -267,6 +269,19 @@ impl App {
             let window=self.windows.iter().find(|w|Some(w.hwnd)==self.selected_window)?;
             crate::video_capture::CaptureTarget::Window{adapter:display.adapter_index,hwnd:window.hwnd,pid:window.pid}
         }else{crate::video_capture::CaptureTarget::Monitor{adapter:display.adapter_index,output:display.output_index}})
+    }
+    fn selected_encode_caps(&self,codec:crate::encoder::Codec)->crate::encode_caps::EncodeCaps {
+        self.displays.get(self.selected_display).and_then(|d|self.cap_probe.cached(d.adapter_index)).map(|caps|caps[usize::from(codec==crate::encoder::Codec::Av1)]).unwrap_or_default()
+    }
+    fn capture_rejection(&self)->Option<crate::encode_caps::Rejection>{
+        let caps=self.selected_encode_caps(self.codec);
+        if caps.support==2{return Some(crate::encode_caps::Rejection::Codec);}
+        if self.rate_mode==crate::adaptive_upload::Mode::Automatic{if let Some(reason)=caps.automatic_rejection(){return Some(reason);}}
+        // Application-window dimensions are validated against the actual captured texture on start.
+        if self.window_mode{return None;}
+        let display=self.displays.get(self.selected_display)?;let(max_w,max_h)=self.stream_settings.size.limits();
+        let(w,h)=crate::resolution::fit(display.width,display.height,max_w,max_h)?;
+        caps.rejection(w,h,self.stream_settings.fps)
     }
     fn set_fullscreen(&mut self,ctx:&egui::Context,enabled:bool){
         if self.fullscreen==enabled{return;}
@@ -368,14 +383,18 @@ impl App {
             crate::desktop_ui::stream_settings(ui,&mut self.stream_settings,!publishing,120);
             if before!=self.stream_settings{if let Some(engine)=&self.engine{let _=engine.commands.send(Command::StreamSettings(self.stream_settings));}}
             if crate::desktop_ui::upload_selector(ui,&mut self.upload,!publishing){if let Some(engine)=&self.engine{let _=engine.commands.send(Command::UploadProfile(self.upload));}}
-            if crate::desktop_ui::rate_mode_selector(ui,&mut self.rate_mode,!publishing){if let Some(engine)=&self.engine{let _=engine.commands.send(Command::RateMode(self.rate_mode));}}
+            let allow_automatic=self.selected_encode_caps(self.codec).dynamic_bitrate!=2;
+            if crate::desktop_ui::rate_mode_selector(ui,&mut self.rate_mode,!publishing,allow_automatic){if let Some(engine)=&self.engine{let _=engine.commands.send(Command::RateMode(self.rate_mode));}}
             ui.horizontal(|ui|{
                 let width=(ui.available_width()-ui.spacing().item_spacing.x)/2.0;
                 for (codec,title) in [(crate::encoder::Codec::H265,"HEVC / H.265"),(crate::encoder::Codec::Av1,"AV1")]{
                     let selected=self.codec==codec;
-                    if ui.add_enabled(!publishing,egui::Button::new(title).selected(selected).min_size(Vec2::new(width,38.0))).clicked(){self.codec=codec;}
+                    if ui.add_enabled(!publishing&&self.selected_encode_caps(codec).support!=2,egui::Button::new(title).selected(selected).min_size(Vec2::new(width,38.0))).clicked(){self.codec=codec;}
                 }
             });
+            if self.codec==crate::encoder::Codec::H265&&self.selected_encode_caps(crate::encoder::Codec::Av1).support==2 {ui.add(egui::Label::new(RichText::new(crate::i18n::label("AV1 indisponível no encoder desta GPU; use HEVC.","AV1 is unavailable on this GPU encoder; use HEVC.")).size(11.0).color(MUTED)).wrap());}
+            let caps=self.selected_encode_caps(self.codec);
+            ui.add(egui::Label::new(RichText::new(self.capture_rejection().map_or_else(||caps.hint(),|r|r.label())).size(11.0).color(MUTED)).wrap());
             let vendor=self.displays.get(self.selected_display).map(|d|d.vendor_id);
             let amd_hevc=vendor==Some(0x1002)&&self.codec==crate::encoder::Codec::H265;
             ui.add_enabled_ui(!publishing&&amd_hevc,|ui|{
@@ -411,7 +430,8 @@ impl App {
             .on_hover_text(crate::i18n::label("Som do sistema ou do aplicativo escolhido, sem microfone. Pode incluir outras janelas do mesmo programa.","System or selected app audio, without microphone. May include other windows of the same app.")).changed(){
             if let Some(engine)=&self.engine{let _=engine.commands.send(Command::SystemAudio(self.system_audio));}
         }
-        let ready=connected&&can_publish&&(publishing||self.target().is_some());
+        if !publishing {if let Some(reason)=self.capture_rejection(){ui.add(egui::Label::new(RichText::new(reason.label()).size(11.0).color(MUTED)).wrap());}}
+        let ready=connected&&can_publish&&(publishing||(self.target().is_some()&&self.capture_rejection().is_none()));
         if ui.add_enabled(ready,egui::Button::new(RichText::new(if publishing{crate::i18n::label("Parar compartilhamento","Stop sharing")}else{crate::i18n::label("Compartilhar tela","Share screen")}).strong().color(if publishing{DANGER}else{BG}))
             .min_size(Vec2::new(ui.available_width(),46.0)).corner_radius(9)
             .fill(if publishing{Color32::from_rgb(59,34,34)}else{ACCENT}))
@@ -489,6 +509,9 @@ impl Drop for App {
 }
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if self.engine.as_ref().is_none_or(|e|!e.shared.lock().unwrap().publishing){
+            if let Some(display)=self.displays.get(self.selected_display){self.cap_probe.request(display.adapter_index);ui.ctx().request_repaint_after(Duration::from_millis(250));}
+        }
         self.save_preferences();
         let ctx = ui.ctx().clone();
         if ctx.input(|i|i.key_pressed(egui::Key::F5)) && self.engine.as_ref().is_some_and(|e|{let s=e.shared.lock().unwrap();s.connected&&!s.reception_resetting}) {

@@ -465,7 +465,9 @@ async fn session(
                         let result=pending.take().unwrap().await.unwrap_or_else(|_|Err(anyhow::anyhow!(crate::i18n::label("A captura falhou internamente. Selecione a origem para tentar novamente.","Capture failed internally. Select the source to try again."))));
                         shared.lock().unwrap().selecting=false;
                         match result {
-                            Ok((cap,codec))=>{
+                            Ok((mut cap,codec))=>{
+                                if rate_mode==crate::adaptive_upload::Mode::Automatic{if let Some(reason)=cap.capabilities.automatic_rejection(){cap.stop().await;shared.lock().unwrap().status=reason.label().into();continue;}}
+
                                 let next_format=(codec,cap.fps,cap.bitrate_limit);
                                 if (ever_published && current_codec!=codec) || publication_format.is_some_and(|previous|previous!=next_format) {
                                     eprintln!("Linux publish: stage=reconfigure codec={codec:?} fps={} bitrate={}",cap.fps,cap.bitrate_limit);
@@ -599,6 +601,7 @@ async fn session(
                 let now=Instant::now();let mut state=shared.lock().unwrap();
                 if capture.is_some(){if let Some(sample)=send_meter.sample(now,state.sent,sent_bytes){state.quality.send=Some(sample);}}
                 else{send_meter=Default::default();state.quality.send=None;state.quality.resolution=None;}
+                state.quality.encode_caps=capture.as_ref().map(|c|c.capabilities);
                 state.quality.encoder_backend=capture.as_ref().and_then(|c|match c.backend.as_str(){"nvh265enc"=>Some("nvh265enc"),"nvav1enc"=>Some("nvav1enc"),"x265enc"=>Some("x265enc"),"vah265enc"=>Some("vah265enc"),"vaav1enc"=>Some("vaav1enc"),_=>None});
                 state.quality.codec=capture.as_ref().map(|_|if current_codec==Codec::Av1{"AV1"}else{"HEVC"});
                 state.quality.send_paused=capture.is_some()&&transmit_paused;state.quality.encoder_rate_rejected=capture.is_some()&&rate_rejected;

@@ -15,6 +15,10 @@ use windows::{
 };
 
 unsafe extern "C" {
+    fn hc_nvenc_probe(device:*mut c_void,av1:u32,caps:*mut crate::encode_caps::EncodeCaps)->i32;
+    fn hc_amf_probe(device:*mut c_void,av1:u32,caps:*mut crate::encode_caps::EncodeCaps)->i32;
+    fn hc_nvenc_caps(handle:*mut c_void,caps:*mut crate::encode_caps::EncodeCaps);
+    fn hc_amf_caps(handle:*mut c_void,caps:*mut crate::encode_caps::EncodeCaps);
     fn hc_nvenc_encode(
         handle: *mut c_void,
         texture: *mut c_void,
@@ -114,6 +118,13 @@ fn error_text(buffer: &[c_char]) -> String {
 }
 
 impl HardwareEncoder {
+    pub fn capabilities(&self)->crate::encode_caps::EncodeCaps {
+        let mut caps=Default::default();
+        // SAFETY: live, thread-confined handle and one initialized fixed-size scalar ABI output.
+        unsafe{(match self.backend{Backend::Nvidia=>hc_nvenc_caps,Backend::Amd=>hc_amf_caps})(self.handle.as_ptr(),&mut caps);}
+        caps
+    }
+
     pub fn dimensions(&self)->(u32,u32){
         let (mut w,mut h)=(0,0);
         // SAFETY: handle is exclusively owned; bridge writes two bounded u32 values.
@@ -168,12 +179,15 @@ impl HardwareEncoder {
             raw=unsafe{hc_amf_open_scaled(device.as_raw(),width,height,fps,bitrate,matches!(codec,Codec::Av1) as u32,actual_profile as u32,max_w,max_h,error.as_mut_ptr(),error.len())};
         }
         let handle = NonNull::new(raw).ok_or_else(|| anyhow!(error_text(&error)))?;
-        Ok(Self {
+        let value=Self {
             handle,backend,actual_profile,
             output: vec![0; 16 * 1024 * 1024],
             poisoned: false,requested_rate:(bitrate,fps),
             _thread_affinity: PhantomData,
-        })
+        };
+        let (out_w,out_h)=crate::resolution::fit(width,height,max_w,max_h).ok_or_else(||anyhow!("Invalid requested encoder dimensions"))?;
+        if let Some(reason)=value.capabilities().rejection(out_w,out_h,fps){anyhow::bail!(reason.label());}
+        Ok(value)
     }
 
     pub fn feedback(&self)->EncoderFeedback {
@@ -277,6 +291,21 @@ mod ultrawide_tests {
     use windows::Win32::{Foundation::HMODULE,Graphics::{
         Direct3D::{D3D_DRIVER_TYPE_UNKNOWN,D3D_FEATURE_LEVEL_11_0},
         Direct3D11::*,Dxgi::{CreateDXGIFactory1,IDXGIFactory1,Common::*}}};
+    #[test]
+    #[ignore="Needs NVENC GPU; probes only, no screen capture"]
+    fn capability_probe_uses_selected_adapter_and_releases_sessions()->Result<()> {
+        let baseline=unsafe{hc_nvenc_live_encoders()+hc_amf_live_encoders()};
+        for _ in 0..3 {
+            let caps=probe_adapter(0);ensure!(caps[0].support==1,"Expected HEVC on the test GPU");
+            ensure!(caps[0].max_width>=1920&&caps[0].max_height>=1080,"Missing driver resolution limits");
+            ensure!(caps[0].rejection(1920,1080,60).is_none(),"Supported test mode rejected");
+            ensure!(unsafe{hc_nvenc_live_encoders()+hc_amf_live_encoders()}==baseline,"Probe retained an encoder session");
+        }
+        ensure!(probe_adapter(u32::MAX)==[crate::encode_caps::EncodeCaps::default();2],"An invalid adapter must stay unknown");
+        let mut caps=crate::encode_caps::EncodeCaps{support:99,..Default::default()};
+        ensure!(unsafe{hc_nvenc_probe(std::ptr::null_mut(),0,&mut caps)}==-1&&caps.support==0,"Invalid probe must initialize the output");
+        Ok(())
+    }
     #[test]
     #[ignore="Requires NVENC GPU; generated textures and virtual bandwidth only"]
     fn adaptive_bitrate_reconfigures_nvenc_without_recreating_encoder()->Result<()> {
@@ -387,5 +416,45 @@ mod ultrawide_tests {
             }
         }
         Ok(())
+    }
+}
+
+/// Probe the explicitly selected adapter without duplicating/capturing its screen.
+/// Device and driver handles remain confined to the calling worker.
+pub fn probe_adapter(adapter_index:u32)->[crate::encode_caps::EncodeCaps;2] {
+    use windows::Win32::{Foundation::HMODULE,Graphics::{Direct3D::{D3D_DRIVER_TYPE_UNKNOWN,D3D_FEATURE_LEVEL_11_0},Direct3D11::*,Dxgi::{CreateDXGIFactory1,IDXGIFactory1}}};
+    let attempt=||->Result<_>{
+        let factory:IDXGIFactory1=unsafe{CreateDXGIFactory1()?};let adapter=unsafe{factory.EnumAdapters1(adapter_index)?};
+        let vendor=unsafe{adapter.GetDesc1()?.VendorId};
+        if ![0x10de,0x1002].contains(&vendor){return Ok([crate::encode_caps::EncodeCaps{support:2,..Default::default()};2]);}
+        let mut device=None;
+        // SAFETY: selected owned adapter, initialized COM out pointer, no screen access.
+        unsafe{D3D11CreateDevice(&adapter,D3D_DRIVER_TYPE_UNKNOWN,HMODULE::default(),D3D11_CREATE_DEVICE_BGRA_SUPPORT,Some(&[D3D_FEATURE_LEVEL_11_0]),D3D11_SDK_VERSION,Some(&mut device),None,None)?;}
+        let device=device.ok_or_else(||anyhow!("Missing probe device"))?;let mut result=[Default::default();2];
+        for (index,caps) in result.iter_mut().enumerate(){
+            // SAFETY: borrowed live device and one fixed-size initialized output, native catches exceptions.
+            let status=unsafe{(if vendor==0x10de{hc_nvenc_probe}else{hc_amf_probe})(device.as_raw(),index as u32,caps)};
+            if status!=0{*caps=Default::default();}
+        }Ok(result)
+    };
+    attempt().unwrap_or_default()
+}
+
+/// One nonblocking probe in flight; bounded cache. Dropping the UI never joins a driver call.
+#[derive(Default)]
+pub struct CapabilityProbe {
+    cache:std::collections::VecDeque<(u32,Instant,[crate::encode_caps::EncodeCaps;2])>,
+    pending:Option<(u32,std::sync::mpsc::Receiver<[crate::encode_caps::EncodeCaps;2]>)>,
+}
+impl CapabilityProbe {
+    pub fn cached(&self,adapter:u32)->Option<[crate::encode_caps::EncodeCaps;2]>{self.cache.iter().find(|(key,at,_)|*key==adapter&&at.elapsed()<Duration::from_secs(120)).map(|(_,_,caps)|*caps)}
+    pub fn request(&mut self,adapter:u32){
+        if let Some((key,rx))=&self.pending {
+            match rx.try_recv(){Ok(caps)=>{let key=*key;self.cache.retain(|(k,_,_)|*k!=key);if self.cache.len()>=4{self.cache.pop_front();}self.cache.push_back((key,Instant::now(),caps));self.pending=None;},Err(std::sync::mpsc::TryRecvError::Disconnected)=>{self.pending=None;},_=>{}}
+        }
+        if self.pending.is_none()&&self.cached(adapter).is_none(){
+            let(tx,rx)=std::sync::mpsc::sync_channel(1);
+            if std::thread::Builder::new().name("hypercast-caps".into()).spawn(move||{let caps=std::panic::catch_unwind(||probe_adapter(adapter)).unwrap_or_default();let _=tx.send(caps);}).is_ok(){self.pending=Some((adapter,rx));}
+        }
     }
 }

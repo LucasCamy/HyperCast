@@ -50,3 +50,5 @@ pub mod resilience;
 pub mod reception_recovery;
 
 pub mod adaptive_upload;
+
+pub mod encode_caps;
