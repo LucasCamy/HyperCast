@@ -146,12 +146,13 @@ impl App {
     }
     fn video(&mut self, ui: &mut egui::Ui, sid: &str, name: &str, size: Vec2) {
         let frame = self.snapshot.frames.get(sid).cloned();
-        if let Some((sequence, frame)) = frame {
+        if let Some((sequence, frame, delivered_at)) = frame {
             if self
                 .textures
                 .get(sid)
                 .is_none_or(|entry| entry.0 != sequence)
             {
+                let render_started=Instant::now();self.snapshot.quality.evidence.record(crate::evidence::Stage::ReaderToRender,render_started.saturating_duration_since(delivered_at));
                 let (w, h) = (frame.buffer.width(), frame.buffer.height());
                 let mut rgba = vec![0; w as usize * h as usize * 4];
                 frame.buffer.to_argb(
@@ -176,6 +177,7 @@ impl App {
                         ),
                     );
                 }
+                self.snapshot.quality.evidence.record(crate::evidence::Stage::RenderPrepare,render_started.elapsed());
             }
         }
         let response=egui::Frame::new()
@@ -479,6 +481,7 @@ impl App {
                         s.audio_received
                     );
                     println!("Linux throughput: sent_fps={:.1} sent_mbps={:.3} received_fps={:.1}",s.quality.send.map_or(0.0,|r|r.fps),s.quality.send.map_or(0.0,|r|r.mbps),s.quality.receive.map_or(0.0,|r|r.fps));
+                    println!("GUI technical report: {}",crate::video_metrics::technical_report(&s.quality,crate::video_metrics::ReportState{connected:s.connected,reconnecting:s.reconnecting,publishing:s.sharing,sent:s.sent,received:s.received,restarts:s.reception_restarts},self.stream_settings,self.upload).replace('\n',""));
                 }
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }

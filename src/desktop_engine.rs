@@ -23,25 +23,26 @@ use tokio_stream::StreamExt;
 use windows::{Win32::Graphics::Direct3D11::ID3D11Texture2D, core::Interface};
 
 pub enum VideoFrame {
-    Remote(BoxVideoFrame),
+    Remote(BoxVideoFrame,Instant),
     Local(ID3D11Texture2D, u32, u32),
 }
 impl VideoFrame {
     pub fn dimensions(&self) -> (u32, u32) {
         match self {
-            Self::Remote(frame) => (frame.buffer.width(), frame.buffer.height()),
+            Self::Remote(frame,_) => (frame.buffer.width(), frame.buffer.height()),
             Self::Local(_, w, h) => (*w, *h),
         }
     }
     pub fn surface(&self) -> Option<(*mut std::ffi::c_void, u32)> {
         match self {
-            Self::Remote(frame) => frame
+            Self::Remote(frame,_) => frame
                 .buffer
                 .as_native()
                 .and_then(|native| native.d3d11_texture()),
             Self::Local(texture, _, _) => Some((texture.as_raw(), 0)),
         }
     }
+    pub fn delivered_at(&self)->Option<Instant>{match self{Self::Remote(_,at)=>Some(*at),_=>None}}
     pub fn local(&self) -> bool {
         matches!(self, Self::Local(..))
     }
@@ -135,6 +136,7 @@ struct Cast {
     profile:AmdProfile,
     upload:crate::bandwidth::UploadProfile,
     metrics:crate::video_metrics::EncodeWindow,
+    evidence:crate::evidence::Evidence,
     last_rate:(u64,u32),
     rate_control:crate::adaptive_upload::Controller,
     sent_bytes:u64,
@@ -174,6 +176,7 @@ impl Cast {
         settings:crate::resolution::StreamSettings,
         rate_mode:crate::adaptive_upload::Mode,
         stopping:&crate::room_transition::Cancellation,
+        evidence:&crate::evidence::Evidence,
     ) -> Result<Self> {
         let capture = VideoCapture::new(target)?;
         let device=capture.device().clone();
@@ -205,7 +208,7 @@ impl Cast {
             audio: None,profile,upload,rate_control:crate::adaptive_upload::Controller::new(rate_mode,upload.bps()),metrics:Default::default(),last_rate:(upload.bps() as u64,settings.fps),sent_bytes:0,rate_blocked:false,
             selection: (target, codec),
             dimensions:(width,height),device,has_frame:false,
-            capture,
+            evidence:evidence.clone(),capture,
             encoder: Some(encoder),
             publisher: Some(publisher),
             start: Instant::now(),
@@ -219,7 +222,10 @@ impl Cast {
             if let Some(p)=&mut self.publisher {p.restart_keyframe();}
             return Ok(());
         }
-        let frame = self.capture.acquire()?;
+        let capture_started=Instant::now();
+        let acquired=self.capture.acquire();
+        self.evidence.record(crate::evidence::Stage::CaptureAcquire,capture_started.elapsed());
+        let frame=acquired?;
         if let Some(frame)=&frame {
             let mut desc=Default::default();unsafe{frame.texture().GetDesc(&mut desc);}
             if (desc.Width,desc.Height)!=self.dimensions {
@@ -252,8 +258,12 @@ impl Cast {
             if !self.paused {
                 let packet =
                     encoder.encode_texture(frame.as_ref().map(|f|f.texture()), self.start.elapsed().as_micros() as i64, key)?;
+                self.evidence.record(crate::evidence::Stage::EncodeCall,packet.encode_time);
                 self.metrics.record(packet.encode_time,packet.bytes.len(),packet.keyframe,key,packet.qp);
-                if publisher.push(packet.bytes, packet.timestamp_us, packet.keyframe)? {
+                let submit_started=Instant::now();
+                let pushed=publisher.push(packet.bytes, packet.timestamp_us, packet.keyframe);
+                self.evidence.record(crate::evidence::Stage::SendSubmit,submit_started.elapsed());
+                if pushed? {
                     self.count += 1;
                     self.sent_bytes+=packet.bytes.len() as u64;
                 }
@@ -281,6 +291,7 @@ impl Cast {
         if change_audio {if let Some(audio)=&self.audio{audio.set_process(target.process())?;}}
         self.capture=capture;self.device=device;self.encoder=Some(encoder);self.dimensions=dimensions;self.selection.0=target;self.has_frame=false;
         if let Some(p)=&mut self.publisher {p.set_resolution(send_size.0,send_size.1);}
+        self.evidence.event(crate::evidence::EventKind::SourceChanged);
         crate::diagnostics::write("source_switch",&format!("{}x{} application={}",dimensions.0,dimensions.1,target.process().is_some()),"");
         if change_audio && self.audio.is_none() {self.set_audio(audio_requested,runtime,room)?;}
         Ok(())
@@ -376,7 +387,7 @@ fn attach_video(runtime:&tokio::runtime::Runtime, track:RemoteVideoTrack, owner_
                 }
                 state.frames.insert(
                     identity.clone(),
-                    Arc::new(VideoFrame::Remote(frame)),
+                    Arc::new(VideoFrame::Remote(frame,Instant::now())),
                 );
                 state.received += 1;
                 if state.received_streams.len()>=3 && !state.received_streams.contains_key(&identity) {
@@ -410,6 +421,7 @@ impl Engine {
             status: crate::i18n::label("Conectando…","Connecting…").into(),
             ..Default::default()
         }));
+        let evidence=shared.lock().unwrap().quality.evidence.clone();evidence.event(crate::evidence::EventKind::Connecting);
         let state = shared.clone();
         let cancel=crate::room_transition::Cancellation::default();let stopping=cancel.clone();
         let failure_state=shared.clone();let failure_ctx=ctx.clone();
@@ -427,13 +439,13 @@ impl Engine {
             }));
             let (token,room_title)=match admission {
                 Some(Ok(value))=>value,
-                Some(Err(error))=>{state.lock().unwrap().status=error.to_string();ctx.request_repaint();runtime.shutdown_timeout(Duration::from_secs(2));return;},
+                Some(Err(error))=>{evidence.event(crate::evidence::EventKind::SessionFailed);state.lock().unwrap().status=error.to_string();ctx.request_repaint();runtime.shutdown_timeout(Duration::from_secs(2));return;},
                 None=>{state.lock().unwrap().status=crate::i18n::label("Conexão cancelada","Connection cancelled").into();ctx.request_repaint();runtime.shutdown_timeout(Duration::from_secs(2));return;}
             };
             let result = (|| -> Result<()> {
                 let _runtime_guard = runtime.enter();
                 livekit::webrtc::enable_zero_playout_delay()?;
-                let (room, mut events) = match runtime.block_on(stopping.run(network::connect_desktop(&address, &token, relay_only,|attempt,_|{state.lock().unwrap().status=crate::i18n_format!("Tentando conectar novamente… {attempt}/3","Retrying connection… {attempt}/3");ctx.request_repaint();}))){Some(result)=>result?,None=>return Ok(())};
+                let (room, mut events) = match runtime.block_on(stopping.run(network::connect_desktop(&address, &token, relay_only,|attempt,_|{evidence.event(crate::evidence::EventKind::ConnectRetry);state.lock().unwrap().status=crate::i18n_format!("Tentando conectar novamente… {attempt}/3","Retrying connection… {attempt}/3");ctx.request_repaint();}))){Some(result)=>result?,None=>return Ok(())};
                 let room = Arc::new(room);
                 crate::diagnostics::write("connection", "Room connected", "");
                 {
@@ -568,7 +580,8 @@ impl Engine {
                             #[cfg(test)]
                             Command::StallReader(owner)=>{if let Some(sink)=sinks.values().find(|s|s.owner==owner){sink.stall.store(true,Ordering::Relaxed);}},
                             Command::RestartReception if reception_restart.is_none() && room.connection_state()==ConnectionState::Connected => {
-                                receive_monitor.reset();
+                                evidence.event(crate::evidence::EventKind::ManualReceptionReset);
+                            receive_monitor.reset();
                                 for (_,sink) in sinks.drain(){sink.abort();let _=runtime.block_on(sink.task);}
                                 audio_sinks.clear();
                                 crate::subscription::reset_receivers(&room);
@@ -590,7 +603,7 @@ impl Engine {
                                 recovery = None;
                                 recovery_attempts = 0;
                                 crate::diagnostics::write("publication", &format!("adapter={adapter} output={output} codec={codec:?}"), "");
-                                match Cast::new(target, codec, &runtime, &room,amd_profile,upload,settings,rate_mode,&stopping) {
+                                match Cast::new(target, codec, &runtime, &room,amd_profile,upload,settings,rate_mode,&stopping,&evidence) {
                                     Ok(mut value) => {
                                         if let Err(error) = value.set_audio(audio_requested, &runtime, &room) {
                                             state.lock().unwrap().audio_status = crate::i18n_format!("Áudio: {error}","Audio: {error}");
@@ -620,7 +633,7 @@ impl Engine {
                             Command::ShareWindow{adapter,hwnd,pid,codec} if cast.is_none()=>{
                                 recovery=None;recovery_attempts=0;
                                 let target=CaptureTarget::Window{adapter,hwnd,pid};
-                                match Cast::new(target,codec,&runtime,&room,amd_profile,upload,settings,rate_mode,&stopping){
+                                match Cast::new(target,codec,&runtime,&room,amd_profile,upload,settings,rate_mode,&stopping,&evidence){
                                     Ok(mut value)=>{
                                         if let Err(e)=value.set_audio(audio_requested,&runtime,&room){state.lock().unwrap().audio_status=crate::i18n_format!("Áudio: {e}","Audio: {e}");}
                                         let audio_status=if state.lock().unwrap().audio_status.starts_with(crate::i18n::label("Áudio:","Audio:")){None}else{Some(value.audio_status())};
@@ -789,7 +802,7 @@ impl Engine {
                         let (selection, _) = recovery.take().unwrap();
                         recovery_attempts += 1;
                         crate::diagnostics::write("recovery", &format!("Rebuilding GPU pipeline, attempt {recovery_attempts}/3"), "");
-                        match Cast::new(selection.0, selection.1, &runtime, &room,amd_profile,upload,settings,rate_mode,&stopping) {
+                        match Cast::new(selection.0, selection.1, &runtime, &room,amd_profile,upload,settings,rate_mode,&stopping,&evidence) {
                             Ok(mut value) => {
                                 if let Err(error) = value.set_audio(audio_requested, &runtime, &room) {
                                     state.lock().unwrap().audio_status = crate::i18n_format!("Áudio: {error}","Audio: {error}");
@@ -824,6 +837,7 @@ impl Engine {
                             Err(anyhow::anyhow!("Injected capture loss; rebuild GPU pipeline"))
                         } else { tick_result };
                         if let Err(error) = tick_result {
+                            evidence.event(crate::evidence::EventKind::PublicationFailed);
                             let message = format!("{error:#}");
                             crate::diagnostics::write("capture_error", &message, &token);
                             let recoverable = recoverable_capture_error(&message);
@@ -918,14 +932,15 @@ impl Engine {
                         if let Some(value)=&cast {
                             shared.upload=value.upload;shared.quality.encode_caps=value.encoder.as_ref().map(|e|e.capabilities());
                             shared.quality.adaptive_upload=Some(value.rate_control.snapshot());
-                            if send_origin!=Some(value.start){send_origin=Some(value.start);send_meter=Default::default();shared.quality.send=None;shared.quality.applied_encoder=None;}
+                            if send_origin!=Some(value.start){send_origin=Some(value.start);send_meter=Default::default();shared.quality.send=None;shared.quality.applied_encoder=None;shared.quality.encode_window=None;}
                             if let Some(sample)=send_meter.sample(now,value.count,value.sent_bytes){shared.quality.send=Some(sample);}
                             shared.quality.resolution=value.encoder.as_ref().map(|e|e.dimensions());
                             shared.quality.encoder_backend=value.encoder.as_ref().map(|e|e.backend_name());
                             shared.quality.codec=Some(if value.selection.1==Codec::Av1{"AV1"}else{"HEVC"});
                             shared.quality.send_paused=value.paused;shared.quality.encoder_rate_rejected=value.rate_blocked;
-                        }else{shared.quality.encode_caps=None;shared.quality.adaptive_upload=None;shared.quality.encoder_rate_rejected=false;send_origin=None;send_meter=Default::default();shared.quality.send=None;shared.quality.resolution=None;shared.quality.send_paused=false;shared.quality.encoder_backend=None;shared.quality.codec=None;shared.quality.applied_encoder=None;}
+                        }else{shared.quality.encode_window=None;shared.quality.encode_caps=None;shared.quality.adaptive_upload=None;shared.quality.encoder_rate_rejected=false;send_origin=None;send_meter=Default::default();shared.quality.send=None;shared.quality.resolution=None;shared.quality.send_paused=false;shared.quality.encoder_backend=None;shared.quality.codec=None;shared.quality.applied_encoder=None;}
                         if let Some(sample)=receive_meter.sample(now,shared.received,0){shared.quality.receive=Some(sample);}
+                        shared.quality.observe(shared.connected,shared.reconnecting,shared.publishing);
                     }
                     if diagnostic_tick.elapsed() >= Duration::from_secs(5) {
                         if let Some(value)=&mut cast {
@@ -933,6 +948,7 @@ impl Engine {
                                 let feedback=encoder.feedback();
                                 state.lock().unwrap().quality.adaptive_upload=Some(value.rate_control.snapshot());
                                 state.lock().unwrap().quality.applied_encoder=(feedback.bitrate>0&&feedback.fps>0).then_some((feedback.bitrate,feedback.fps));
+                                state.lock().unwrap().quality.encode_window=value.metrics.quality();
                                 let summary=format!("backend={} profile={:?} applied_profile={:?} requested_bps={} applied_bps={} fps={} vbv_bits={:?} vbv_runtime={:?} rate_blocked={} {}",
                                     encoder.backend_name(),value.profile,encoder.profile(),value.last_rate.0,feedback.bitrate,feedback.fps,feedback.vbv_bits,feedback.vbv_runtime,value.rate_blocked,value.metrics.summary_and_reset());
                                 crate::diagnostics::write("encoder_window",&summary,"");state.lock().unwrap().encoder_stats=summary;
@@ -970,11 +986,13 @@ impl Engine {
             })();
             let mut state = state.lock().unwrap();
             crate::diagnostics::write("session_summary", &format!("sent={} received={}", state.sent, state.received), "");
+            evidence.event(crate::evidence::EventKind::Disconnected);
             state.connected = false;
             state.reconnecting=false;state.reception_resetting=false;state.can_publish=false;
             state.publishing = false;
             state.frames.clear();
             state.frozen.clear();
+            if result.is_err(){evidence.event(crate::evidence::EventKind::SessionFailed);}
             state.status = result
                 .err()
                 .map(|e| e.to_string().replace(&token, "[token]"))

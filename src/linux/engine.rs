@@ -49,7 +49,7 @@ pub struct State {
     pub status: String,
     pub participants: Vec<(String, String)>,
     pub screens: Vec<Screen>,
-    pub frames: HashMap<String, (u64, Arc<BoxVideoFrame>)>,
+    pub frames: HashMap<String, (u64, Arc<BoxVideoFrame>,Instant)>,
     pub sent: u64,
     pub received: u64,
     pub audio_received: u64,
@@ -114,7 +114,7 @@ impl Engine {
             let Ok(runtime)=tokio::runtime::Runtime::new() else {shared.lock().unwrap().status=crate::resilience::worker_failure().into();ctx.request_repaint();return;};
             let result = runtime.block_on(session(address, token, rx, shared.clone(), ctx.clone(),stopping));
             if let Err(error) = result {
-                let mut s = shared.lock().unwrap();
+                let mut s = shared.lock().unwrap();s.quality.evidence.event(crate::evidence::EventKind::SessionFailed);
                 s.status = error.to_string();
                 s.connected = false;
                 s.sharing = false;s.selecting=false;s.reconnecting=false;s.reception_resetting=false;s.can_publish=false;
@@ -158,7 +158,7 @@ fn attach_video(track:RemoteVideoTrack,sid:&str,shared:&Arc<Mutex<State>>,ctx:&e
     let task=tokio::spawn(async move{
         while let Some(frame)=stream.next().await {if !enabled_track.enabled(){continue;}#[cfg(test)]
             if reader_stall.load(Ordering::Relaxed){continue;}let w=frame.buffer.width();let h=frame.buffer.height();if !crate::resolution::valid(w,h){continue;}
-            let mut s=state.lock().unwrap();s.received+=1;let sequence=s.received;s.frames.insert(key.clone(),(sequence,Arc::new(frame)));drop(s);repaint.request_repaint();}
+            let mut s=state.lock().unwrap();s.received+=1;let sequence=s.received;s.frames.insert(key.clone(),(sequence,Arc::new(frame),Instant::now()));drop(s);repaint.request_repaint();}
     });
     Sink(task, #[cfg(test)] stall)
 }
@@ -347,9 +347,10 @@ async fn session(
     ctx: egui::Context,
     stopping:crate::room_transition::Cancellation,
 ) -> Result<()> {
+    let evidence=shared.lock().unwrap().quality.evidence.clone();evidence.event(crate::evidence::EventKind::Connecting);
     gstreamer::init()?;
     livekit::webrtc::enable_zero_playout_delay()?;
-    let connection = match stopping.run(network::connect_desktop(&address,&token,std::env::var("HYPERCAST_RELAY_ONLY").as_deref()==Ok("1"),|attempt,_|{shared.lock().unwrap().status=crate::i18n_format!("Tentando conectar novamente… {attempt}/3","Retrying connection… {attempt}/3");ctx.request_repaint();})).await {Some(result)=>result?,None=>return Ok(())};
+    let connection = match stopping.run(network::connect_desktop(&address,&token,std::env::var("HYPERCAST_RELAY_ONLY").as_deref()==Ok("1"),|attempt,_|{evidence.event(crate::evidence::EventKind::ConnectRetry);shared.lock().unwrap().status=crate::i18n_format!("Tentando conectar novamente… {attempt}/3","Retrying connection… {attempt}/3");ctx.request_repaint();})).await {Some(result)=>result?,None=>return Ok(())};
     let (room, mut events) = connection;
     let mut room = Arc::new(room);
     {
@@ -403,7 +404,7 @@ async fn session(
                     Command::StreamSettings(value)=>{if capture.is_none()&&pending.is_none()&&value.valid(){settings=value;}},
                     Command::RestartReception=>{
                         if reception_restart.is_none() && room.connection_state()==ConnectionState::Connected {
-                            recovery.reset();
+                            evidence.event(crate::evidence::EventKind::ManualReceptionReset);recovery.reset();
                             for (_,mut sink) in video_sinks.drain(){sink.0.abort();let _=(&mut sink.0).await;}
                             for (_,mut sink) in audio_sinks.drain(){sink.0.abort();let _=(&mut sink.0).await;}
                             crate::subscription::reset_receivers(&room);
@@ -414,7 +415,8 @@ async fn session(
                     Command::Layout(value)=>{layout=value;volume.store(layout.volume,Ordering::Relaxed);last_refresh=Instant::now()-Duration::from_secs(1);},
                     Command::Share(source,codec,encoder,upload)=>{
                         if pending.is_none() && retiring.is_none() && room.local_participant().permission().is_some_and(|grant|grant.can_publish){
-                            pending=Some(tokio::spawn(async move{let cap=Capture::open_with_settings(source,codec,encoder,upload,settings).await?;Ok((cap,codec))}));
+                            let capture_evidence=evidence.clone();
+                            pending=Some(tokio::spawn(async move{let cap=Capture::open_observed(source,codec,encoder,upload,settings,capture_evidence).await?;Ok((cap,codec))}));
                             let mut s=shared.lock().unwrap();s.selecting=true;s.status=crate::i18n::label("Selecione a tela ou janela no diálogo do sistema","Select a screen or window in the system dialog").into();
                         }
                     },
@@ -500,10 +502,11 @@ async fn session(
                                 if rate_rejected{shared.lock().unwrap().status=crate::i18n::label("O encoder recusou o bitrate. Pare e tente compartilhar novamente.","Encoder rejected the bitrate. Stop and try sharing again.").into();}
                                 shared.lock().unwrap().selecting=retiring.is_some();
                                 send_meter=Default::default();
+                                evidence.event(crate::evidence::EventKind::SourceChanged);
                                 eprintln!("Linux capture: stage=source_switched codec={codec:?}");
                                 if let Some(p)=&mut publisher{p.restart_keyframe();}
                             },
-                            Err(error)=>{shared.lock().unwrap().status=error.to_string();},
+                            Err(error)=>{evidence.event(crate::evidence::EventKind::PublicationFailed);shared.lock().unwrap().status=error.to_string();},
                         }
                     }
                     if reception_restart.is_some_and(|until|Instant::now()>=until){
@@ -569,7 +572,8 @@ async fn session(
                                 let p=publisher.as_mut().unwrap();
                                 p.set_resolution_if_changed(packet.width,packet.height);
                                 if p.take_keyframe_request(){cap.request_keyframe();if !packet.keyframe{continue;}}
-                                match p.push(&packet.bytes,started.elapsed().as_micros() as i64,packet.keyframe){
+                                let submit_started=Instant::now();let submitted=p.push(&packet.bytes,started.elapsed().as_micros() as i64,packet.keyframe);evidence.record(crate::evidence::Stage::SendSubmit,submit_started.elapsed());
+                                match submitted{
                                     Ok(true)=>{let mut state=shared.lock().unwrap();state.sent+=1;sent_bytes+=packet.bytes.len() as u64;state.quality.resolution=Some((packet.width,packet.height));},
                                     Ok(false)=>{},
                                     Err(error)=>{
@@ -583,7 +587,7 @@ async fn session(
                                 }
                             },
                             Ok(None)=>{},
-                            Err(error)=>{shared.lock().unwrap().status=error.to_string();cap.stop().await;capture=None;if let Some(p)=publisher.take(){let _=p.stop().await;}if let Some(a)=audio.take(){a.stop(&room).await;}
+                            Err(error)=>{evidence.event(crate::evidence::EventKind::PublicationFailed);shared.lock().unwrap().status=error.to_string();cap.stop().await;capture=None;if let Some(p)=publisher.take(){let _=p.stop().await;}if let Some(a)=audio.take(){a.stop(&room).await;}
                                 publication_format=None;last_video_bps=None;transmit_paused=false;rate_control=None;rate_rejected=false;
                                 shared.lock().unwrap().sharing=false;},
                         }
@@ -601,12 +605,13 @@ async fn session(
                 let now=Instant::now();let mut state=shared.lock().unwrap();
                 if capture.is_some(){if let Some(sample)=send_meter.sample(now,state.sent,sent_bytes){state.quality.send=Some(sample);}}
                 else{send_meter=Default::default();state.quality.send=None;state.quality.resolution=None;}
-                state.quality.encode_caps=capture.as_ref().map(|c|c.capabilities);
+                state.quality.encode_caps=capture.as_ref().map(|c|c.capabilities);state.quality.pipeline_counts=capture.as_ref().map(|c|c.frame_counts());
                 state.quality.encoder_backend=capture.as_ref().and_then(|c|match c.backend.as_str(){"nvh265enc"=>Some("nvh265enc"),"nvav1enc"=>Some("nvav1enc"),"x265enc"=>Some("x265enc"),"vah265enc"=>Some("vah265enc"),"vaav1enc"=>Some("vaav1enc"),_=>None});
                 state.quality.codec=capture.as_ref().map(|_|if current_codec==Codec::Av1{"AV1"}else{"HEVC"});
                 state.quality.send_paused=capture.is_some()&&transmit_paused;state.quality.encoder_rate_rejected=capture.is_some()&&rate_rejected;
                 state.quality.adaptive_upload=capture.as_ref().and_then(|_|rate_control.as_ref().map(|c|c.snapshot()));
                 if let Some(sample)=receive_meter.sample(now,state.received,0){state.quality.receive=Some(sample);}
+                state.quality.observe(state.connected,state.reconnecting,state.sharing);
             }
             ctx.request_repaint();
         }
@@ -633,7 +638,7 @@ async fn session(
     drop(room);
     {
         let mut s = shared.lock().unwrap();
-        s.connected = false;
+        evidence.event(crate::evidence::EventKind::Disconnected);s.connected = false;
         s.sharing = false;
         s.selecting = false;
         s.frames.clear();
@@ -685,7 +690,7 @@ mod reception_tests {
             let deadline=Instant::now()+Duration::from_secs(15);
             let sid=loop {
                 let ready={let s=publisher.state.lock().unwrap();s.sharing&&!s.selecting};
-                let fresh={let s=viewer.state.lock().unwrap();s.screens.iter().find_map(|screen|s.frames.get(&screen.sid).filter(|_|step<2 || previous_sid.as_ref()!=Some(&screen.sid)).filter(|(sequence,frame)|*sequence>before+3 && frame.buffer.width()==w && frame.buffer.height()==h).map(|_|screen.sid.clone()))};
+                let fresh={let s=viewer.state.lock().unwrap();s.screens.iter().find_map(|screen|s.frames.get(&screen.sid).filter(|_|step<2 || previous_sid.as_ref()!=Some(&screen.sid)).filter(|(sequence,frame,_)|*sequence>before+3 && frame.buffer.width()==w && frame.buffer.height()==h).map(|_|screen.sid.clone()))};
                 if ready{if let Some(sid)=fresh{break sid;}}
                 if Instant::now()>=deadline {let p=publisher.state.lock().unwrap();let v=viewer.state.lock().unwrap();anyhow::bail!("Switch {step} did not deliver fresh {w}x{h} frames: publisher={}, sent={}, viewer={}, received={}, screens={}",p.status,p.sent,v.status,v.received,v.screens.len());}
                 std::thread::sleep(Duration::from_millis(25));

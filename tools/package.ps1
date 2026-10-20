@@ -6,9 +6,10 @@ if (-not $SkipBuild) { & "$PSScriptRoot/cargo-native.ps1" build --release --lock
 python "$PSScriptRoot/collect_licenses.py"
 if ($LASTEXITCODE -ne 0) { throw 'Dependency notice collection failed' }
 $hcDist = "$hcRoot/dist"
-$hcStage = "$hcDist/HyperCast-0.9.0-windows-x64"
+$hcStage = "$hcDist/HyperCast-0.9.1-windows-x64"
 # No recursive cleanup: stage a fixed allowlist and refuse stale unexpected files.
-New-Item -ItemType Directory -Force "$hcStage/licenses" | Out-Null
+New-Item -ItemType Directory -Force "$hcStage/licenses","$hcStage/support" | Out-Null
+Copy-Item -LiteralPath "$hcRoot/tools/latency-reference.html","$hcRoot/docs/latency-validation.md","$hcRoot/docs/technical-report.md" -Destination "$hcStage/support"
 Copy-Item -LiteralPath "$hcRoot/target/x86_64-pc-windows-msvc/release/hypercast.exe" -Destination $hcStage
 Copy-Item -LiteralPath "$PSScriptRoot/Test-Streaming.ps1" -Destination $hcStage
 Copy-Item -LiteralPath "$PSScriptRoot/Test-Publisher.cmd","$PSScriptRoot/Test-Viewer.cmd" -Destination $hcStage
@@ -35,8 +36,8 @@ foreach ($hcLicense in @('COPYING.GPLv3','COPYING.LGPLv3')) {
     if (-not (Test-Path -LiteralPath $hcFile)) { Invoke-WebRequest "https://raw.githubusercontent.com/FFmpeg/FFmpeg/7e93014c5b/$hcLicense" -OutFile $hcFile }
     Copy-Item -LiteralPath $hcFile -Destination "$hcStage/licenses/$hcLicense.txt"
 }
-$hcZip = "$hcDist/HyperCast-0.9.0-windows-x64-portable.zip"
-$hcAllowed = @('hypercast.exe','Test-Streaming.ps1','Test-Publisher.cmd','Test-Viewer.cmd','avcodec-63.dll','avutil-61.dll','swresample-7.dll',
+$hcZip = "$hcDist/HyperCast-0.9.1-windows-x64-portable.zip"
+$hcAllowed = @('support/latency-reference.html','support/latency-validation.md','support/technical-report.md','hypercast.exe','Test-Streaming.ps1','Test-Publisher.cmd','Test-Viewer.cmd','avcodec-63.dll','avutil-61.dll','swresample-7.dll',
     'licenses/LICENSE','licenses/THIRD_PARTY.md','licenses/portable.md','licenses/updates.md','licenses/room-creation.md','licenses/amd.md','licenses/video-quality.md',
     'licenses/FFmpeg-LGPL-3.0.txt','licenses/LiveKit-NOTICE.md','licenses/WebRTC-LICENSE.md',
     'licenses/AMF-LICENSE.txt','licenses/nvEncodeAPI.h','licenses/FFmpeg-build.txt','licenses/COPYING.GPLv3.txt',
@@ -51,5 +52,5 @@ $hcIscc = $hcIsccCandidates | Where-Object { Test-Path -LiteralPath $_ } | Selec
 if (-not $hcIscc) { throw 'Install Inno Setup: winget install --id JRSoftware.InnoSetup --exact' }
 & $hcIscc "/DStageDir=$hcStage" "/DOutDir=$hcDist" "$hcRoot/installer/HyperCast.iss"
 if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed' }
-Get-FileHash -Algorithm SHA256 -LiteralPath $hcZip,"$hcDist/HyperCast-0.9.0-windows-x64-setup.exe" | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path -Leaf $_.Path)" } | Set-Content -Encoding ascii "$hcDist/SHA256SUMS.txt"
+Get-FileHash -Algorithm SHA256 -LiteralPath $hcZip,"$hcDist/HyperCast-0.9.1-windows-x64-setup.exe" | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path -Leaf $_.Path)" } | Set-Content -Encoding ascii "$hcDist/SHA256SUMS.txt"
 Write-Output "Portable archive and per-user installer generated in $hcDist"

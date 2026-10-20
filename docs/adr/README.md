@@ -18,3 +18,5 @@ Em 2026-10-20 foi implementado o primeiro incremento de [qualidade adaptativa de
 Em 2026-10-20 foi implementado o primeiro incremento de [capacidades de encode](../encoder-capabilities.md) (0005): consultas por backend, bloqueios somente para incompatibilidades conhecidas e diagnóstico de limites. A matriz física de compatibilidade permanece aberta.
 
 Em 2026-10-20 o [incremento de preferências](../preferences.md) (0006) acrescentou codec/perfil AMD, preservação de arquivos de versão desconhecida, coordenação de gravações e restauração pela interface.
+
+Em 2026-10-20 a 0.9.1 reuniu esses incrementos e a instrumentação de fronteiras CPU do ADR 0004. O procedimento e a referência visual acompanham os pacotes; comprovação sub-100 ms e validação física AMD/Bazzite continuam pendentes.

@@ -23,20 +23,34 @@ def main():
         env={**base,'HYPERCAST_ROOM_TOKEN':token(name=='publisher'),'HYPERCAST_URL':'wss://hypercast.cloudlane.com.br',**(extra or {})}
         names=[n+'/u' for n in env if n.startswith('HYPERCAST_') or n=='XDG_CACHE_HOME'];env['WSLENV']=':'.join(names)
         file=(ROOT/'.tools'/f'linux-{name}.log').open('wb');logs.append(file)
-        child=subprocess.Popen(['wsl','-d','Ubuntu','--',*args],env=env,stdout=file,stderr=subprocess.STDOUT);children.append(child);return child
+        child=subprocess.Popen(['wsl','-d',os.environ.get('HYPERCAST_WSL_DISTRO','Ubuntu-24.04'),'--',*args],env=env,stdout=file,stderr=subprocess.STDOUT);children.append(child);return child
     try:
-        linux=launch_linux('receiver',command('--receive-url','wss://hypercast.cloudlane.com.br','--seconds','17'))
-        gui=launch_linux('gui',['xvfb-run','-a',*command('--gui')],{'HYPERCAST_AUTO_CONNECT':'1','HYPERCAST_SMOKE_SECONDS':'15','HYPERCAST_AUDIO_TEST_SILENT_OUTPUT':'1','XDG_CACHE_HOME':gui_cache_linux})
+        linux=launch_linux('receiver',command('--receive-url','wss://hypercast.cloudlane.com.br','--seconds','60'))
+        gui=launch_linux('gui',['xvfb-run','-a',*command('--gui')],{'HYPERCAST_AUTO_CONNECT':'1','HYPERCAST_SMOKE_SECONDS':'60','HYPERCAST_AUDIO_TEST_SILENT_OUTPUT':'1','XDG_CACHE_HOME':gui_cache_linux})
         windows=Path(os.environ.get('HYPERCAST_WINDOWS_EXE',str(ROOT/'dist/HyperCast-0.6.5-windows-x64/hypercast.exe')))
         file=(ROOT/'.tools/linux-windows.log').open('wb');logs.append(file)
-        child=subprocess.Popen([str(windows),'--receive-url','wss://hypercast.cloudlane.com.br','--seconds','17'],env={**base,'HYPERCAST_ROOM_TOKEN':token(False)},stdout=file,stderr=subprocess.STDOUT);children.append(child)
+        child=subprocess.Popen([str(windows),'--receive-url','wss://hypercast.cloudlane.com.br','--seconds','60'],env={**base,'HYPERCAST_ROOM_TOKEN':token(False)},stdout=file,stderr=subprocess.STDOUT);children.append(child)
         if os.environ.get('HYPERCAST_LINUX_TEST_SIZE'):
             file=(ROOT/'.tools/linux-windows-gui.log').open('wb');logs.append(file)
-            viewer=subprocess.Popen([str(windows),'--gui'],env={**base,'HYPERCAST_ROOM_TOKEN':token(False),'HYPERCAST_URL':'wss://hypercast.cloudlane.com.br','HYPERCAST_AUTO_CONNECT':'1','HYPERCAST_SMOKE_SECONDS':'15','HYPERCAST_SMOKE_RECONNECT':'1','HYPERCAST_NAME':'SyntheticViewer'},stdout=file,stderr=subprocess.STDOUT);children.append(viewer)
+            viewer=subprocess.Popen([str(windows),'--gui'],env={**base,'HYPERCAST_ROOM_TOKEN':token(False),'HYPERCAST_URL':'wss://hypercast.cloudlane.com.br','HYPERCAST_AUTO_CONNECT':'1','HYPERCAST_SMOKE_SECONDS':'60','HYPERCAST_SMOKE_RECONNECT':'1','HYPERCAST_NAME':'SyntheticViewer'},stdout=file,stderr=subprocess.STDOUT);children.append(viewer)
+        # Cold AppImage extraction/WSL startup must not consume the entire
+        # Windows diagnostic window before the publisher exists. Wait for all
+        # receivers in the scoped room; fixed sleeps hid this timing assumption.
+        operator=rt.sign({'iss':key,'sub':'readiness-check','nbf':now-5,'exp':now+180,'video':{'roomList':True}},secret)
+        expected=4 if os.environ.get('HYPERCAST_LINUX_TEST_SIZE') else 3
+        deadline=time.monotonic()+35
+        while True:
+            request=urllib.request.Request('https://hypercast.cloudlane.com.br/twirp/livekit.RoomService/ListRooms',data=json.dumps({'names':[room]}).encode(),headers={'Content-Type':'application/json','Authorization':'Bearer '+operator,'User-Agent':'HyperCast-Test'})
+            with urllib.request.urlopen(request,timeout=10) as response:rooms=json.load(response).get('rooms',[])
+            if any(r.get('num_participants',0)>=expected for r in rooms):break
+            assert all(c.poll() is None for c in children),'A receiver exited before publication readiness'
+            assert time.monotonic()<deadline,'Receivers did not join the scoped room'
+            time.sleep(.3)
+        print('All test receivers joined before publication',flush=True)
         time.sleep(3)
         pub=launch_linux('publisher',command('--linux-publish-test-url','wss://hypercast.cloudlane.com.br','--seconds','11'),{n:os.environ[n] for n in ('HYPERCAST_LINUX_TEST_GPU','HYPERCAST_LINUX_TEST_CODEC','HYPERCAST_LINUX_TEST_SIZE','HYPERCAST_LINUX_TEST_UPLOAD_MBPS') if n in os.environ})
         for child in children:
-            code=child.wait(timeout=55);assert code==0,f'A media client failed with exit {code}; inspect local logs without credentials'
+            code=child.wait(timeout=90);assert code==0,f'A media client failed with exit {code}; inspect local logs without credentials'
         for file in logs:file.close()
         if binary.endswith('.AppImage'):
             (ROOT/'.tools/linux-gui.log').write_bytes((gui_cache/'hypercast/hypercast.log').read_bytes())
@@ -49,6 +63,14 @@ def main():
         assert received>100,'Linux did not decode HEVC'
         result=re.search(r'Linux GUI smoke: (\d+) received, (\d+) textures',read('gui'));assert result and int(result[1])>100 and int(result[2])>0,'Linux did not render received video'
         assert int(re.search(r'audio=(\d+)',read('gui'))[1])>100,'Linux did not decode audio'
+        def evidence_report(output):
+            line=next(line for line in output.splitlines() if line.startswith('GUI technical report: '))
+            report=json.loads(line.removeprefix('GUI technical report: '));assert report['end_to_end_latency_ms'] is None
+            return report['evidence']['stages']
+        linux_stages=evidence_report(read('gui'))
+        assert linux_stages['render_prepare_cpu']['samples']>0 and linux_stages['reader_to_render_start']['samples']>0,'Linux GUI timing evidence missing'
+        assert linux_stages['present_call'] is None,'Linux texture staging must not claim physical presentation timing'
+
         windows_log=(ROOT/'.tools/linux-windows.log').read_text(encoding='utf-8',errors='replace')
         assert int(re.search(r'Receiver GPU: (\d+) D3D11 texture frames',windows_log)[1])>100,'Windows did not receive Linux HEVC in GPU'
         assert int(re.search(r'Linux synthetic publisher: (\d+) frames',read('publisher'))[1])>100,'Linux publication failed'
@@ -61,6 +83,9 @@ def main():
             match=re.search(r'GUI smoke: (\d+) received, (\d+) GPU presentations',output)
             assert match and int(match[2])>50,'Windows did not present ultrawide D3D11 frames'
             assert 'GUI lifecycle: 0 retained GPU decoder surfaces after disconnect' in output,'Windows decoder surfaces survived teardown'
+            windows_stages=evidence_report(output)
+            assert windows_stages['present_call']['samples']>0 and windows_stages['reader_to_render_start']['samples']>0,'Windows presentation timing evidence missing'
+
         if os.environ.get('HYPERCAST_LINUX_TEST_SIZE')=='4587x1920':
             assert any(size in windows_log for size in ('4586x1920','4588x1920')),'Windows did not decode the nearest even ultrawide size'
             assert any(size in (read('receiver')+read('gui')) for size in ('4586x1920','4588x1920')),'Linux did not decode the nearest even ultrawide size'

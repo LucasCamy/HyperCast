@@ -4,6 +4,10 @@ use std::time::Duration;
 pub struct Throughput {pub fps:f64,pub mbps:f64}
 #[derive(Clone,Debug,Default)]
 pub struct QualitySnapshot {
+    #[cfg(feature="desktop")]
+    pub evidence:crate::evidence::Evidence,
+    pub encode_window:Option<EncodeQuality>,
+    pub pipeline_counts:Option<[u64;4]>,
     pub encode_caps:Option<crate::encode_caps::EncodeCaps>,
     pub adaptive_upload:Option<crate::adaptive_upload::Snapshot>,
     pub encoder_rate_rejected:bool,
@@ -25,6 +29,8 @@ impl TrafficMeter {
         Some(Throughput{fps:(frames-old_frames) as f64/elapsed,mbps:(bytes-old_bytes) as f64*8.0/elapsed/1_000_000.0})
     }
 }
+#[derive(Clone,Copy,Debug)]
+pub struct EncodeQuality {pub frames:u64,pub bytes:u64,pub keys:u64,pub requested_keys:u64,pub max_frame_bytes:usize,pub qp_avg:Option<f64>,pub qp_samples:u64}
 #[derive(Default)]
 pub struct EncodeWindow {
     durations:Vec<u64>,frames:u64,bytes:u64,keys:u64,requested_keys:u64,max_bytes:usize,qp_sum:u64,qp_samples:u64,
@@ -33,8 +39,9 @@ impl EncodeWindow {
     pub fn record(&mut self,elapsed:Duration,bytes:usize,key:bool,requested_key:bool,qp:Option<u32>) {
         if self.durations.len()<1200 {self.durations.push(elapsed.as_micros().min(u64::MAX as u128) as u64);}
         self.frames+=1;self.bytes+=bytes as u64;self.keys+=u64::from(key);self.requested_keys+=u64::from(requested_key);self.max_bytes=self.max_bytes.max(bytes);
-        if let Some(qp)=qp{self.qp_sum+=qp as u64;self.qp_samples+=1;}
+        if let Some(qp)=qp.filter(|v|*v<=255){self.qp_sum+=qp as u64;self.qp_samples+=1;}
     }
+    pub fn quality(&self)->Option<EncodeQuality>{(self.frames>0).then(||EncodeQuality{frames:self.frames,bytes:self.bytes,keys:self.keys,requested_keys:self.requested_keys,max_frame_bytes:self.max_bytes,qp_avg:(self.qp_samples>0).then(||self.qp_sum as f64/self.qp_samples as f64),qp_samples:self.qp_samples})}
     pub fn summary_and_reset(&mut self)->String {
         self.durations.sort_unstable();
         let percentile=|p:usize|self.durations.get(self.durations.len().saturating_sub(1)*p/100).copied().unwrap_or(0) as f64/1000.0;
@@ -80,10 +87,13 @@ pub fn technical_report(q:&QualitySnapshot,state:ReportState,settings:crate::res
         "session":{"connected":state.connected,"reconnecting":state.reconnecting,"publishing":state.publishing,"receive_restarts":state.restarts},
         "requested":{"resolution":match settings.size{crate::resolution::OutputSize::Native=>"native",crate::resolution::OutputSize::FullHd=>"1080p",crate::resolution::OutputSize::QuadHd=>"1440p"},"fps":settings.fps,"video_bitrate_ceiling_bps":upload.bps()},
         "video":{"encoder":q.encoder_backend.filter(|v|matches!(*v,"NVENC"|"AMF"|"nvh265enc"|"nvav1enc"|"x265enc"|"vaav1enc"|"vah265enc")),"codec":q.codec.filter(|v|matches!(*v,"HEVC"|"AV1")),"accepted_encoder_config":q.applied_encoder.map(|(bps,fps)|serde_json::json!({"bitrate_bps":bps,"fps":fps})),"encoded_resolution":q.resolution,"send_paused":q.send_paused,"sent_frames":state.sent,"received_sink_frames":state.received,"send_fps":q.send.and_then(|v|number(v.fps)),"send_encoded_mbps":q.send.and_then(|v|number(v.mbps)),"receive_sink_fps":q.receive.and_then(|v|number(v.fps))},
+        "last_encode_window":q.encode_window.map(|v|serde_json::json!({"nominal_interval_seconds":5,"frames":v.frames,"bytes":v.bytes,"keyframes":v.keys,"requested_keys":v.requested_keys,"max_frame_bytes":v.max_frame_bytes,"qp_average":v.qp_avg.and_then(number),"qp_samples":v.qp_samples})),
         "encode_capabilities":q.encode_caps.map(|c|serde_json::json!({"source":if cfg!(target_os="linux"){"gstreamer_element_caps"}else{"driver"},"surface_height_alignment":(1..=4096).contains(&c.align_height).then_some(c.align_height),"support":match c.support{1=>Some(true),2=>Some(false),_=>None},"min_width":(1..=32768).contains(&c.min_width).then_some(c.min_width),"min_height":(1..=32768).contains(&c.min_height).then_some(c.min_height),"max_width":(1..=32768).contains(&c.max_width).then_some(c.max_width),"max_height":(1..=32768).contains(&c.max_height).then_some(c.max_height),"max_fps":(1..=1000).contains(&c.max_fps).then_some(c.max_fps),"dynamic_bitrate":match c.dynamic_bitrate{1=>Some(true),2=>Some(false),_=>None},"decode_support":serde_json::Value::Null,"performance_validated":false})),
         "encoder_rate_rejected":q.encoder_rate_rejected,
         "adaptive_upload":q.adaptive_upload.map(|a|serde_json::json!({"mode":match a.mode{crate::adaptive_upload::Mode::Manual=>"manual",crate::adaptive_upload::Mode::Automatic=>"automatic"},"ceiling_bps":a.ceiling,"network_limit_bps":a.network,"target_bps":a.target,"reductions":a.reductions,"increases":a.increases})),
         "automatic_recovery":{"observed":q.automatic_recovery.observed,"mapped":q.automatic_recovery.mapped,"recovering":q.automatic_recovery.recovering,"exhausted":q.automatic_recovery.exhausted,"actions":q.automatic_recovery.actions,"reader_stalls":q.automatic_recovery.reader_stalls,"decoder_stalls":q.automatic_recovery.decoder_stalls,"unmapped_samples":q.automatic_recovery.unmapped},
+        "evidence":q.evidence.report(),
+        "gstreamer_pipeline_frames":q.pipeline_counts.map(|c|serde_json::json!({"scope":"current_capture_cumulative","source":c[0],"encoder_input":c[1],"encoded_sink":c[2],"delivered":c[3]})),
         "network":network,"end_to_end_latency_ms":serde_json::Value::Null,
         "notes":["RTT is not end-to-end latency","Accepted encoder settings are not measured throughput","RTP counters and average decode time are cumulative across current receivers","Missing or unsupported measurements are null","No tokens, addresses, room names or participant names are included"]
     })).unwrap_or_else(|_|"{}".into())
@@ -93,7 +103,12 @@ pub fn technical_report(q:&QualitySnapshot,state:ReportState,settings:crate::res
     #[test]fn export_allowlist_excludes_untrusted_strings_and_invalid_numbers(){
         let q=QualitySnapshot{encoder_backend:Some("Bearer PRIVATE-SECRET"),codec:Some("room-private"),send:Some(Throughput{fps:f64::NAN,mbps:f64::INFINITY}),network:Some(VideoNetwork{rtt_ms:Some(-1.0),..Default::default()}),..Default::default()};
         let text=technical_report(&q,ReportState{connected:true,reconnecting:false,publishing:false,sent:0,received:0,restarts:2},Default::default(),Default::default());
-        assert!(!text.contains("PRIVATE-SECRET"));assert!(!text.contains("room-private"));assert!(text.len()<4096);
+        assert!(!text.contains("PRIVATE-SECRET"));assert!(!text.contains("room-private"));assert!(text.len()<32768);
         let v:serde_json::Value=serde_json::from_str(&text).unwrap();assert_eq!(v["schema"],1);assert!(v["video"]["send_fps"].is_null());assert!(v["network"]["rtt_ms"].is_null());assert!(v["network"]["video_rtp"].is_null());assert!(v["end_to_end_latency_ms"].is_null());
     }
+}
+
+#[cfg(feature="desktop")]
+impl QualitySnapshot {
+    pub fn observe(&self,connected:bool,reconnecting:bool,publishing:bool){self.evidence.observe(crate::evidence::Observation{connected,reconnecting,publishing,paused:self.send_paused,rejected:self.encoder_rate_rejected,bitrate:self.adaptive_upload.map_or(0,|a|a.target),repairs:self.automatic_recovery.actions});}
 }

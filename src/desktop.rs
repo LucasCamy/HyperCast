@@ -719,6 +719,7 @@ impl eframe::App for App {
                 if self.token.is_empty() { status.clone() } else { status.replace(&self.token, "[token]") }
             );
             println!("GUI throughput: sent_fps={:.1} sent_mbps={:.3} received_fps={:.1}",quality.send.map_or(0.0,|r|r.fps),quality.send.map_or(0.0,|r|r.mbps),quality.receive.map_or(0.0,|r|r.fps));
+            println!("GUI technical report: {}",crate::video_metrics::technical_report(&quality,crate::video_metrics::ReportState{connected,reconnecting,publishing,sent,received,restarts:self.engine.as_ref().map_or(0,|e|e.shared.lock().unwrap().reception_restarts)},self.stream_settings,self.upload).replace('\n',""));
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
@@ -1119,6 +1120,8 @@ impl eframe::App for App {
                                     visible.push((*identity).clone());
                                     continue;
                                 }
+                                let present_started=Instant::now();
+                                if let Some(at)=frame.delivered_at(){quality.evidence.record(crate::evidence::Stage::ReaderToRender,present_started.saturating_duration_since(at));}
                                 // SAFETY: frame Arc owns the decoder surface until the GPU fence completes.
                                 if let Err(error) = unsafe {
                                     presenter.frame(
@@ -1136,6 +1139,7 @@ impl eframe::App for App {
                                     self.last_presented
                                         .insert((*identity).clone(), (Arc::clone(frame), bounds));
                                 }
+                                quality.evidence.record(crate::evidence::Stage::PresentCall,present_started.elapsed());
                                 visible.push((*identity).clone());
                             }
                         } else {

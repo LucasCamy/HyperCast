@@ -10,6 +10,16 @@ use std::{
     time::Duration,
 };
 
+// GstVideoEncoder can shift PTS (NVENC uses a minimum of 1000 hours) and
+// adjusts its output SEGMENT by the same amount. Compare exact running-time
+// timestamps through each pad's declared segment; never infer an offset from
+// frame order or change the timestamps carried by the media pipeline.
+fn evidence_running_time(pad:&gst::Pad, buffer:&gst::BufferRef)->Option<u64>{
+    let event=pad.sticky_event::<gst::event::Segment>(0)?;
+    let segment=event.segment().downcast_ref::<gst::ClockTime>()?;
+    segment.to_running_time(buffer.pts()?).map(|time|time.nseconds())
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Codec {
     Hevc,
@@ -106,6 +116,7 @@ pub struct Capture {
     pub fps: u32,
     pub bitrate_limit:u32,
     pub capabilities:crate::encode_caps::EncodeCaps,
+    pub evidence:crate::evidence::Evidence,
     ready: Option<Packet>,
     counters:std::sync::Arc<CaptureCounters>,
     last_report:std::time::Instant,
@@ -126,6 +137,9 @@ impl Capture {
         Self::open_with_settings(source,codec,encoder,upload,Default::default()).await
     }
     pub async fn open_with_settings(source:Source,codec:Codec,encoder:Encoder,upload:crate::bandwidth::UploadProfile,settings:crate::resolution::StreamSettings)->Result<Self>{
+        Self::open_observed(source,codec,encoder,upload,settings,Default::default()).await
+    }
+    pub async fn open_observed(source:Source,codec:Codec,encoder:Encoder,upload:crate::bandwidth::UploadProfile,settings:crate::resolution::StreamSettings,evidence:crate::evidence::Evidence)->Result<Self>{
         ensure!(settings.valid(),"Unsupported frame rate");
         eprintln!("Linux capture: stage=init source={source:?} codec={codec:?} encoder={encoder:?}");
         gst::init()?;
@@ -219,9 +233,13 @@ impl Capture {
                 (format!("videotestsrc is-live=true pattern=ball ! video/x-raw,width={w},height={h}"),None,None)
             },
         };
-        Self::open_pipeline_settings(description,lease,fd,codec,encoder,upload,settings).await
+        Self::open_pipeline_observed(description,lease,fd,codec,encoder,upload,settings,evidence).await
     }
+    #[cfg(test)]
     async fn open_pipeline_settings(description:String,lease:Option<PortalLease>,fd:Option<OwnedFd>,codec:Codec,encoder:Encoder,upload:crate::bandwidth::UploadProfile,settings:crate::resolution::StreamSettings)->Result<Self>{
+        Self::open_pipeline_observed(description,lease,fd,codec,encoder,upload,settings,Default::default()).await
+    }
+    async fn open_pipeline_observed(description:String,lease:Option<PortalLease>,fd:Option<OwnedFd>,codec:Codec,encoder:Encoder,upload:crate::bandwidth::UploadProfile,settings:crate::resolution::StreamSettings,evidence:crate::evidence::Evidence)->Result<Self>{
         ensure!(settings.valid(),"Unsupported frame rate");
         let (max_w,max_h)=settings.size.limits();
         let fps = if encoder == Encoder::Software {
@@ -270,11 +288,15 @@ impl Capture {
         // KWin screen casts offer only 2..4 buffers; pipewiresrc 1.0.5
         // defaults to a minimum of eight. Copy before downstream queues keep
         // references so a small compositor pool can recycle immediately.
+        let correlation=std::sync::Arc::new(std::sync::Mutex::new(crate::evidence::Correlation::default()));
         for source in pipeline.iterate_sources().into_iter() {
             let source=source.map_err(|_|anyhow::anyhow!("Capture source enumeration failed"))?;
             if let Some(pad)=source.static_pad("src") {
                 let count=counters.clone();
-                pad.add_probe(gst::PadProbeType::BUFFER,move|_,_|{count.source.fetch_add(1,std::sync::atomic::Ordering::Relaxed);gst::PadProbeReturn::Ok});
+                let timing=correlation.clone();
+                pad.add_probe(gst::PadProbeType::BUFFER,move|pad,info|{count.source.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
+                    if let Some(gst::PadProbeData::Buffer(buffer))=&info.data{if let Some(pts)=evidence_running_time(pad,buffer){if let Ok(mut t)=timing.lock(){t.input(false,pts,std::time::Instant::now());}}}
+                    gst::PadProbeReturn::Ok});
             }
             if source.factory().is_some_and(|factory|factory.name()=="pipewiresrc") {
                 source.set_property("min-buffers",2_i32);
@@ -292,8 +314,10 @@ impl Capture {
         for (pad,is_input) in [(encoder_element.static_pad("sink"),true),(sink.static_pad("sink"),false)] {
             if let Some(pad)=pad {
                 let count=counters.clone();
-                pad.add_probe(gst::PadProbeType::BUFFER,move|_,_|{
+                let timing=correlation.clone();let metrics=evidence.clone();
+                pad.add_probe(gst::PadProbeType::BUFFER,move|pad,info|{
                     if is_input{count.input.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}else{count.encoded.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}
+                    if let Some(gst::PadProbeData::Buffer(buffer))=&info.data{if let Some(pts)=evidence_running_time(pad,buffer){if let Ok(mut t)=timing.lock(){if is_input{t.input(true,pts,std::time::Instant::now());}else{t.output(pts,std::time::Instant::now(),&metrics);}}}else if !is_input{metrics.missing_correlation();}}
                     gst::PadProbeReturn::Ok
                 });
             }
@@ -372,7 +396,7 @@ impl Capture {
             _fd: fd,
             backend: chain.split_whitespace().next().unwrap_or("encoder").into(),
             fps,
-            bitrate_limit,capabilities,
+            bitrate_limit,capabilities,evidence,
             ready: None,
             counters,
             last_report:std::time::Instant::now(),
@@ -411,6 +435,7 @@ impl Capture {
         }
         Ok(result)
     }
+    pub fn frame_counts(&self)->[u64;4]{let c=&self.counters;let o=std::sync::atomic::Ordering::Relaxed;[c.source.load(o),c.input.load(o),c.encoded.load(o),c.delivered.load(o)]}
     pub fn poll(&mut self) -> Result<Option<Packet>> {
         if self.last_report.elapsed()>=Duration::from_secs(5) {
             let c=&self.counters;let order=std::sync::atomic::Ordering::Relaxed;
@@ -525,6 +550,9 @@ mod pipewire_tests {
                     let until=std::time::Instant::now()+Duration::from_secs(4);
                     loop {if let Some(packet)=capture.poll()?{if last.is_none_or(|at|packet.timestamp_us>at){last=Some(packet.timestamp_us);break;}}ensure!(std::time::Instant::now()<until,"No media after reconfiguration");tokio::time::sleep(Duration::from_millis(2)).await;}
                 }
+                let report=capture.evidence.report();let samples=report["stages"]["gst_encoder_input_to_encoded_sink"]["samples"].as_u64().unwrap_or(0);
+                eprintln!("Evidence native: backend={} encoder_timing_samples={} correlation_misses={}",capture.backend,samples,report["correlation_misses"]);
+                if capture.backend.starts_with("nv"){ensure!(samples>0,"No exact-PTS encoder timing evidence on the synthetic NVENC pipeline");}
                 ensure!(controller.snapshot().increases>0,"No gradual recovery exercised");capture.stop().await;
             }Ok(())
         })

@@ -215,4 +215,8 @@ Capturas HDR em scRGB/FP16 são convertidas na GPU para SDR antes do NVENC; a tr
 
 ## Estabilidade e preferências — 0.9.0
 
-[Plano e andamento](docs/0.9.0.md), com [decisões de arquitetura e critérios de aceite](docs/adr/README.md). O escopo mínimo inclui recuperação de falhas, nova tentativa de conexão, [preferências salvas](docs/preferences.md) e [relatório técnico](docs/technical-report.md). No código posterior à release, estão em desenvolvimento a [recuperação automática por faixa](docs/reception-recovery.md) e o [controle adaptativo de bitrate](docs/adaptive-upload.md), com escopo e limitações documentados.
+[Plano e andamento](docs/0.9.0.md), com [decisões de arquitetura e critérios de aceite](docs/adr/README.md). O escopo mínimo inclui recuperação de falhas, nova tentativa de conexão, [preferências salvas](docs/preferences.md) e [relatório técnico](docs/technical-report.md). A versão 0.9.1 incorpora a [recuperação automática por faixa](docs/reception-recovery.md) e o [controle adaptativo de bitrate](docs/adaptive-upload.md), com escopo e limitações documentados.
+
+## Evidências e estabilidade — 0.9.1
+
+[Notas da versão](docs/0.9.1.md). O relatório inclui durações observáveis, eventos limitados e indicadores de qualidade, com [limites documentados](docs/technical-report.md). A [referência visual](docs/latency-validation.md) acompanha os pacotes para medição posterior. Não há nova comprovação de latência fim a fim nem validação física AMD/Bazzite.

@@ -42,6 +42,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="hypercast-appimage-") as temp:
         stage=Path(temp)/"HyperCast.AppDir";libdir=stage/"usr/lib";bindir=stage/"usr/bin";plugins=libdir/"gstreamer-1.0";licenses=stage/"usr/share/hypercast/licenses"
         for folder in (libdir,bindir,plugins,licenses):folder.mkdir(parents=True,exist_ok=True)
+        support=stage/"usr/share/hypercast/support";support.mkdir(parents=True)
+        for item in ("tools/latency-reference.html","docs/latency-validation.md","docs/technical-report.md"):shutil.copy2(ROOT/item,support/Path(item).name)
         shutil.copy2(args.binary,bindir/"hypercast");(bindir/"hypercast").chmod(0o755)
         seen=set();packages=set();pluginroot=Path("/usr/lib/x86_64-linux-gnu/gstreamer-1.0")
         media=args.media_prefix.resolve() if args.media_prefix else None
