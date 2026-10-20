@@ -192,3 +192,23 @@ pub fn network_summary(ui:&mut egui::Ui,q:&crate::video_metrics::QualitySnapshot
     }else{ui.small(crate::i18n::label("Métricas da rede ainda indisponíveis","Network measurements not available yet"));}
     ui.small(crate::i18n::label("RTT não representa a latência fim a fim.","RTT does not represent end-to-end latency."));
 }
+
+/// Explicit scope and inline confirmation; reset is local and never joins/shares.
+pub fn preferences_controls(ui:&mut egui::Ui,store:&mut crate::preferences::Store,idle:bool)->bool {
+    let key=ui.id().with("reset-preferences");
+    let mut confirm=ui.data_mut(|d|d.get_temp::<bool>(key).unwrap_or(false));
+    ui.separator();
+    ui.label(RichText::new(crate::i18n::label("PREFERÊNCIAS","PREFERENCES")).size(10.0).color(MUTED));
+    ui.add(egui::Label::new(crate::i18n::label("Restaura envio, codec, perfil AMD, volume e visualização. Preserva nome, idioma e acesso ao servidor.","Resets sending, codec, AMD preset, volume and view. Keeps your name, language and server access.")).wrap());
+    if !idle {confirm=false;ui.add(egui::Label::new(RichText::new(crate::i18n::label("Saia da sala para restaurar as preferências.","Leave the room to restore preferences.")).size(11.0).color(MUTED)).wrap());}
+    let mut reset=false;
+    if confirm {
+        ui.add(egui::Label::new(crate::i18n::label("Restaurar os padrões agora?","Restore defaults now?")).wrap());
+        if action(ui,crate::i18n::label("Restaurar padrões","Restore defaults"),idle,false).clicked(){store.reset();reset=true;confirm=false;}
+        if compact(ui,crate::i18n::label("Cancelar","Cancel"),true).clicked(){confirm=false;}
+    }else if compact(ui,crate::i18n::label("Restaurar preferências…","Restore preferences…"),idle).clicked(){confirm=true;}
+    ui.data_mut(|d|d.insert_temp(key,confirm));
+    if let Some(notice)=store.notice(){ui.add(egui::Label::new(RichText::new(notice).size(11.0).color(MUTED)).wrap());}
+    if store.retry_available()&&compact(ui,crate::i18n::label("Tentar salvar novamente","Retry saving"),true).clicked(){store.retry();}
+    reset
+}

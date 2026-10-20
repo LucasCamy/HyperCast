@@ -236,10 +236,10 @@ impl App {
             selected_display: 0,
             cap_probe:Default::default(),
             window_mode:false,windows:crate::video_capture::windows(),selected_window:None,window_picker_open:false,window_previews:HashMap::new(),fullscreen:false,debug_open:false,report_copied:None,updater:crate::updater::Updater::default(),creator:crate::room_creation::Creator::default(),catalog:crate::room_creation::Catalog::default(),departure:None,pending_join:false,stream_settings:prefs.stream,server_access:crate::room_creation::ServerAccess::default(),server_status:crate::server_status::ServerStatus::default(),before_fullscreen_mode:ViewMode::Spotlight,
-            amd_profile:crate::encoder::AmdProfile::Fast,
+            amd_profile:match prefs.amd_profile{crate::preferences::AmdPreset::Fast=>crate::encoder::AmdProfile::Fast,crate::preferences::AmdPreset::Text=>crate::encoder::AmdProfile::Text,crate::preferences::AmdPreset::Compatibility=>crate::encoder::AmdProfile::Compatibility},
             rate_mode:prefs.rate_mode,
             upload:if std::env::var_os("HYPERCAST_SMOKE_SECONDS").is_some(){crate::bandwidth::UploadProfile::initial()}else{prefs.upload},
-            codec: if std::env::var("HYPERCAST_CODEC").as_deref() == Ok("av1") {
+            codec: if std::env::var("HYPERCAST_CODEC").map_or(prefs.codec==crate::preferences::VideoCodec::Av1,|v|v=="av1") {
                 crate::encoder::Codec::Av1
             } else {
                 crate::encoder::Codec::H265
@@ -262,7 +262,14 @@ impl App {
             smoke_sound_stage: 0,smoke_source_stage:0,
         }
     }
-    fn save_preferences(&mut self){self.preferences.update(crate::preferences::Settings{stream:self.stream_settings,upload:self.upload,rate_mode:self.rate_mode,volume:self.volume,muted:self.sound_muted,sidebar:self.sidebar_open,self_preview:self.self_preview,grid:if self.fullscreen{self.before_fullscreen_mode==ViewMode::Grid}else{self.mode==ViewMode::Grid}});}
+    fn save_preferences(&mut self){self.preferences.update(crate::preferences::Settings{codec:if self.codec==crate::encoder::Codec::Av1{crate::preferences::VideoCodec::Av1}else{crate::preferences::VideoCodec::Hevc},amd_profile:match self.amd_profile{crate::encoder::AmdProfile::Fast=>crate::preferences::AmdPreset::Fast,crate::encoder::AmdProfile::Text=>crate::preferences::AmdPreset::Text,crate::encoder::AmdProfile::Compatibility=>crate::preferences::AmdPreset::Compatibility},stream:self.stream_settings,upload:self.upload,rate_mode:self.rate_mode,volume:self.volume,muted:self.sound_muted,sidebar:self.sidebar_open,self_preview:self.self_preview,grid:if self.fullscreen{self.before_fullscreen_mode==ViewMode::Grid}else{self.mode==ViewMode::Grid}});}
+    fn restore_preferences(&mut self){
+        let p=crate::preferences::Settings::default();
+        self.stream_settings=p.stream;self.upload=p.upload;self.rate_mode=p.rate_mode;
+        self.volume=p.volume;self.sound_muted=p.muted;self.sidebar_open=p.sidebar;
+        self.self_preview=p.self_preview;self.mode=ViewMode::Spotlight;self.before_fullscreen_mode=ViewMode::Spotlight;self.single_view=false;
+        self.codec=crate::encoder::Codec::H265;self.amd_profile=crate::encoder::AmdProfile::Fast;
+    }
     fn target(&self)->Option<crate::video_capture::CaptureTarget>{
         let display=self.displays.get(self.selected_display)?;
         Some(if self.window_mode{
@@ -1241,6 +1248,8 @@ impl eframe::App for App {
                     ui.add_enabled(idle,egui::Checkbox::new(&mut self.relay_only,crate::i18n::label("Forçar TURN/TLS (teste)","Force TURN/TLS (test)")))
                         .on_hover_text(crate::i18n::label("Ative antes de entrar para testar o relay; desativado escolhe a rota de menor custo","Enable before joining to test the relay; otherwise the lowest-cost route is selected"));
                     crate::desktop_ui::network_summary(ui,&quality);
+                    if crate::desktop_ui::preferences_controls(ui,&mut self.preferences,idle&&self.departure.is_none()&&!self.pending_join&&!self.creator.busy){self.restore_preferences();}
+
                     if update_action(ui,if self.report_copied.is_some_and(|at|at.elapsed()<Duration::from_secs(2)){crate::i18n::label("Relatório copiado","Report copied")}else{crate::i18n::label("Copiar relatório técnico","Copy technical report")},false).clicked(){
                         let restarts=self.engine.as_ref().and_then(|e|e.shared.try_lock().ok().map(|s|s.reception_restarts)).unwrap_or(0);
                         ctx.copy_text(crate::video_metrics::technical_report(&quality,crate::video_metrics::ReportState{connected,reconnecting,publishing,sent,received,restarts},self.stream_settings,self.upload));self.report_copied=Some(Instant::now());ctx.request_repaint_after(Duration::from_secs(2));

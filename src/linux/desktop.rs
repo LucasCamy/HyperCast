@@ -87,7 +87,7 @@ impl App {
             joining: None,
             status: String::new(),
             layout: Layout{volume:if prefs.muted{0}else{prefs.volume},mode:if prefs.grid{ViewMode::Grid}else{ViewMode::Spotlight},..Default::default()},
-            codec: Codec::Hevc,
+            codec:if prefs.codec==crate::preferences::VideoCodec::Av1{Codec::Av1}else{Codec::Hevc},
             encoder: Encoder::Auto,
             rate_mode:prefs.rate_mode,
             upload:if std::env::var_os("HYPERCAST_SMOKE_SECONDS").is_some(){crate::bandwidth::UploadProfile::initial()}else{prefs.upload},stream_settings:prefs.stream,
@@ -109,7 +109,7 @@ impl App {
         }
         app
     }
-    fn save_preferences(&mut self){self.preferences.update(crate::preferences::Settings{stream:self.stream_settings,upload:self.upload,rate_mode:self.rate_mode,volume:self.layout.volume,muted:false,sidebar:self.sidebar_open,self_preview:true,grid:self.layout.mode==ViewMode::Grid});}
+    fn save_preferences(&mut self){let previous=self.preferences.current();let muted=previous.muted&&self.layout.volume==0;self.preferences.update(crate::preferences::Settings{codec:if self.codec==Codec::Av1{crate::preferences::VideoCodec::Av1}else{crate::preferences::VideoCodec::Hevc},amd_profile:self.preferences.current().amd_profile,stream:self.stream_settings,upload:self.upload,rate_mode:self.rate_mode,volume:if muted{previous.volume}else{self.layout.volume},muted,sidebar:self.sidebar_open,self_preview:self.preferences.current().self_preview,grid:self.layout.mode==ViewMode::Grid});}
     fn send(&self, command: Command) {
         if let Some(engine) = &self.engine {
             let _ = engine.tx.send(command);
@@ -435,18 +435,23 @@ impl App {
             }
         }
         if self.debug {
+            let mut reset_preferences=false;
             egui::Window::new(crate::i18n::label("Diagnóstico","Diagnostics")).title_bar(false).open(&mut self.debug).collapsible(false).resizable(false).default_width(360.0).frame(crate::desktop_ui::utility_frame(root.style())).show(ctx,|ui|{
                 crate::desktop_ui::modal_header(ui,crate::i18n::label("Diagnóstico","Diagnostics"));
                 ui.label(format!("HyperCast {} · Linux",env!("CARGO_PKG_VERSION")));
                 ui.label(crate::i18n_format!("Decodificadores ativos: {}","Active decoders: {}",super::media::decoder_count()));
                 ui.label(crate::i18n_format!("Quadros enviados: {} · recebidos: {}","Frames sent: {} · received: {}",self.snapshot.sent,self.snapshot.received));
                 crate::desktop_ui::network_summary(ui,&self.snapshot.quality);
+                let idle=self.engine.as_ref().is_none_or(|e|e.finished())&&self.joining.is_none()&&self.departure.is_none()&&!self.pending_join&&!self.creator.busy;
+                reset_preferences=crate::desktop_ui::preferences_controls(ui,&mut self.preferences,idle);
+
                 if crate::desktop_ui::action(ui,if self.report_copied.is_some_and(|at|at.elapsed()<Duration::from_secs(2)){crate::i18n::label("Relatório copiado","Report copied")}else{crate::i18n::label("Copiar relatório técnico","Copy technical report")},true,false).clicked(){
                     let s=&self.snapshot;ctx.copy_text(crate::video_metrics::technical_report(&s.quality,crate::video_metrics::ReportState{connected:s.connected,reconnecting:s.reconnecting,publishing:s.sharing,sent:s.sent,received:s.received,restarts:s.reception_restarts},self.stream_settings,self.upload));self.report_copied=Some(Instant::now());ctx.request_repaint_after(Duration::from_secs(2));
                 }
                 ui.label(crate::i18n::label("A chave de acesso fica somente na memória desta sessão.","The access key is kept only in memory for this session."));
                 ui.label(crate::i18n::label("Renderização portátil com transferência para RAM; desempenho QHD 120 FPS ainda requer validação.","Portable rendering with RAM transfer; QHD 120 FPS performance still requires validation."));
             });
+            if reset_preferences {let p=crate::preferences::Settings::default();self.stream_settings=p.stream;self.upload=p.upload;self.rate_mode=p.rate_mode;self.sidebar_open=p.sidebar;self.layout.volume=p.volume;self.layout.mode=ViewMode::Spotlight;self.layout.focus=None;self.layout.paused=false;self.codec=Codec::Hevc;}
         }
         if self.updates {
             egui::Window::new(crate::i18n::label("Atualização","Update")).title_bar(false).open(&mut self.updates).collapsible(false).resizable(false).default_width(320.0)

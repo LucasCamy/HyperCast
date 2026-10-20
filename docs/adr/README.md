@@ -16,3 +16,5 @@ Em 2026-10-19 começou o incremento posterior à versão estável: recuperação
 Em 2026-10-20 foi implementado o primeiro incremento de [qualidade adaptativa de bitrate](../adaptive-upload.md) (0003), mantendo as pendências físicas e de WAN explícitas.
 
 Em 2026-10-20 foi implementado o primeiro incremento de [capacidades de encode](../encoder-capabilities.md) (0005): consultas por backend, bloqueios somente para incompatibilidades conhecidas e diagnóstico de limites. A matriz física de compatibilidade permanece aberta.
+
+Em 2026-10-20 o [incremento de preferências](../preferences.md) (0006) acrescentou codec/perfil AMD, preservação de arquivos de versão desconhecida, coordenação de gravações e restauração pela interface.
