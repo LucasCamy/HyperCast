@@ -229,7 +229,9 @@ fn main() -> Result<()> {
                     if let Some(target) = publisher.take_rate_control_request() {
                         network_paused = target.target_bitrate_bps == 0;
                         if !network_paused {
-                            let fps = (target.framerate_fps as u32).clamp(1, args.fps);
+                            // An external encoded source owns its capture cadence;
+                            // do not feed WebRTC's measured input FPS into its pacer.
+                            let fps = args.fps;
                             let bitrate =
                                 target.target_bitrate_bps.clamp(64_000, args.bitrate as u64) as u32;
                             encoder.reconfigure(bitrate, fps)?;

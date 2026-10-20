@@ -327,6 +327,7 @@ mod ultrawide_tests {
                 if rate==0{paused=true;continue;}
                 ensure!(encoder.reconfigure(rate,60)?,"NVENC rejected adaptive target");
                 ensure!(encoder.feedback().bitrate==rate,"Applied budget differs from target");
+                ensure!(encoder.feedback().fps==60,"Bitrate adaptation changed the configured encode cadence");
                 ensure!(unsafe{hc_nvenc_live_encoders()+hc_amf_live_encoders()}==baseline+1,"Bitrate change recreated the encoder");
                 let packet=encoder.encode_texture(texture.as_ref(),frame*1_000_000/60,frame==0||paused)?;frame+=1;paused=false;
                 ensure!(!packet.bytes.is_empty(),"No encoded packet after bitrate change");
@@ -334,6 +335,42 @@ mod ultrawide_tests {
             ensure!(controller.snapshot().increases>0,"No gradual recovery exercised");
             drop(encoder);ensure!(unsafe{hc_nvenc_live_encoders()+hc_amf_live_encoders()}==baseline,"Encoder leaked");
         }Ok(())
+    }
+    #[test]
+    #[ignore="Requires NVENC GPU; 90 seconds of generated QHD frames, no desktop capture"]
+    fn sustained_nvenc_cadence_with_bitrate_changes()->Result<()> {
+        let(mut device,mut context)=(None,None);
+        // SAFETY: selected owned adapter, initialized COM outputs, generated textures only.
+        unsafe{let factory:IDXGIFactory1=CreateDXGIFactory1()?;let adapter=factory.EnumAdapters1(0)?;
+            D3D11CreateDevice(&adapter,D3D_DRIVER_TYPE_UNKNOWN,HMODULE::default(),D3D11_CREATE_DEVICE_BGRA_SUPPORT,Some(&[D3D_FEATURE_LEVEL_11_0]),D3D11_SDK_VERSION,Some(&mut device),None,Some(&mut context))?;}
+        let device=device.unwrap();let context=context.unwrap();let baseline=unsafe{hc_nvenc_live_encoders()+hc_amf_live_encoders()};
+        let desc=D3D11_TEXTURE2D_DESC{Width:2560,Height:1440,MipLevels:1,ArraySize:1,Format:DXGI_FORMAT_B8G8R8A8_UNORM,SampleDesc:DXGI_SAMPLE_DESC{Count:1,Quality:0},Usage:D3D11_USAGE_DEFAULT,BindFlags:(D3D11_BIND_RENDER_TARGET.0|D3D11_BIND_SHADER_RESOURCE.0) as u32,..Default::default()};
+        let(mut texture,mut target)=(None,None);
+        unsafe{device.CreateTexture2D(&desc,None,Some(&mut texture))?;device.CreateRenderTargetView(texture.as_ref().unwrap(),None,Some(&mut target))?;}
+        let fps=120;let mut encoder=HardwareEncoder::new_with_limits(&device,2560,1440,fps,25_000_000,Codec::H265,AmdProfile::Fast,crate::resolution::OutputSize::Native)?;
+        ensure!(encoder.backend_name()=="NVENC","Test requires NVENC");
+        let mut controller=crate::adaptive_upload::Controller::new(crate::adaptive_upload::Mode::Automatic,25_000_000);
+        let mut pacer=crate::pacing::FramePacer::new(fps)?;
+        let start=Instant::now();let(mut count,mut previous,mut window)=(0_u64,0_u64,Instant::now());let mut rates=Vec::new();let mut last_second=None;
+        while start.elapsed()<Duration::from_secs(90){
+            pacer.wait()?;let second=start.elapsed().as_secs();
+            if last_second!=Some(second){
+                let grant=if (20..30).contains(&second)|| (50..55).contains(&second){4_000_000}else{25_000_000};
+                let bitrate=controller.sample(Instant::now(),grant);ensure!(encoder.reconfigure(bitrate,fps)?,"Rate rejected");
+                ensure!(encoder.feedback().fps==fps,"Adaptive bitrate changed configured FPS");last_second=Some(second);
+            }
+            unsafe{context.ClearRenderTargetView(target.as_ref().unwrap(),&[(count%240) as f32/240.0,0.25,0.5,1.0]);}
+            let packet=encoder.encode_texture(texture.as_ref(),start.elapsed().as_micros() as i64,count%120==0)?;
+            ensure!(!packet.bytes.is_empty(),"Missing encoded frame");count+=1;
+            if window.elapsed()>=Duration::from_secs(15){let rate=(count-previous) as f64/window.elapsed().as_secs_f64();
+                println!("NVENC sustained: elapsed_s={:.1} actual_fps={rate:.2} configured_fps={fps} target_bps={}",start.elapsed().as_secs_f64(),controller.snapshot().target);
+                rates.push(rate);previous=count;window=Instant::now();
+            }
+        }
+        ensure!(rates.len()>=5,"Missing sustained windows");
+        ensure!(*rates.last().unwrap()>=rates[0]*0.8,"Progressive throughput loss on generated frames");
+        drop(encoder);ensure!(unsafe{hc_nvenc_live_encoders()+hc_amf_live_encoders()}==baseline,"Encoder retained after soak");
+        Ok(())
     }
     #[test]
     #[ignore="Requires NVENC GPU; generated textures only"]

@@ -1,5 +1,7 @@
 # Controle de qualidade do envio
 
+Na 0.9.2, o Windows preserva o FPS solicitado ao aplicar feedback de bitrate. A cadência informada pelo callback do WebRTC não é reaplicada ao relógio da fonte externa; isso evita que uma redução momentânea alimente novas reduções. O orçamento de banda e as pausas continuam respeitados. No Linux essa separação já existia. Ver [correção de cadência](0.9.2.md).
+
 Incremento de desenvolvimento posterior à 0.9.0. Em **Formato de vídeo**, selecione o perfil de upload (40/25/12 Mbps) e o controle **Manual** ou **Automático**. Pare de compartilhar antes de mudar. A escolha fica salva e vale para monitores e janelas. Preferências antigas usam Manual.
 
 Ambos os modos respeitam a banda concedida pelo WebRTC. Manual segue esse limite diretamente, limitado ao perfil. Automático reduz com margem quando a concessão cai e recupera gradualmente após estabilidade. Não aumenta o consumo acima do perfil escolhido nem usa software silenciosamente. Esse modo não reduz automaticamente o teto em uma rede saudável, nem analisa o conteúdo da tela para economizar banda.

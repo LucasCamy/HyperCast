@@ -244,7 +244,11 @@ impl Cast {
             let mut key=self.count==0 || key_requested;
             if let Some(rate)=publisher.take_rate_control_request() {
                 let was_paused=self.paused;
-                let fps=if rate.framerate_fps.is_finite(){(rate.framerate_fps as u32).clamp(1,self.settings.fps)}else{self.fps};
+                // WebRTC SetRates reflects its measured input cadence as well as
+                // allocation. Feeding that FPS back into this external source's
+                // pacer ratchets transient slowdowns down permanently. Adapt
+                // bitrate (including zero/pause), keeping the user's cadence.
+                let fps=self.settings.fps;
                 let target=self.rate_control.sample(Instant::now(),rate.target_bitrate_bps);
                 self.last_rate=(target as u64,fps);self.paused=target==0;
                 self.rate_blocked=false;

@@ -23,3 +23,7 @@ Orçamento zero, ou inferior ao mínimo de 64 kbps do encoder, pausa o envio de 
 Aplicação no Windows usa a reconfiguração existente e suas respostas de aceitação por NVENC/AMF. No Linux, consultar tipo, mutabilidade em execução e leitura da propriedade de bitrate; arredondar kbps para baixo. Rejeição pausa o envio e mantém sala/recepção disponíveis para nova tentativa. Leitura da propriedade Linux não comprova throughput nem sucesso interno do driver. Relatório separa alvo, configuração conhecida, fluxo medido e rejeição.
 
 Ver [operação e testes](../adaptive-upload.md). Não há comprovação nova de latência fim a fim, congestionamento real em WAN ou sessão longa AMF/Bazzite; tais partes do aceite permanecem abertas.
+
+## Correção 0.9.2 — cadência da fonte externa
+
+O caminho Windows anterior reaplicava `SetRates.framerate_fps` ao encoder e ao pacer da captura. Como atualizações do WebRTC também refletem a cadência de entrada, uma perda temporária podia se tornar o novo limite da fonte e realimentar quedas subsequentes. Interface e CLI agora mantêm o FPS configurado pelo usuário, adaptando somente bitrate e pausa/retomada. O comportamento de captura/encode Linux não foi alterado. Essa decisão evita a realimentação; não garante FPS sustentado quando a GPU ou rede não comporta o alvo.

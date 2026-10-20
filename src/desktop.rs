@@ -210,7 +210,13 @@ impl App {
             Some(RawWindowHandle::Win32(window)) => window.hwnd.get() as usize,
             _ => 0,
         };
-        let prefs=crate::preferences::Settings::load();
+        let mut prefs=crate::preferences::Settings::load();
+        // Smoke runs intentionally ignore saved preferences; opt into the
+        // automatic policy explicitly when exercising a generated-window soak.
+        if std::env::var("HYPERCAST_SMOKE_SECONDS").ok().and_then(|s|s.parse::<u64>().ok()).is_some_and(|s|(1..=300).contains(&s))
+            && std::env::var("HYPERCAST_SMOKE_AUTOMATIC").as_deref()==Ok("1"){
+            prefs.rate_mode=crate::adaptive_upload::Mode::Automatic;
+        }
         Self {
             preferences:crate::preferences::Store::new(prefs),
             engine: None,
@@ -674,11 +680,15 @@ impl eframe::App for App {
                         .and_then(|pid|self.windows.iter().find(|w|w.pid==pid));
                     let window_adapter=std::env::var("HYPERCAST_SMOKE_WINDOW_ADAPTER").ok()
                         .and_then(|value|value.parse::<u32>().ok()).unwrap_or(display.adapter_index);
-                    let command=if let Some(w)=window{Command::ShareWindow{adapter:window_adapter,hwnd:w.hwnd,pid:w.pid,codec:self.codec}}
-                        else {Command::Share{adapter:display.adapter_index,output:display.output_index,codec:self.codec}};
-                    let _ = engine.commands.send(command);
-                    self.smoke_share_stage += 1;
-                    println!("GUI publisher: start");
+                    // An explicitly requested smoke window must never fall back
+                    // to the user's monitor if enumeration has not found it yet.
+                    let command=if let Some(w)=window{Some(Command::ShareWindow{adapter:window_adapter,hwnd:w.hwnd,pid:w.pid,codec:self.codec})}
+                        else if std::env::var_os("HYPERCAST_SMOKE_WINDOW_PID").is_none(){Some(Command::Share{adapter:display.adapter_index,output:display.output_index,codec:self.codec})}else{None};
+                    if let Some(command)=command{
+                        let _ = engine.commands.send(command);
+                        self.smoke_share_stage += 1;
+                        println!("GUI publisher: start");
+                    }
                 }
             } else if stage < cycles * 2 - 1 && stage % 2 == 1 && elapsed >= 2 + u64::from(stage) * 3 {
                 if let Some(engine) = &self.engine {
