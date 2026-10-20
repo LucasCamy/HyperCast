@@ -166,6 +166,7 @@ struct App {
     codec: crate::encoder::Codec,
     amd_profile:crate::encoder::AmdProfile,
     upload:crate::bandwidth::UploadProfile,
+    rate_mode:crate::adaptive_upload::Mode,
     parent: usize,
     presenters: HashMap<String, Presenter>,
     error: String,
@@ -234,6 +235,7 @@ impl App {
             selected_display: 0,
             window_mode:false,windows:crate::video_capture::windows(),selected_window:None,window_picker_open:false,window_previews:HashMap::new(),fullscreen:false,debug_open:false,report_copied:None,updater:crate::updater::Updater::default(),creator:crate::room_creation::Creator::default(),catalog:crate::room_creation::Catalog::default(),departure:None,pending_join:false,stream_settings:prefs.stream,server_access:crate::room_creation::ServerAccess::default(),server_status:crate::server_status::ServerStatus::default(),before_fullscreen_mode:ViewMode::Spotlight,
             amd_profile:crate::encoder::AmdProfile::Fast,
+            rate_mode:prefs.rate_mode,
             upload:if std::env::var_os("HYPERCAST_SMOKE_SECONDS").is_some(){crate::bandwidth::UploadProfile::initial()}else{prefs.upload},
             codec: if std::env::var("HYPERCAST_CODEC").as_deref() == Ok("av1") {
                 crate::encoder::Codec::Av1
@@ -258,7 +260,7 @@ impl App {
             smoke_sound_stage: 0,smoke_source_stage:0,
         }
     }
-    fn save_preferences(&mut self){self.preferences.update(crate::preferences::Settings{stream:self.stream_settings,upload:self.upload,volume:self.volume,muted:self.sound_muted,sidebar:self.sidebar_open,self_preview:self.self_preview,grid:if self.fullscreen{self.before_fullscreen_mode==ViewMode::Grid}else{self.mode==ViewMode::Grid}});}
+    fn save_preferences(&mut self){self.preferences.update(crate::preferences::Settings{stream:self.stream_settings,upload:self.upload,rate_mode:self.rate_mode,volume:self.volume,muted:self.sound_muted,sidebar:self.sidebar_open,self_preview:self.self_preview,grid:if self.fullscreen{self.before_fullscreen_mode==ViewMode::Grid}else{self.mode==ViewMode::Grid}});}
     fn target(&self)->Option<crate::video_capture::CaptureTarget>{
         let display=self.displays.get(self.selected_display)?;
         Some(if self.window_mode{
@@ -366,6 +368,7 @@ impl App {
             crate::desktop_ui::stream_settings(ui,&mut self.stream_settings,!publishing,120);
             if before!=self.stream_settings{if let Some(engine)=&self.engine{let _=engine.commands.send(Command::StreamSettings(self.stream_settings));}}
             if crate::desktop_ui::upload_selector(ui,&mut self.upload,!publishing){if let Some(engine)=&self.engine{let _=engine.commands.send(Command::UploadProfile(self.upload));}}
+            if crate::desktop_ui::rate_mode_selector(ui,&mut self.rate_mode,!publishing){if let Some(engine)=&self.engine{let _=engine.commands.send(Command::RateMode(self.rate_mode));}}
             ui.horizontal(|ui|{
                 let width=(ui.available_width()-ui.spacing().item_spacing.x)/2.0;
                 for (codec,title) in [(crate::encoder::Codec::H265,"HEVC / H.265"),(crate::encoder::Codec::Av1,"AV1")]{
@@ -465,6 +468,7 @@ impl App {
         let _=engine.commands.send(Command::StreamSettings(self.stream_settings));
         let _ = engine.commands.send(Command::AmdProfile(self.amd_profile));
         let _ = engine.commands.send(Command::UploadProfile(self.upload));
+        let _=engine.commands.send(Command::RateMode(self.rate_mode));
         let _ = engine.commands.send(Command::SystemAudio(self.system_audio));
         let _ = engine.commands.send(Command::Layout(Layout {
                 self_preview: self.self_preview,

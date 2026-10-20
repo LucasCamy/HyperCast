@@ -30,7 +30,7 @@ def main():
     env={k:v for k,v in os.environ.items() if not k.startswith(('HYPERCAST_','LIVEKIT_','GH_','GITHUB_'))}
     env.update(HYPERCAST_URL='wss://hypercast.cloudlane.com.br',HYPERCAST_PUBLISH_TOKEN=token(True),HYPERCAST_ROOM_TOKEN=token(False),HYPERCAST_AUDIO_TEST_SILENT_OUTPUT='1')
     env['HYPERCAST_SWITCH_CASE']=os.environ.get('HYPERCAST_SWITCH_CASE','publisher_source_and_codec_switches')
-    assert env['HYPERCAST_SWITCH_CASE'] in ('publisher_source_and_codec_switches','synthetic_output_limits_and_fps','cancel_pending_room_connections','worker_failure_can_reconnect')
+    assert env['HYPERCAST_SWITCH_CASE'] in ('publisher_source_and_codec_switches','synthetic_output_limits_and_fps','cancel_pending_room_connections','worker_failure_can_reconnect','adaptive_bitrate_reconfigures_gstreamer_encoders','adaptive_bitrate_reconfigures_nvenc_without_recreating_encoder')
     env['WSLENV']=':'.join(name+'/u' for name in env if name.startswith('HYPERCAST_'))
     windows=os.environ.get('HYPERCAST_SWITCH_WINDOWS')=='1'
     if windows:

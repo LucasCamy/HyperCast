@@ -4,6 +4,8 @@ use std::time::Duration;
 pub struct Throughput {pub fps:f64,pub mbps:f64}
 #[derive(Clone,Debug,Default)]
 pub struct QualitySnapshot {
+    pub adaptive_upload:Option<crate::adaptive_upload::Snapshot>,
+    pub encoder_rate_rejected:bool,
     pub automatic_recovery:crate::reception_recovery::Summary,
     pub network:Option<VideoNetwork>,pub encoder_backend:Option<&'static str>,pub codec:Option<&'static str>,pub applied_encoder:Option<(u32,u32)>,
     pub send:Option<Throughput>,pub receive:Option<Throughput>,
@@ -77,6 +79,8 @@ pub fn technical_report(q:&QualitySnapshot,state:ReportState,settings:crate::res
         "session":{"connected":state.connected,"reconnecting":state.reconnecting,"publishing":state.publishing,"receive_restarts":state.restarts},
         "requested":{"resolution":match settings.size{crate::resolution::OutputSize::Native=>"native",crate::resolution::OutputSize::FullHd=>"1080p",crate::resolution::OutputSize::QuadHd=>"1440p"},"fps":settings.fps,"video_bitrate_ceiling_bps":upload.bps()},
         "video":{"encoder":q.encoder_backend.filter(|v|matches!(*v,"NVENC"|"AMF"|"nvh265enc"|"nvav1enc"|"x265enc"|"vaav1enc"|"vah265enc")),"codec":q.codec.filter(|v|matches!(*v,"HEVC"|"AV1")),"accepted_encoder_config":q.applied_encoder.map(|(bps,fps)|serde_json::json!({"bitrate_bps":bps,"fps":fps})),"encoded_resolution":q.resolution,"send_paused":q.send_paused,"sent_frames":state.sent,"received_sink_frames":state.received,"send_fps":q.send.and_then(|v|number(v.fps)),"send_encoded_mbps":q.send.and_then(|v|number(v.mbps)),"receive_sink_fps":q.receive.and_then(|v|number(v.fps))},
+        "encoder_rate_rejected":q.encoder_rate_rejected,
+        "adaptive_upload":q.adaptive_upload.map(|a|serde_json::json!({"mode":match a.mode{crate::adaptive_upload::Mode::Manual=>"manual",crate::adaptive_upload::Mode::Automatic=>"automatic"},"ceiling_bps":a.ceiling,"network_limit_bps":a.network,"target_bps":a.target,"reductions":a.reductions,"increases":a.increases})),
         "automatic_recovery":{"observed":q.automatic_recovery.observed,"mapped":q.automatic_recovery.mapped,"recovering":q.automatic_recovery.recovering,"exhausted":q.automatic_recovery.exhausted,"actions":q.automatic_recovery.actions,"reader_stalls":q.automatic_recovery.reader_stalls,"decoder_stalls":q.automatic_recovery.decoder_stalls,"unmapped_samples":q.automatic_recovery.unmapped},
         "network":network,"end_to_end_latency_ms":serde_json::Value::Null,
         "notes":["RTT is not end-to-end latency","Accepted encoder settings are not measured throughput","RTP counters and average decode time are cumulative across current receivers","Missing or unsupported measurements are null","No tokens, addresses, room names or participant names are included"]

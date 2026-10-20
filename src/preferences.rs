@@ -75,9 +75,10 @@ mod tests {
 pub struct Settings {
     pub stream:crate::resolution::StreamSettings,
     pub upload:crate::bandwidth::UploadProfile,
+    pub rate_mode:crate::adaptive_upload::Mode,
     pub volume:u32,pub muted:bool,pub sidebar:bool,pub self_preview:bool,pub grid:bool,
 }
-impl Default for Settings {fn default()->Self{Self{stream:Default::default(),upload:Default::default(),volume:80,muted:false,sidebar:true,self_preview:true,grid:false}}}
+impl Default for Settings {fn default()->Self{Self{stream:Default::default(),upload:Default::default(),rate_mode:Default::default(),volume:80,muted:false,sidebar:true,self_preview:true,grid:false}}}
 impl Settings {
     fn decode(bytes:&[u8])->Option<Self>{
         if bytes.len()>4096{return None;}
@@ -88,9 +89,10 @@ impl Settings {
         let stream=crate::resolution::StreamSettings{size,fps};if !stream.valid(){return None;}
         let upload=crate::bandwidth::UploadProfile::from_mbps(u32::try_from(v["upload_mbps"].as_u64()?).ok()?)?;
         let volume=u32::try_from(v["volume"].as_u64()?).ok()?;if volume>100{return None;}
-        Some(Self{stream,upload,volume,muted:v["muted"].as_bool()?,sidebar:v["sidebar"].as_bool()?,self_preview:v["self_preview"].as_bool()?,grid:v["grid"].as_bool()?})
+        let rate_mode=match v.get("rate_mode"){None=>crate::adaptive_upload::Mode::Manual,Some(value)=>match value.as_str()?{"manual"=>crate::adaptive_upload::Mode::Manual,"automatic"=>crate::adaptive_upload::Mode::Automatic,_=>return None}};
+        Some(Self{stream,upload,rate_mode,volume,muted:v["muted"].as_bool()?,sidebar:v["sidebar"].as_bool()?,self_preview:v["self_preview"].as_bool()?,grid:v["grid"].as_bool()?})
     }
-    fn encode(self)->String{serde_json::json!({"schema":1,"resolution":match self.stream.size{crate::resolution::OutputSize::Native=>"native",crate::resolution::OutputSize::FullHd=>"1080p",crate::resolution::OutputSize::QuadHd=>"1440p"},"fps":self.stream.fps,"upload_mbps":self.upload.bps()/1_000_000,"volume":self.volume,"muted":self.muted,"sidebar":self.sidebar,"self_preview":self.self_preview,"grid":self.grid}).to_string()}
+    fn encode(self)->String{serde_json::json!({"schema":1,"resolution":match self.stream.size{crate::resolution::OutputSize::Native=>"native",crate::resolution::OutputSize::FullHd=>"1080p",crate::resolution::OutputSize::QuadHd=>"1440p"},"fps":self.stream.fps,"upload_mbps":self.upload.bps()/1_000_000,"rate_mode":match self.rate_mode{crate::adaptive_upload::Mode::Manual=>"manual",crate::adaptive_upload::Mode::Automatic=>"automatic"},"volume":self.volume,"muted":self.muted,"sidebar":self.sidebar,"self_preview":self.self_preview,"grid":self.grid}).to_string()}
     fn file()->Option<PathBuf>{path().map(|p|p.with_file_name("preferences.json"))}
     fn ephemeral()->bool{cfg!(test)||std::env::var_os("HYPERCAST_SMOKE_SECONDS").is_some()}
     pub fn load()->Self{
@@ -141,10 +143,11 @@ impl Drop for Store{fn drop(&mut self){if let Some(tx)=self.tx.take(){if self.la
         std::fs::remove_file(file).unwrap();std::fs::remove_dir(dir).unwrap();
     }
     #[test]fn versioned_round_trip_rejects_corrupt_unsafe_and_future_values(){
-        let value=Settings{volume:35,sidebar:false,stream:crate::resolution::StreamSettings{size:crate::resolution::OutputSize::FullHd,fps:60},..Default::default()};
+        let value=Settings{rate_mode:crate::adaptive_upload::Mode::Automatic,volume:35,sidebar:false,stream:crate::resolution::StreamSettings{size:crate::resolution::OutputSize::FullHd,fps:60},..Default::default()};
         assert_eq!(Settings::decode(value.encode().as_bytes()),Some(value));
         let base:serde_json::Value=serde_json::from_str(&value.encode()).unwrap();
-        for (field,bad) in [("schema",serde_json::json!(2)),("fps",serde_json::json!(999)),("volume",serde_json::json!(101)),("upload_mbps",serde_json::json!(500)),("resolution",serde_json::json!("../private"))]{let mut changed=base.clone();changed[field]=bad;assert!(Settings::decode(changed.to_string().as_bytes()).is_none());}
+        let mut legacy=base.clone();legacy.as_object_mut().unwrap().remove("rate_mode");assert_eq!(Settings::decode(legacy.to_string().as_bytes()).unwrap().rate_mode,crate::adaptive_upload::Mode::Manual);
+        for (field,bad) in [("schema",serde_json::json!(2)),("fps",serde_json::json!(999)),("volume",serde_json::json!(101)),("upload_mbps",serde_json::json!(500)),("rate_mode",serde_json::json!("invalid")),("resolution",serde_json::json!("../private"))]{let mut changed=base.clone();changed[field]=bad;assert!(Settings::decode(changed.to_string().as_bytes()).is_none());}
         assert!(Settings::decode(b"{broken").is_none());assert!(Settings::decode(&vec![b' ';4097]).is_none());
     }
 }

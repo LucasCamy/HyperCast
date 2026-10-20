@@ -48,6 +48,7 @@ struct App {
     codec: Codec,
     encoder: Encoder,
     upload:crate::bandwidth::UploadProfile,
+    rate_mode:crate::adaptive_upload::Mode,
     stream_settings:crate::resolution::StreamSettings,
     preferences:crate::preferences::Store,
     audio: bool,
@@ -88,6 +89,7 @@ impl App {
             layout: Layout{volume:if prefs.muted{0}else{prefs.volume},mode:if prefs.grid{ViewMode::Grid}else{ViewMode::Spotlight},..Default::default()},
             codec: Codec::Hevc,
             encoder: Encoder::Auto,
+            rate_mode:prefs.rate_mode,
             upload:if std::env::var_os("HYPERCAST_SMOKE_SECONDS").is_some(){crate::bandwidth::UploadProfile::initial()}else{prefs.upload},stream_settings:prefs.stream,
             audio: false,
             fullscreen: false,
@@ -107,7 +109,7 @@ impl App {
         }
         app
     }
-    fn save_preferences(&mut self){self.preferences.update(crate::preferences::Settings{stream:self.stream_settings,upload:self.upload,volume:self.layout.volume,muted:false,sidebar:self.sidebar_open,self_preview:true,grid:self.layout.mode==ViewMode::Grid});}
+    fn save_preferences(&mut self){self.preferences.update(crate::preferences::Settings{stream:self.stream_settings,upload:self.upload,rate_mode:self.rate_mode,volume:self.layout.volume,muted:false,sidebar:self.sidebar_open,self_preview:true,grid:self.layout.mode==ViewMode::Grid});}
     fn send(&self, command: Command) {
         if let Some(engine) = &self.engine {
             let _ = engine.tx.send(command);
@@ -246,7 +248,7 @@ impl App {
             if let Ok(state)=engine.state.try_lock(){self.snapshot=state.clone();}
         } else {self.snapshot=State::default();}
         let State{connected,sharing,selecting,can_publish,reconnecting,participants,screens,status:state_status,reception_resetting:resetting,..}=self.snapshot.clone();
-        if connected && !self.applied_layout {self.send(Command::StreamSettings(self.stream_settings));self.layout();self.send(Command::Audio(self.audio));self.applied_layout=true;}
+        if connected && !self.applied_layout {self.send(Command::RateMode(self.rate_mode));self.send(Command::StreamSettings(self.stream_settings));self.layout();self.send(Command::Audio(self.audio));self.applied_layout=true;}
         if connected && !resetting && ctx.input(|i|i.key_pressed(egui::Key::F5)){self.restart_reception();}
         if ctx.input(|i| i.key_pressed(egui::Key::F11)) {
             self.fullscreen(ctx, !self.fullscreen);
@@ -297,6 +299,7 @@ impl App {
                     crate::desktop_ui::stream_settings(ui,&mut self.stream_settings,!sharing&&!selecting,if self.encoder==Encoder::Software{30}else{120});
                     if before!=self.stream_settings{self.send(Command::StreamSettings(self.stream_settings));}
                     crate::desktop_ui::upload_selector(ui,&mut self.upload,!sharing&&!selecting);
+                    if crate::desktop_ui::rate_mode_selector(ui,&mut self.rate_mode,!sharing&&!selecting){self.send(Command::RateMode(self.rate_mode));}
                     ui.add_enabled_ui(!sharing&&!selecting,|ui|{
                         ui.columns(2,|columns|{
                             if crate::desktop_ui::action(&mut columns[0],"HEVC / H.265",true,self.codec==Codec::Hevc).clicked(){self.codec=Codec::Hevc;}

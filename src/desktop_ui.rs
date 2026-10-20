@@ -35,6 +35,17 @@ pub fn upload_selector(ui:&mut egui::Ui,profile:&mut crate::bandwidth::UploadPro
     });
     previous!=*profile
 }
+/// Shared, explicit mode selection; publishing must stop before changing it.
+pub fn rate_mode_selector(ui:&mut egui::Ui,mode:&mut crate::adaptive_upload::Mode,enabled:bool)->bool {
+    let previous=*mode;
+    ui.add_enabled_ui(enabled,|ui|{
+        ui.label(RichText::new(crate::i18n::label("Controle de qualidade","Quality control")).size(11.0).color(MUTED));
+        egui::ComboBox::from_id_salt("adaptive_upload_mode").width(ui.available_width()).selected_text(mode.label()).show_ui(ui,|ui|{
+            for choice in [crate::adaptive_upload::Mode::Manual,crate::adaptive_upload::Mode::Automatic]{ui.selectable_value(mode,choice,choice.label());}
+        });
+        ui.add(egui::Label::new(RichText::new(if !enabled{crate::i18n::label("Pare o compartilhamento para alterar.","Stop sharing to change.")}else if *mode==crate::adaptive_upload::Mode::Automatic{crate::i18n::label("Retoma o bitrate aos poucos após estabilizar a rede.","Raises bitrate gradually after the network stabilizes.")}else{crate::i18n::label("Segue o limite de banda informado pelo WebRTC.","Follows the bandwidth limit reported by WebRTC.")}).size(11.0).color(MUTED)).wrap());
+    });previous!=*mode
+}
 pub fn volume_slider(ui:&mut egui::Ui,volume:&mut u32)->egui::Response {
     ui.scope(|ui|{
         ui.spacing_mut().slider_width=ui.available_width();ui.spacing_mut().slider_rail_height=6.0;

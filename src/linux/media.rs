@@ -436,11 +436,16 @@ impl Capture {
                 .build(),
         );}});
     }
-    pub fn bitrate(&self, bits: u32) {
-        if self.encoder.find_property("bitrate").is_some() {
-            self.encoder
-                .set_property("bitrate", bits.clamp(64_000, self.bitrate_limit) / 1000);
-        }
+    /// Configuration readback, not measured throughput or a driver success guarantee.
+    pub fn bitrate(&self, bits: u32)->bool {
+        let requested=bits.min(self.bitrate_limit)/1000;
+        if requested<64{return false;}
+        let Some(spec)=self.encoder.find_property("bitrate") else{return false;};
+        if spec.value_type()!=u32::static_type(){return false;}
+        if self.encoder.property::<u32>("bitrate")==requested{return true;}
+        if !spec.flags().contains(gst::PARAM_FLAG_MUTABLE_PLAYING){return false;}
+        self.encoder.set_property("bitrate",requested);
+        self.encoder.property::<u32>("bitrate")==requested
     }
     pub async fn stop(&mut self) {
         let pipeline=self.pipeline.clone();
@@ -460,6 +465,28 @@ impl Drop for Capture {
 mod pipewire_tests {
     use super::*;
 
+    #[test]
+    #[ignore="Needs packaged GStreamer and NVENC GPU; synthetic frames only"]
+    fn adaptive_bitrate_reconfigures_gstreamer_encoders()->Result<()> {
+        gst::init()?;let runtime=tokio::runtime::Runtime::new()?;
+        runtime.block_on(async {
+            for (codec,encoder) in [(Codec::Hevc,Encoder::Auto),(Codec::Av1,Encoder::Auto),(Codec::Hevc,Encoder::Software)] {
+                let mut capture=Capture::open_with_settings(Source::Synthetic(640,360),codec,encoder,crate::bandwidth::UploadProfile::Balanced,crate::resolution::StreamSettings{size:crate::resolution::OutputSize::Native,fps:30}).await?;
+                let mut controller=crate::adaptive_upload::Controller::new(crate::adaptive_upload::Mode::Automatic,capture.bitrate_limit);
+                let start=std::time::Instant::now();let mut last=None;
+                for second in 0..33 {
+                    let grant=match second{1..=4=>4_000_000,21=>0,_=>25_000_000};
+                    let rate=controller.sample(start+Duration::from_secs(second),grant);
+                    if rate==0{continue;}
+                    ensure!(capture.bitrate(rate),"GStreamer backend refused bitrate change: {}",capture.backend);
+                    ensure!(capture.encoder.property::<u32>("bitrate")==rate/1000,"Bitrate configuration readback failed");
+                    let until=std::time::Instant::now()+Duration::from_secs(4);
+                    loop {if let Some(packet)=capture.poll()?{if last.is_none_or(|at|packet.timestamp_us>at){last=Some(packet.timestamp_us);break;}}ensure!(std::time::Instant::now()<until,"No media after reconfiguration");tokio::time::sleep(Duration::from_millis(2)).await;}
+                }
+                ensure!(controller.snapshot().increases>0,"No gradual recovery exercised");capture.stop().await;
+            }Ok(())
+        })
+    }
     #[test]
     #[ignore="Requires NVENC GPU and packaged GStreamer plugins; generated frames only"]
     fn synthetic_output_limits_and_fps()->Result<()> {

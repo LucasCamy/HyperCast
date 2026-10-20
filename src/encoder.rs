@@ -278,6 +278,35 @@ mod ultrawide_tests {
         Direct3D::{D3D_DRIVER_TYPE_UNKNOWN,D3D_FEATURE_LEVEL_11_0},
         Direct3D11::*,Dxgi::{CreateDXGIFactory1,IDXGIFactory1,Common::*}}};
     #[test]
+    #[ignore="Requires NVENC GPU; generated textures and virtual bandwidth only"]
+    fn adaptive_bitrate_reconfigures_nvenc_without_recreating_encoder()->Result<()> {
+        let(mut device,mut context)=(None,None);
+        unsafe {let factory:IDXGIFactory1=CreateDXGIFactory1()?;let adapter=factory.EnumAdapters1(0)?;
+            D3D11CreateDevice(&adapter,D3D_DRIVER_TYPE_UNKNOWN,HMODULE::default(),D3D11_CREATE_DEVICE_BGRA_SUPPORT,Some(&[D3D_FEATURE_LEVEL_11_0]),D3D11_SDK_VERSION,Some(&mut device),None,Some(&mut context))?;}
+        let device=device.unwrap();let context=context.unwrap();let baseline=unsafe{hc_nvenc_live_encoders()+hc_amf_live_encoders()};
+        let desc=D3D11_TEXTURE2D_DESC{Width:640,Height:360,MipLevels:1,ArraySize:1,Format:DXGI_FORMAT_B8G8R8A8_UNORM,SampleDesc:DXGI_SAMPLE_DESC{Count:1,Quality:0},Usage:D3D11_USAGE_DEFAULT,BindFlags:(D3D11_BIND_RENDER_TARGET.0|D3D11_BIND_SHADER_RESOURCE.0) as u32,..Default::default()};
+        let(mut texture,mut target)=(None,None);
+        unsafe{device.CreateTexture2D(&desc,None,Some(&mut texture))?;device.CreateRenderTargetView(texture.as_ref().unwrap(),None,Some(&mut target))?;context.ClearRenderTargetView(target.as_ref().unwrap(),&[0.2,0.5,0.8,1.0]);}
+        for codec in [Codec::H265,Codec::Av1] {
+            let mut encoder=HardwareEncoder::new_with_limits(&device,640,360,60,25_000_000,codec,AmdProfile::Fast,crate::resolution::OutputSize::Native)?;
+            ensure!(encoder.backend_name()=="NVENC","Test requires an NVIDIA encode device");
+            let mut controller=crate::adaptive_upload::Controller::new(crate::adaptive_upload::Mode::Automatic,25_000_000);
+            let start=std::time::Instant::now();let mut frame=0;let mut paused=false;
+            for second in 0..33 {
+                let grant=match second{1..=4=>4_000_000,21=>0,_=>25_000_000};
+                let rate=controller.sample(start+std::time::Duration::from_secs(second),grant);
+                if rate==0{paused=true;continue;}
+                ensure!(encoder.reconfigure(rate,60)?,"NVENC rejected adaptive target");
+                ensure!(encoder.feedback().bitrate==rate,"Applied budget differs from target");
+                ensure!(unsafe{hc_nvenc_live_encoders()+hc_amf_live_encoders()}==baseline+1,"Bitrate change recreated the encoder");
+                let packet=encoder.encode_texture(texture.as_ref(),frame*1_000_000/60,frame==0||paused)?;frame+=1;paused=false;
+                ensure!(!packet.bytes.is_empty(),"No encoded packet after bitrate change");
+            }
+            ensure!(controller.snapshot().increases>0,"No gradual recovery exercised");
+            drop(encoder);ensure!(unsafe{hc_nvenc_live_encoders()+hc_amf_live_encoders()}==baseline,"Encoder leaked");
+        }Ok(())
+    }
+    #[test]
     #[ignore="Requires NVENC GPU; generated textures only"]
     fn generated_output_limits_and_fps()->Result<()> {
         let (mut device,mut context)=(None,None);

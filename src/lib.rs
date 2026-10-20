@@ -48,3 +48,5 @@ pub mod linux;
 pub mod resilience;
 
 pub mod reception_recovery;
+
+pub mod adaptive_upload;

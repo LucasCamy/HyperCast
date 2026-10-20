@@ -72,6 +72,7 @@ impl Default for Layout {
     }
 }
 pub enum Command {
+    RateMode(crate::adaptive_upload::Mode),
     #[cfg(test)]
     StallReader(String),
     #[cfg(test)]
@@ -374,6 +375,9 @@ async fn session(
     let mut settings=crate::resolution::StreamSettings::default();
     let mut publication_format:Option<(Codec,u32,u32)>=None;
     let mut last_video_bps:Option<u64>=None;
+    let mut rate_mode=crate::adaptive_upload::Mode::Manual;
+    let mut rate_control:Option<crate::adaptive_upload::Controller>=None;
+    let mut rate_rejected=false;
     let mut retiring:Option<tokio::task::JoinHandle<()>>=None;
     let mut transmit_paused=false;
     let started = Instant::now();
@@ -395,6 +399,7 @@ async fn session(
                     #[cfg(test)] Command::FailCapture=>{pending=Some(tokio::spawn(async{panic!("injected capture task failure")}));shared.lock().unwrap().selecting=true;},
                     #[cfg(test)] Command::StallReader(sid)=>{if let Some(sink)=video_sinks.get(&sid){sink.1.store(true,Ordering::Relaxed);}},
                     Command::Disconnect=>break,
+                    Command::RateMode(value)=>{if capture.is_none()&&pending.is_none(){rate_mode=value;}},
                     Command::StreamSettings(value)=>{if capture.is_none()&&pending.is_none()&&value.valid(){settings=value;}},
                     Command::RestartReception=>{
                         if reception_restart.is_none() && room.connection_state()==ConnectionState::Connected {
@@ -421,7 +426,7 @@ async fn session(
                         if let Some(task)=pending.take(){task.abort();let _=task.await;}
                         if let Some(mut cap)=capture.take(){cap.stop().await;}
                         if let Some(p)=publisher.take(){let _=p.stop().await;}
-                        publication_format=None;last_video_bps=None;transmit_paused=false;
+                        publication_format=None;last_video_bps=None;transmit_paused=false;rate_control=None;rate_rejected=false;
                         if let Some(a)=audio.take(){a.stop(&room).await;}
                         let mut s=shared.lock().unwrap();s.sharing=false;s.selecting=false;s.status="Compartilhamento encerrado".into();
                     },
@@ -477,9 +482,10 @@ async fn session(
                                     room=Arc::new(next_room);events=next_events;recovery.reset();
                                     reception_restart=None;last_refresh=Instant::now()-Duration::from_secs(1);
                                     {let mut s=shared.lock().unwrap();s.reconnecting=false;s.reception_resetting=false;}
-                                    publication_format=None;last_video_bps=None;transmit_paused=false;
+                                    publication_format=None;last_video_bps=None;transmit_paused=false;rate_control=None;rate_rejected=false;
                                 }
-                                if let Some(bps)=last_video_bps.filter(|bps|*bps>0){cap.bitrate(bps.min(cap.bitrate_limit as u64) as u32);}
+                                if rate_control.as_ref().is_none_or(|c|c.snapshot().ceiling!=cap.bitrate_limit){rate_control=Some(crate::adaptive_upload::Controller::new(rate_mode,cap.bitrate_limit));}
+                                if let Some(bps)=last_video_bps.filter(|bps|*bps>0){rate_rejected=!cap.bitrate(bps.min(cap.bitrate_limit as u64) as u32);transmit_paused=rate_rejected;}
                                 current_codec=codec;
                                 {let mut s=shared.lock().unwrap();s.sharing=true;s.status=crate::i18n_format!("Captura Linux · {} · até {} FPS","Linux capture · {} · up to {} FPS",cap.backend,cap.fps);s.quality.send=None;}
                                 if let Some(mut old)=capture.replace(cap) {
@@ -489,6 +495,7 @@ async fn session(
                                         eprintln!("Linux capture: stage=retire_previous_done");
                                     }));
                                 }
+                                if rate_rejected{shared.lock().unwrap().status=crate::i18n::label("O encoder recusou o bitrate. Pare e tente compartilhar novamente.","Encoder rejected the bitrate. Stop and try sharing again.").into();}
                                 shared.lock().unwrap().selecting=retiring.is_some();
                                 send_meter=Default::default();
                                 eprintln!("Linux capture: stage=source_switched codec={codec:?}");
@@ -533,10 +540,17 @@ async fn session(
                     if let Some(cap)=&mut capture {
                         if let Some(p)=&mut publisher {
                             if let Some(rate)=p.take_rate_control_request(){
-                                if last_video_bps!=Some(rate.target_bitrate_bps){eprintln!("Linux publish rate: target_bps={} paused={}",rate.target_bitrate_bps,rate.target_bitrate_bps==0);}
-                                last_video_bps=Some(rate.target_bitrate_bps);
-                                let was_paused=transmit_paused;transmit_paused=rate.target_bitrate_bps==0;
-                                if !transmit_paused {cap.bitrate(rate.target_bitrate_bps.min(cap.bitrate_limit as u64) as u32);}
+                                let controller=rate_control.get_or_insert_with(||crate::adaptive_upload::Controller::new(rate_mode,cap.bitrate_limit));
+                                let target=controller.sample(Instant::now(),rate.target_bitrate_bps);
+                                if last_video_bps!=Some(target as u64){eprintln!("Linux publish rate: target_bps={target} network_bps={} mode={rate_mode:?}",rate.target_bitrate_bps);}
+                                last_video_bps=Some(target as u64);
+                                let was_paused=transmit_paused;transmit_paused=target==0;
+                                if !transmit_paused {
+                                    let rejected=!cap.bitrate(target);
+                                    if rejected&&!rate_rejected{shared.lock().unwrap().status=crate::i18n::label("O encoder recusou o bitrate. Pare e tente compartilhar novamente.","Encoder rejected the bitrate. Stop and try sharing again.").into();}
+                                    if rate_rejected&&!rejected{shared.lock().unwrap().status=crate::i18n::label("Compartilhamento retomado","Sharing resumed").into();}
+                                    rate_rejected=rejected;transmit_paused=rejected;
+                                }
                                 if was_paused&&!transmit_paused{p.restart_keyframe();cap.request_keyframe();}
                             }
                         }else{transmit_paused=false;}
@@ -560,7 +574,7 @@ async fn session(
                                         cap.stop().await;capture=None;
                                         if let Some(p)=publisher.take(){let _=p.stop().await;}
                                         if let Some(a)=audio.take(){a.stop(&room).await;}
-                                        publication_format=None;last_video_bps=None;transmit_paused=false;
+                                        publication_format=None;last_video_bps=None;transmit_paused=false;rate_control=None;rate_rejected=false;
                                         let mut s=shared.lock().unwrap();s.sharing=false;
                                         s.status=crate::i18n_format!("Envio interrompido: {error}. Tente compartilhar novamente.","Sending stopped: {error}. Try sharing again.");
                                     }
@@ -568,7 +582,7 @@ async fn session(
                             },
                             Ok(None)=>{},
                             Err(error)=>{shared.lock().unwrap().status=error.to_string();cap.stop().await;capture=None;if let Some(p)=publisher.take(){let _=p.stop().await;}if let Some(a)=audio.take(){a.stop(&room).await;}
-                                publication_format=None;last_video_bps=None;transmit_paused=false;
+                                publication_format=None;last_video_bps=None;transmit_paused=false;rate_control=None;rate_rejected=false;
                                 shared.lock().unwrap().sharing=false;},
                         }
                     }
@@ -587,7 +601,8 @@ async fn session(
                 else{send_meter=Default::default();state.quality.send=None;state.quality.resolution=None;}
                 state.quality.encoder_backend=capture.as_ref().and_then(|c|match c.backend.as_str(){"nvh265enc"=>Some("nvh265enc"),"nvav1enc"=>Some("nvav1enc"),"x265enc"=>Some("x265enc"),"vah265enc"=>Some("vah265enc"),"vaav1enc"=>Some("vaav1enc"),_=>None});
                 state.quality.codec=capture.as_ref().map(|_|if current_codec==Codec::Av1{"AV1"}else{"HEVC"});
-                state.quality.send_paused=capture.is_some()&&transmit_paused;
+                state.quality.send_paused=capture.is_some()&&transmit_paused;state.quality.encoder_rate_rejected=capture.is_some()&&rate_rejected;
+                state.quality.adaptive_upload=capture.as_ref().and_then(|_|rate_control.as_ref().map(|c|c.snapshot()));
                 if let Some(sample)=receive_meter.sample(now,state.received,0){state.quality.receive=Some(sample);}
             }
             ctx.request_repaint();
@@ -640,6 +655,7 @@ mod reception_tests {
             anyhow::ensure!(Instant::now()<deadline,"Switch test clients did not connect");
             std::thread::sleep(Duration::from_millis(25));
         }
+        publisher.tx.send(Command::RateMode(crate::adaptive_upload::Mode::Automatic))?;
         publisher.tx.send(Command::FailCapture)?;
         let until=Instant::now()+Duration::from_secs(5);
         loop {

@@ -12,3 +12,5 @@ A 0.9.0 foi publicada com o escopo mínimo documentado abaixo. A ordem de implem
 Em 2026-10-19 foi definido um [escopo mínimo estável](../0.9.0.md): recuperação, relatório técnico seguro e preferências. Adaptação adicional, recuperação automática por faixa e novos backends permanecem incrementos futuros; não são bloqueadores dessa entrega reduzida.
 
 Em 2026-10-19 começou o incremento posterior à versão estável: recuperação automática conservadora por publicação (0002), apoiada por contadores no relatório (0004). Os detalhes e limites estão nos respectivos ADRs e no [manual de recepção](../reception-recovery.md).
+
+Em 2026-10-20 foi implementado o primeiro incremento de [qualidade adaptativa de bitrate](../adaptive-upload.md) (0003), mantendo as pendências físicas e de WAN explícitas.
