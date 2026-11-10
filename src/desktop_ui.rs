@@ -126,7 +126,7 @@ pub fn compact(ui:&mut egui::Ui,label:&str,enabled:bool)->egui::Response {
         ui.spacing_mut().button_padding=Vec2::new(10.0,4.0);
         ui.spacing_mut().interact_size.y=26.0;
         ui.add_enabled(enabled,egui::Button::new(RichText::new(label).size(11.0).color(MUTED))
-            .min_size(Vec2::new(0.0,26.0)).corner_radius(9).fill(SURFACE)
+            .wrap_mode(egui::TextWrapMode::Extend).min_size(Vec2::new(0.0,26.0)).corner_radius(9).fill(SURFACE)
             .stroke(egui::Stroke::new(1.0,BORDER)))
     }).inner
 }
@@ -213,9 +213,9 @@ pub fn preferences_controls(ui:&mut egui::Ui,store:&mut crate::preferences::Stor
     reset
 }
 
-/// Preserve the existing one-row layout for up to three streams.
+/// Fit stream cards to the usable width while keeping every stream visible.
 pub(crate) fn video_grid_card(area: egui::Rect, index: usize, count: usize, gap: f32) -> egui::Rect {
-    let columns = count.clamp(1, 3);
+    let columns = count.clamp(1, if area.width() >= 900.0 { 3 } else if area.width() >= 480.0 { 2 } else { 1 });
     let rows = count.max(1).div_ceil(columns);
     let row = index / columns;
     let column = index % columns;
@@ -243,5 +243,129 @@ fn video_grid_preserves_three_columns_and_fits_six_cards() {
         assert_eq!(card.size(), egui::vec2(300.0, 300.0));
         assert!(area.contains_rect(*card));
         assert!(cards[..index].iter().all(|previous| !card.intersects(*previous)));
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn narrow_room_grid_keeps_cards_inside_the_viewport() {
+    for (width, columns) in [(380.0, 1), (500.0, 2), (940.0, 3)] {
+        let area = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 420.0));
+        let cards: Vec<_> = (0..6).map(|i| video_grid_card(area, i, 6, 12.0)).collect();
+        assert_eq!(cards.iter().filter(|card| card.top() == 0.0).count(), columns);
+        assert!(cards.iter().all(|card| area.expand(0.01).contains_rect(*card)));
+    }
+}
+
+pub(crate) fn session_bar() -> egui::Frame {
+    egui::Frame::new()
+        .fill(PANEL)
+        .stroke(egui::Stroke::new(1.0, BORDER))
+        .inner_margin(egui::Margin::symmetric(16, 10))
+}
+
+pub(crate) fn room_state(connected: bool, reconnecting: bool) -> &'static str {
+    if reconnecting {
+        crate::i18n::label("Reconectando à sala…", "Reconnecting to the room…")
+    } else if connected {
+        crate::i18n::label("Conectado à sala", "Connected to the room")
+    } else {
+        crate::i18n::label("Fora da sala", "Outside the room")
+    }
+}
+
+pub(crate) fn session_status(ui: &mut egui::Ui, sharing: bool, camera_active: bool, status: &str) {
+    ui.horizontal_wrapped(|ui| {
+        let label = if sharing {
+            crate::i18n::label("Compartilhando tela", "Sharing screen")
+        } else {
+            crate::i18n::label("Sem compartilhar tela", "Screen sharing off")
+        };
+        ui.label(RichText::new(label).strong().color(if sharing { ACCENT } else { TEXT }));
+        if camera_active {
+            ui.label(RichText::new(crate::i18n::label("Câmera ligada", "Camera on")).strong().color(ACCENT));
+        }
+        if !status.is_empty() && status != crate::i18n::label("Conectado", "Connected") {
+            ui.label(RichText::new(status).size(13.0).color(MUTED));
+        }
+    });
+    ui.add_space(6.0);
+}
+
+pub(crate) fn session_button(ui: &mut egui::Ui, label: &str, enabled: bool, primary: bool) -> egui::Response {
+    let text = RichText::new(label).color(if primary { PANEL } else { TEXT });
+    let response = ui.add_enabled(enabled, egui::Button::new(text)
+        .fill(if primary { ACCENT } else { SURFACE })
+        .wrap_mode(egui::TextWrapMode::Extend)
+        .min_size(Vec2::new(0.0, 38.0)).corner_radius(8));
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            response.rect.expand(2.0), 9.0, egui::Stroke::new(2.0, TEXT),
+            egui::StrokeKind::Outside,
+        );
+    }
+    response
+}
+
+pub(crate) fn home_panel(ui: &mut egui::Ui, status: &str, content: impl FnOnce(&mut egui::Ui)) {
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        ui.vertical_centered(|ui| {
+            ui.add_space(20.0);
+            let width = ui.available_width().min(460.0);
+            ui.allocate_ui_with_layout(egui::vec2(width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.set_width(width);
+                ui.horizontal(|ui| {
+                    brand_mark(ui, 28.0);
+                    ui.label(RichText::new("HyperCast").size(26.0).strong().color(TEXT));
+                });
+                ui.label(RichText::new(crate::i18n::label(
+                    "Entre em uma sala para assistir ou compartilhar sua tela.",
+                    "Join a room to watch or share your screen.",
+                )).size(16.0).color(MUTED));
+                if !status.is_empty() { ui.label(RichText::new(status).color(TEXT)); }
+                ui.add_space(12.0);
+                egui::Frame::new().fill(PANEL).corner_radius(12).inner_margin(18).show(ui, content);
+            });
+        });
+    });
+}
+
+pub(crate) fn confirm_leave(ctx: &egui::Context) -> Option<bool> {
+    let modal = egui::Modal::new(egui::Id::new("confirm_leave")).show(ctx, |ui| {
+        ui.heading(crate::i18n::label("Sair da sala?", "Leave the room?"));
+        ui.label(crate::i18n::label(
+            "Seu compartilhamento será encerrado ao sair.",
+            "Your sharing will end when you leave.",
+        ));
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            if session_button(ui, crate::i18n::label("Continuar na sala", "Stay in the room"), true, false).clicked() {
+                return Some(false);
+            }
+            if session_button(ui, crate::i18n::label("Sair da sala", "Leave room"), true, true).clicked() {
+                return Some(true);
+            }
+            None
+        }).inner
+    });
+    modal.inner.or_else(|| modal.should_close().then_some(false))
+}
+
+/// Share the visible room name so someone with access can find it in the catalog.
+pub(crate) fn copy_room_name(ui: &mut egui::Ui, name: &str) {
+    let response = compact(ui, crate::i18n::label("Copiar nome da sala", "Copy room name"), true)
+        .on_hover_text(crate::i18n::label(
+            "Quem tem acesso ao servidor pode procurar este nome na lista de salas.",
+            "People with server access can find this name in the room list.",
+        ));
+    if response.clicked() {
+        ui.ctx().copy_text(name.to_owned());
+        let now = ui.input(|input| input.time);
+        ui.ctx().data_mut(|data| data.insert_temp(response.id, now));
+    }
+    let copied = ui.ctx().data(|data| data.get_temp::<f64>(response.id));
+    if copied.is_some_and(|at| ui.input(|input| input.time) - at < 2.0) {
+        ui.label(crate::i18n::label("Nome copiado", "Name copied"));
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs(2));
     }
 }

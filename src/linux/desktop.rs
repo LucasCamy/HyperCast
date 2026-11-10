@@ -30,6 +30,7 @@ struct App {
     name: String,
     sidebar_open: bool,
     invite: String,
+    confirm_leave: bool,
     saved_room:Option<String>,
     device: String,
     access: ServerAccess,
@@ -77,6 +78,7 @@ impl App {
                 .unwrap_or("wss://hypercast.cloudlane.com.br".into()),
             name: crate::preferences::load_name(),
             sidebar_open: prefs.sidebar,
+            confirm_leave: false,
             invite: std::env::var("HYPERCAST_INVITE").unwrap_or_default(),saved_room:None,
             device: crate::invitation::client_id(),
             access: ServerAccess::default(),
@@ -200,7 +202,7 @@ impl App {
                     });
                 }
             }).response.interact(egui::Sense::click());
-        if response.double_clicked() {
+        if response.double_clicked() || (response.clicked() && response.interact_pointer_pos().is_none()) {
             self.layout.focus = Some(sid.to_owned());
             self.layout.mode=ViewMode::Spotlight;
             self.layout();
@@ -219,7 +221,7 @@ impl App {
         self.server_status.poll(&self.address,ctx);
         if self.departure.as_ref().is_some_and(|d|d.ready()) {
             self.departure=None;
-            if std::mem::take(&mut self.pending_join){self.connect(ctx);}else{self.status.clear();}
+            if std::mem::take(&mut self.pending_join){self.connect(ctx);} else { self.status = crate::i18n::label("Você saiu da sala", "You left the room").into(); }
         }
         if let Some(room) = self.creator.poll() {
             self.saved_room=Some(room.room);self.invite.clear();
@@ -258,8 +260,47 @@ impl App {
         if self.fullscreen && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.fullscreen(ctx, false);
         }
-        if !self.fullscreen && self.sidebar_open {
-            egui::Panel::left("sidebar").exact_size(310.0).frame(egui::Frame::new().fill(PANEL).inner_margin(20)).show(root,|ui|{
+        if !self.fullscreen && (connected || reconnecting) {
+            egui::Panel::bottom("session_actions")
+                .resizable(false)
+                .frame(crate::desktop_ui::session_bar())
+                .show(root, |ui| {
+                    let status = if connected && !can_publish {
+                        crate::i18n::label("Nesta sala, você pode assistir.", "You can watch in this room.")
+                    } else if self.status.is_empty() { &state_status } else { &self.status };
+                    crate::desktop_ui::session_status(ui, sharing, self.snapshot.camera_active, status);
+                    ui.horizontal_wrapped(|ui| {
+                    if crate::desktop_ui::session_button(ui,if sharing{crate::i18n::label("Trocar tela ou janela","Change screen or window")}else{crate::i18n::label("Compartilhar tela","Share screen")},connected&&can_publish&&!selecting&&super::media::factory_available(self.codec,self.encoder).unwrap_or(true),true).clicked(){self.send(Command::StreamSettings(self.stream_settings));self.send(Command::Share(Source::Portal,self.codec,self.encoder,self.upload));}
+                    if std::env::var("WAYLAND_DISPLAY").is_err()&&!sharing&&crate::desktop_ui::session_button(ui,crate::i18n::label("Tela inteira (X11)","Entire screen (X11)"),connected&&can_publish&&!selecting&&super::media::factory_available(self.codec,self.encoder).unwrap_or(true),false).clicked(){self.send(Command::StreamSettings(self.stream_settings));self.send(Command::Share(Source::X11,self.codec,self.encoder,self.upload));}
+                    if (sharing||selecting)&&crate::desktop_ui::session_button(ui,if selecting{crate::i18n::label("Cancelar seleção","Cancel selection")}else{crate::i18n::label("Parar compartilhamento","Stop sharing")},true,false).clicked(){self.send(if selecting{Command::CancelSelection}else{Command::Stop});}
+                    let camera_label = if self.snapshot.camera_starting {
+                        crate::i18n::label("Abrindo câmera…", "Opening camera…")
+                    } else if self.snapshot.camera_active {
+                        crate::i18n::label("Desligar câmera", "Turn off camera")
+                    } else {
+                        crate::i18n::label("Ligar câmera", "Turn on camera")
+                    };
+                    if crate::desktop_ui::session_button(ui, camera_label, connected && can_publish && !self.snapshot.camera_starting, self.snapshot.camera_active).clicked() {
+                        self.send(Command::ToggleCamera);
+                    }
+                    if ui.checkbox(&mut self.audio,crate::i18n::label("Áudio do sistema","System audio")).changed(){self.send(Command::Audio(self.audio));}
+
+                    ui.menu_button(crate::i18n::label("Som recebido", "Received audio"), |ui| {
+                        let label = ui.label(crate::i18n::label("Volume", "Volume")).id;
+                        if crate::desktop_ui::volume_slider(ui, &mut self.layout.volume).labelled_by(label).changed() {
+                            self.layout();
+                        }
+                    });
+                    if crate::desktop_ui::session_button(ui,if self.layout.paused{crate::i18n::label("Retomar vídeo","Resume video")}else{crate::i18n::label("Pausar vídeo recebido","Pause incoming video")},connected,false).clicked(){self.layout.paused=!self.layout.paused;self.layout();}
+                    ui.horizontal(|ui|{
+                        if small(ui,crate::i18n::label("Diagnóstico","Diagnostics")).clicked(){self.debug=true;}
+                        if (self.engine.is_some()||self.departure.is_some()||self.joining.is_some())&&small(ui,crate::i18n::label("Sair da sala","Leave room")).clicked(){if sharing || self.snapshot.camera_active { self.confirm_leave = true; } else { self.leave_room(ctx, false); }}
+                    });
+                    });
+                });
+        }
+        if connected && !self.fullscreen && self.sidebar_open {
+            egui::Panel::left("sidebar").exact_size(if ctx.content_rect().width() < 1000.0 { 236.0 } else { 284.0 }).frame(egui::Frame::new().fill(PANEL).inner_margin(20)).show(root,|ui|{
                 ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
                 egui::ScrollArea::vertical().auto_shrink([false,false]).show(ui,|ui|{
                     ui.horizontal(|ui|{crate::desktop_ui::brand_mark(ui,28.0);ui.label(RichText::new("HYPERCAST").size(16.0).strong());
@@ -268,21 +309,7 @@ impl App {
                     ui.label(RichText::new(self.server_status.label()).size(11.0).color(if self.server_status.status==crate::server_status::Status::Online{ACCENT}else{MUTED})).on_hover_text(crate::i18n_format!("Servidor: {}","Server: {}",self.server_status.detail));
                     if reconnecting {ui.label(RichText::new(crate::i18n::label("Sala: reconectando…","Room: reconnecting…")).size(11.0).color(MUTED));}
                     ui.add_space(12.0);
-                    if !connected && self.departure.is_none() && self.joining.is_none() && self.engine.as_ref().is_some_and(|e|e.finished()) && (self.saved_room.is_some() || !self.invite.is_empty()) {
-                        if button(ui,crate::i18n::label("Tentar novamente","Try again"),true,true).clicked(){self.leave_room(ctx,true);}
-                    }
-                    if !self.access.authenticated(){
-                        ui.label(RichText::new(crate::i18n::label("ACESSO AO SERVIDOR","SERVER ACCESS")).size(11.0).color(MUTED));
-                        ui.collapsing(crate::i18n::label("Servidor","Server"),|ui|{input(ui,&mut self.address,"wss://servidor",false,512);});
-                        input(ui,&mut self.access.code,crate::i18n::label("Chave compartilhada do servidor","Shared server access key"),true,64);
-                        if button(ui,crate::i18n::label("Entrar no servidor","Connect to server"),!self.access.busy,true).clicked(){self.access.start(self.address.clone(),self.device.clone(),ctx.clone());}
-                        ui.label(RichText::new(&self.access.status).size(12.0).color(MUTED));
-                    }else if !connected{
-                        if input(ui,&mut self.name,crate::i18n::label("Seu nome","Your name"),false,32).lost_focus(){let _=crate::preferences::save_name(&self.name);}
-                        if button(ui,crate::i18n::label("Escolher sala","Choose room"),self.departure.is_none()&&self.joining.is_none()&&!self.creator.busy,true).clicked(){self.creator.open=false;self.catalog.open(self.address.clone(),self.access.token(),ctx.clone());}
-                        if button(ui,crate::i18n::label("Criar sala","Create room"),self.departure.is_none()&&self.joining.is_none()&&!self.creator.busy,false).clicked(){self.creator.open(&self.address);}
-                        if small(ui,crate::i18n::label("Trocar acesso ao servidor","Change server access")).clicked(){self.leave_room(ctx,false);self.access.logout(&self.address);}
-                    }else{
+                    {
                         ui.label(RichText::new(&self.room_title).strong());
                         ui.label(RichText::new(crate::i18n::label("PARTICIPANTES","PARTICIPANTS")).size(11.0).color(MUTED));
                         ui.label(crate::i18n_format!("{} (você) · {}","{} (you) · {}",if self.name.is_empty(){"Linux"}else{&self.name},if sharing{crate::i18n::label("Transmitindo","Sharing")}else{crate::i18n::label("Assistindo","Watching")}));
@@ -295,7 +322,7 @@ impl App {
                         if small(ui,crate::i18n::label("Escolher sala","Choose room")).clicked(){self.catalog.open(self.address.clone(),self.access.token(),ctx.clone());}
                     }
                     ui.separator();ui.label(RichText::new(crate::i18n::label("COMPARTILHAR","SHARE")).size(11.0).color(MUTED));
-                    egui::CollapsingHeader::new(crate::i18n_format!("Formato de vídeo · {}","Video format · {}",if self.codec==Codec::Hevc{"HEVC"}else{"AV1"})).id_salt("linux_video_format").show(ui,|ui|{
+                    egui::CollapsingHeader::new(crate::i18n::label("Qualidade do vídeo","Video quality")).id_salt("linux_video_format").show(ui,|ui|{
                     if self.encoder==Encoder::Software{self.stream_settings.fps=30;}
                     let before=self.stream_settings;
                     crate::desktop_ui::stream_settings(ui,&mut self.stream_settings,!sharing&&!selecting,if self.encoder==Encoder::Software{30}else{120});
@@ -314,35 +341,10 @@ impl App {
                         if super::media::factory_available(self.codec,self.encoder)==Some(false){ui.add(egui::Label::new(RichText::new(crate::i18n::label("Nenhum encoder disponível para este formato. Escolha outro formato ou instale o plugin/driver.","No encoder is available for this format. Choose another format or install the plugin/driver.")).color(MUTED).size(11.0)).wrap());}
                     });
                     });
+                    ui.collapsing(crate::i18n::label("Indicadores de vídeo", "Video statistics"), |ui| {
+                        crate::desktop_ui::quality_strip(ui, &self.snapshot.quality, reconnecting, sharing, self.layout.paused);
+                    });
                     if super::media::factory_available(self.codec,self.encoder)==Some(false){ui.add(egui::Label::new(RichText::new(crate::i18n::label("Encoder indisponível: escolha outro formato em Formato de vídeo.","Encoder unavailable: choose another format in Video format.")).color(MUTED).size(11.0)).wrap());}
-                    if button(ui,if sharing{crate::i18n::label("Trocar tela ou janela","Change screen or window")}else{crate::i18n::label("Compartilhar tela/janela","Share screen/window")},connected&&can_publish&&!selecting&&super::media::factory_available(self.codec,self.encoder).unwrap_or(true),true).clicked(){self.send(Command::StreamSettings(self.stream_settings));self.send(Command::Share(Source::Portal,self.codec,self.encoder,self.upload));}
-                    if std::env::var("WAYLAND_DISPLAY").is_err()&&!sharing&&button(ui,crate::i18n::label("Tela inteira (X11)","Entire screen (X11)"),connected&&can_publish&&!selecting&&super::media::factory_available(self.codec,self.encoder).unwrap_or(true),false).clicked(){self.send(Command::StreamSettings(self.stream_settings));self.send(Command::Share(Source::X11,self.codec,self.encoder,self.upload));}
-                    if (sharing||selecting)&&button(ui,if selecting{crate::i18n::label("Cancelar seleção","Cancel selection")}else{crate::i18n::label("Parar compartilhamento","Stop sharing")},true,false).clicked(){self.send(if selecting{Command::CancelSelection}else{Command::Stop});}
-                    let camera_label = if self.snapshot.camera_starting {
-                        crate::i18n::label("Abrindo câmera…", "Opening camera…")
-                    } else if self.snapshot.camera_active {
-                        crate::i18n::label("Desligar câmera", "Turn off camera")
-                    } else {
-                        crate::i18n::label("Ligar câmera", "Turn on camera")
-                    };
-                    if button(ui, camera_label, connected && can_publish && !self.snapshot.camera_starting, self.snapshot.camera_active).clicked() {
-                        self.send(Command::ToggleCamera);
-                    }
-                    if ui.checkbox(&mut self.audio,crate::i18n::label("Áudio do sistema","System audio")).changed(){self.send(Command::Audio(self.audio));}
-                    if self.audio{ui.label(RichText::new(crate::i18n::label("O áudio recebido fica silenciado durante o envio para evitar eco.","Received audio is muted while sharing to prevent echo.")).size(11.0).color(MUTED));}
-                    if self.access.busy || self.joining.is_some() || self.departure.is_some(){ui.spinner();}
-                    ui.label(RichText::new(&state_status).size(12.0).color(MUTED));ui.label(RichText::new(&self.status).size(12.0).color(MUTED));
-                    ui.separator();
-                    egui::CollapsingHeader::new(crate::i18n_format!("Som recebido · {}%","Received audio · {}%",self.layout.volume)).show(ui,|ui|{
-                        let label=ui.label(crate::i18n::label("Volume da transmissão","Stream volume")).id;
-                        if crate::desktop_ui::volume_slider(ui,&mut self.layout.volume).labelled_by(label).changed(){self.layout();}
-                        ui.label(RichText::new(if self.layout.mode==ViewMode::Grid{crate::i18n::label("Som das telas visíveis","Audio from visible streams")}else{crate::i18n::label("Som da tela em destaque","Audio from the focused stream")}).size(11.0).color(MUTED));
-                    });
-                    if button(ui,if self.layout.paused{crate::i18n::label("Retomar recepção","Resume playback")}else{crate::i18n::label("Pausar recepção","Pause playback")},connected,false).clicked(){self.layout.paused=!self.layout.paused;self.layout();}
-                    ui.horizontal(|ui|{
-                        if small(ui,"Debug").clicked(){self.debug=true;}
-                        if (self.engine.is_some()||self.departure.is_some()||self.joining.is_some())&&small(ui,crate::i18n::label("Sair","Leave")).clicked(){self.leave_room(ctx,false);}
-                    });
                 });
             });
         }
@@ -353,14 +355,51 @@ impl App {
                     .inner_margin(if self.fullscreen { 8 } else { 28 }),
             )
             .show(root, |ui| {
-                ui.horizontal(|ui| {
+                if !connected && !self.fullscreen {
+                    let status = if self.status.is_empty() { &state_status } else { &self.status }.clone();
+                    crate::desktop_ui::home_panel(ui, &status, |ui| {
+                    if !connected && self.departure.is_none() && self.joining.is_none() && self.engine.as_ref().is_some_and(|e|e.finished()) && (self.saved_room.is_some() || !self.invite.is_empty()) {
+                        if button(ui,crate::i18n::label("Tentar novamente","Try again"),true,true).clicked(){self.leave_room(ctx,true);}
+                    }
+                    if !self.access.authenticated(){
+                        ui.label(RichText::new(crate::i18n::label("ACESSO AO SERVIDOR","SERVER ACCESS")).size(11.0).color(MUTED));
+                        ui.collapsing(crate::i18n::label("Servidor","Server"),|ui|{input(ui,&mut self.address,"wss://servidor",false,512);});
+                        let key_label = ui.label(crate::i18n::label("Chave de acesso", "Access key")).id;
+                        input(ui, &mut self.access.code, "", true, 64).labelled_by(key_label);
+                        if button(ui,crate::i18n::label("Continuar com a chave","Continue with access key"),!self.access.busy,true).clicked(){self.access.start(self.address.clone(),self.device.clone(),ctx.clone());}
+                        ui.label(RichText::new(&self.access.status).size(12.0).color(MUTED));
+                    }else{
+                        if input(ui,&mut self.name,crate::i18n::label("Seu nome","Your name"),false,32).lost_focus(){let _=crate::preferences::save_name(&self.name);}
+                        if button(ui,crate::i18n::label("Entrar em uma sala","Join a room"),self.departure.is_none()&&self.joining.is_none()&&!self.creator.busy,true).clicked(){self.creator.open=false;self.catalog.open(self.address.clone(),self.access.token(),ctx.clone());}
+                        if button(ui,crate::i18n::label("Criar sala","Create room"),self.departure.is_none()&&self.joining.is_none()&&!self.creator.busy,false).clicked(){self.creator.open(&self.address);}
+                        ui.collapsing(crate::i18n::label("Usar um convite", "Use an invitation"), |ui| {
+                            let label = ui.label(crate::i18n::label("Código do convite", "Invitation code")).id;
+                            input(ui, &mut self.invite, "", false, 256).labelled_by(label);
+                            if button(ui, crate::i18n::label("Entrar com convite", "Join with invitation"),
+                                !self.invite.trim().is_empty() && self.departure.is_none() && self.joining.is_none(), true).clicked() {
+                                self.saved_room = None;
+                                self.leave_room(ctx, true);
+                            }
+                        });
+                        if small(ui,crate::i18n::label("Trocar acesso ao servidor","Change server access")).clicked(){self.leave_room(ctx,false);self.access.logout(&self.address);}
+                    }
+
+                        if small(ui, crate::i18n::label("Atualizar", "Update")).clicked() { self.updates = true; }
+                        if small(ui, crate::i18n::label("Diagnóstico", "Diagnostics")).clicked() { self.debug = true; }
+                    });
+                    return;
+                }
+
+                ui.horizontal_wrapped(|ui| {
                     let refresh=ui.add_enabled(connected&&!resetting,egui::Button::new("↻").corner_radius(6)).on_hover_text(crate::i18n::label("Reconectar recepção · F5","Reconnect playback · F5"));
                     refresh.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,connected&&!resetting,crate::i18n::label("Reconectar recepção","Reconnect playback")));
                     if refresh.clicked(){self.restart_reception();}
                     if resetting{ui.label(crate::i18n::label("Reconectando recepção…","Reconnecting playback…"));}
                     if !self.fullscreen {
-                        if small(ui,if self.sidebar_open {crate::i18n::label("Recolher menu","Collapse menu")}else{crate::i18n::label("Abrir menu","Open menu")}).clicked(){self.sidebar_open=!self.sidebar_open;}
-                        ui.heading(crate::i18n::label("Telas da sala","Room streams"));
+                        if small(ui,if self.sidebar_open {crate::i18n::label("Ocultar painel","Hide panel")}else{crate::i18n::label("Pessoas e opções","People and settings")}).clicked(){self.sidebar_open=!self.sidebar_open;}
+                        ui.heading(if self.room_title.is_empty() { crate::i18n::label("Sala", "Room") } else { &self.room_title });
+                        ui.label(crate::desktop_ui::room_state(connected, reconnecting));
+                        if !self.room_title.is_empty() { crate::desktop_ui::copy_room_name(ui, &self.room_title); }
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if self.fullscreen {
@@ -384,7 +423,7 @@ impl App {
                                 self.fullscreen(ctx, true);
                             }
                             for (mode, name) in
-                                [(ViewMode::Grid, "Grid"), (ViewMode::Spotlight, crate::i18n::label("Destaque","Focus"))]
+                                [(ViewMode::Grid, crate::i18n::label("Em grade", "Grid")), (ViewMode::Spotlight, crate::i18n::label("Em destaque","Focus"))]
                             {
                                 if ui
                                     .selectable_value(&mut self.layout.mode, mode, name)
@@ -396,11 +435,11 @@ impl App {
                         }
                     });
                 });
-                if connected&&!self.fullscreen{crate::desktop_ui::quality_strip(ui,&self.snapshot.quality,reconnecting,sharing,self.layout.paused);}
+
                 ui.add_space(16.0);
-                if screens.is_empty() {
+                if self.layout.paused || screens.is_empty() {
                     ui.centered_and_justified(|ui| {
-                        ui.label(RichText::new(crate::i18n::label("Um lugar para trabalhar juntos.","A place to work together.")).size(24.0));
+                        ui.label(RichText::new(if self.layout.paused { crate::i18n::label("Vídeo pausado por você", "You paused incoming video") } else { crate::i18n::label("Nenhum vídeo compartilhado", "No shared video yet") }).size(24.0));
                     });
                 } else if self.layout.mode == ViewMode::Grid && !self.fullscreen {
                     let area = ui.available_rect_before_wrap();
@@ -420,6 +459,13 @@ impl App {
                     self.video(ui, &focus.sid, &focus.name, ui.available_size());
                 }
             });
+        if self.confirm_leave {
+            match crate::desktop_ui::confirm_leave(ctx) {
+                Some(true) => { self.confirm_leave = false; self.leave_room(ctx, false); }
+                Some(false) => self.confirm_leave = false,
+                None => {}
+            }
+        }
         if self.creator.open {
             let mut open = true;
             egui::Window::new(crate::i18n::label("Criar sala","Create room")).title_bar(false)
@@ -511,7 +557,7 @@ pub fn run() -> anyhow::Result<()> {
                 "../../assets/hypercast.png"
             ))?)
             .with_inner_size([1320.0, 820.0])
-            .with_min_inner_size([960.0, 620.0]),
+            .with_min_inner_size([800.0, 600.0]),
         renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
@@ -532,8 +578,15 @@ mod tests {
             screen_rect:Some(egui::Rect::from_min_size(Default::default(),egui::vec2(960.0,620.0))),
             time:Some(step as f64*0.1),..Default::default()
         },|ui|app.render(ui));
-        assert!(output.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text().contains("HYPERCAST"))),"Sidebar must remain painted");
-        assert!(output.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text().contains("Telas da sala"))),"Room controls must remain painted");
+        let painted = |needle: &str| output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text().contains(needle))
+        });
+        if app.snapshot.connected {
+            assert!(painted("Sair da sala"), "Session controls must remain painted");
+        } else {
+            assert!(painted("HyperCast"), "Home must remain painted");
+            assert!(painted("Chave") || painted("Entrar em uma sala"), "Room access must remain painted");
+        }
     }
     #[test]
     #[ignore = "Requires an isolated server access key and two authorized test rooms"]
