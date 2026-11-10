@@ -374,7 +374,8 @@ impl App {
                     ui.label(crate::i18n::label("Abra um aplicativo e atualize a lista.", "Open an app and refresh the list."));
                 }
                 self.window_picker_open = true;
-                self.window_selection(ui, 190.0);
+                let list_height = (ui.ctx().content_rect().height() * 0.28).clamp(78.0, 190.0);
+                self.window_selection(ui, list_height);
             }else{
                 let label = ui.label(crate::i18n::label("Monitor", "Display")).id;
                 let title=self.displays.get(self.selected_display).map_or(crate::i18n::label("Nenhum monitor","No monitors").into(),|d|format!("Monitor {} · {} × {}",self.selected_display+1,d.width,d.height));
@@ -461,55 +462,62 @@ impl App {
             status
         };
         crate::desktop_ui::session_status(ui, publishing, camera_active, status);
-        ui.horizontal_wrapped(|ui| {
-        let camera_label = if camera_starting {
-            crate::i18n::label("Abrindo câmera…", "Opening camera…")
-        } else if camera_active {
-            crate::i18n::label("Desligar câmera", "Turn off camera")
-        } else {
-            crate::i18n::label("Ligar câmera", "Turn on camera")
-        };
-        let ready = connected && (can_publish || publishing);
-        let share = ui.add_enabled(ready,egui::Button::new(RichText::new(if publishing{crate::i18n::label("Parar compartilhamento","Stop sharing")}else{crate::i18n::label("Compartilhar tela","Share screen")}).strong().color(if publishing{DANGER}else{BG}))
-            .min_size(Vec2::new(0.0,38.0)).corner_radius(8)
-            .fill(if publishing{Color32::from_rgb(59,34,34)}else{ACCENT}))
-            .on_hover_text(if can_publish{crate::i18n::label("Enviar a origem escolhida para a sala","Share the selected source with the room")}else{crate::i18n::label("Sua sessão não permite compartilhar","Your session does not allow publishing")});
-        if share.clicked() {
-            if publishing {
-                if let Some(engine) = &self.engine { let _ = engine.commands.send(Command::StopShare); }
+        use crate::desktop_ui::{session_actions, session_button, session_menu, session_stop};
+        session_actions(ui, |ui| {
+            let share = if publishing {
+                session_stop(ui, crate::i18n::label("Parar compartilhamento", "Stop screen sharing"), true)
             } else {
-                self.choose_source(share.id);
+                session_button(ui, crate::i18n::label("Compartilhar tela", "Share screen"), connected && can_publish, true)
+            };
+            if share.clicked() {
+                if publishing {
+                    if let Some(engine) = &self.engine { let _ = engine.commands.send(Command::StopShare); }
+                } else {
+                    self.choose_source(share.id);
+                }
             }
-        }
-        if publishing {
-            let change = crate::desktop_ui::session_button(ui, crate::i18n::label("Trocar fonte", "Change source"), connected && can_publish, false);
-            if change.clicked() { self.choose_source(change.id); }
-        }
-        if crate::desktop_ui::session_button(ui, camera_label, connected && can_publish && !camera_starting, false).clicked() {
-            if let Some(engine) = &self.engine {
-                let _ = engine.commands.send(Command::ToggleCamera);
+            let camera = if camera_starting {
+                crate::i18n::label("Abrindo câmera…", "Opening camera…")
+            } else if camera_active {
+                crate::i18n::label("Desligar câmera", "Turn off camera")
+            } else {
+                crate::i18n::label("Ligar câmera", "Turn on camera")
+            };
+            if session_button(ui, camera, connected && can_publish && !camera_starting, false).clicked() {
+                if let Some(engine) = &self.engine { let _ = engine.commands.send(Command::ToggleCamera); }
             }
-        }
-        let app_audio=if publishing{active.is_some_and(|t|t.process().is_some())}else{self.window_mode};
-        if ui.add_enabled(!connected||can_publish,egui::Checkbox::new(&mut self.system_audio,if app_audio{crate::i18n::label("Áudio do aplicativo","App audio")}else{crate::i18n::label("Áudio do sistema","System audio")}))
-            .on_hover_text(crate::i18n::label("Som do sistema ou do aplicativo escolhido, sem microfone. Pode incluir outras janelas do mesmo programa.","System or selected app audio, without microphone. May include other windows of the same app.")).changed(){
-            if let Some(engine)=&self.engine{let _=engine.commands.send(Command::SystemAudio(self.system_audio));}
-        }
-            let exit_width=110.0;
-            if ui.add_enabled(connected,egui::Button::new(if self.paused{crate::i18n::label("Retomar vídeo","Resume video")}else{crate::i18n::label("Pausar vídeo recebido","Pause incoming video")}).min_size(Vec2::new(0.0,38.0)).corner_radius(8)).clicked(){self.paused=!self.paused;self.send_layout();}
-            let resetting=self.engine.as_ref().is_some_and(|e|e.shared.lock().unwrap().reception_resetting);
-            if refresh_reception(ui,connected&&!resetting,36.0).clicked(){self.restart_reception();}
-            ui.menu_button(crate::i18n::label("Som recebido", "Received audio"), |ui| {
-                let mute = ui.checkbox(&mut self.sound_muted, crate::i18n::label("Silenciar áudio recebido", "Mute received audio")).changed();
-                let label = ui.label(crate::i18n::label("Volume", "Volume")).id;
-                let volume = crate::desktop_ui::volume_slider(ui, &mut self.volume).labelled_by(label).changed();
+            session_menu(ui, |ui| {
+                if publishing {
+                    let change = ui.add_enabled(connected && can_publish, egui::Button::new(crate::i18n::label("Trocar fonte", "Change source")));
+                    if change.clicked() { self.choose_source(share.id); ui.close(); }
+                }
+                let app_audio = if publishing { active.is_some_and(|target| target.process().is_some()) } else { self.window_mode };
+                let audio = if app_audio { crate::i18n::label("Áudio do aplicativo", "App audio") } else { crate::i18n::label("Áudio do sistema", "System audio") };
+                if ui.add_enabled(can_publish, egui::Checkbox::new(&mut self.system_audio, audio)).changed() {
+                    if let Some(engine) = &self.engine { let _ = engine.commands.send(Command::SystemAudio(self.system_audio)); }
+                }
+                ui.separator();
+                let mute = ui.checkbox(&mut self.sound_muted, crate::i18n::label("Silenciar som recebido", "Mute incoming audio")).changed();
+                let volume_label = ui.label(crate::i18n::label("Volume recebido", "Incoming volume")).id;
+                let volume = crate::desktop_ui::volume_slider(ui, &mut self.volume).labelled_by(volume_label).changed();
                 if mute || volume { self.send_layout(); }
+                let pause = if self.paused { crate::i18n::label("Retomar vídeo recebido", "Resume incoming video") } else { crate::i18n::label("Pausar vídeo recebido", "Pause incoming video") };
+                if ui.button(pause).clicked() { self.paused = !self.paused; self.send_layout(); ui.close(); }
+                let resetting = self.engine.as_ref().is_some_and(|engine| engine.shared.lock().unwrap().reception_resetting);
+                if ui.add_enabled(connected && !resetting, egui::Button::new(crate::i18n::label("Reconectar vídeo recebido", "Reconnect incoming video"))).clicked() {
+                    self.restart_reception(); ui.close();
+                }
+                if ui.ctx().content_rect().width() < 600.0 {
+                    let room = self.engine.as_ref().map(|engine| engine.shared.lock().unwrap().room.clone()).unwrap_or_default();
+                    if !room.is_empty() { crate::desktop_ui::copy_room_name(ui, &room); }
+                    if ui.button(crate::i18n::label("Tela cheia", "Full screen")).clicked() { self.set_fullscreen(ui.ctx(), true); ui.close(); }
+                }
+                crate::desktop_ui::display_scale(ui);
+                if ui.button(crate::i18n::label("Diagnóstico", "Diagnostics")).clicked() {
+                    self.debug_open = true; ui.close();
+                }
             });
-            if compact_action(ui, crate::i18n::label("Diagnóstico", "Diagnostics"), true).clicked() {
-                self.debug_open = !self.debug_open;
-            }
-
-            if ui.add_enabled(self.engine.is_some()||self.departure.is_some(),egui::Button::new(RichText::new(crate::i18n::label("Sair da sala","Leave room")).color(DANGER)).min_size(Vec2::new(exit_width,40.0)).corner_radius(8)).clicked(){
+            if session_stop(ui, crate::i18n::label("Sair da sala", "Leave room"), self.engine.is_some()).clicked() {
                 if publishing || camera_active { self.confirm_leave = true; } else { self.leave_room(ui.ctx(), false); }
             }
         });
@@ -796,7 +804,7 @@ impl eframe::App for App {
 
         if connected && !self.fullscreen && self.sidebar_open {
         egui::Panel::left("room_sidebar")
-            .exact_size(if ctx.content_rect().width() < 1000.0 { 236.0 } else { 284.0 })
+            .exact_size((ctx.content_rect().width() * 0.32).clamp(140.0, 284.0))
             .resizable(false)
             .frame(
                 egui::Frame::new()
@@ -878,7 +886,7 @@ impl eframe::App for App {
             .frame(
                 egui::Frame::new()
                     .fill(BG)
-                    .inner_margin(egui::Margin::same(if self.fullscreen { 8 } else { 28 })),
+                    .inner_margin(egui::Margin::same(if self.fullscreen { 8 } else if ctx.content_rect().width() < 600.0 { 12 } else { 28 })),
             )
             .show(ui, |ui| {
                 if !connected && !self.fullscreen {
@@ -929,13 +937,18 @@ impl eframe::App for App {
                             && (self.saved_room.is_some() || !self.invite.is_empty() || !self.token.is_empty())
                             && crate::desktop_ui::session_button(ui, crate::i18n::label("Tentar novamente", "Try again"), true, true).clicked()
                         { self.leave_room(&ctx, true); }
-                        if compact_action(ui, crate::i18n::label("Atualizar", "Update"), true).clicked() {
-                            self.updater.open = true;
-                            self.updater.check(ctx.clone());
-                        }
-                        if compact_action(ui, crate::i18n::label("Diagnóstico", "Diagnostics"), true).clicked() {
-                            self.debug_open = true;
-                        }
+                        crate::desktop_ui::session_menu(ui, |ui| {
+                            crate::desktop_ui::display_scale(ui);
+                            if ui.button(crate::i18n::label("Atualizar", "Update")).clicked() {
+                                self.updater.open = true;
+                                self.updater.check(ctx.clone());
+                                ui.close();
+                            }
+                            if ui.button(crate::i18n::label("Diagnóstico", "Diagnostics")).clicked() {
+                                self.debug_open = true;
+                                ui.close();
+                            }
+                        });
                     });
                     return;
                 }
@@ -967,7 +980,8 @@ impl eframe::App for App {
                         });
                     });
                 } else {
-                ui.add(egui::Label::new(RichText::new(&room).size(24.0).strong()).truncate())
+                let compact = ctx.content_rect().width() < 600.0;
+                ui.add(egui::Label::new(RichText::new(&room).size(if compact { 18.0 } else { 24.0 }).strong()).truncate())
                     .on_hover_text(&room);
                 ui.label(RichText::new(if reception_resetting {
                     crate::i18n::label("Reconectando vídeo e áudio recebidos…", "Reconnecting received video and audio…")
@@ -981,23 +995,23 @@ impl eframe::App for App {
                     } else {
                         crate::i18n::label("Pessoas e opções", "People and settings")
                     };
-                    if compact_action(ui, panel, true).clicked() { self.sidebar_open = !self.sidebar_open; }
-                    crate::desktop_ui::copy_room_name(ui, &room);
+                    if crate::desktop_ui::header_button(ui, panel, true, None).clicked() { self.sidebar_open = !self.sidebar_open; }
+                    if !compact { crate::desktop_ui::copy_room_name(ui, &room); }
                     for (mode, label) in [
                         (ViewMode::Grid, crate::i18n::label("Em grade", "Grid")),
                         (ViewMode::Spotlight, crate::i18n::label("Em destaque", "Focus")),
                     ] {
-                        if ui.selectable_label(self.mode == mode, label).clicked() {
+                        if crate::desktop_ui::header_button(ui, label, true, Some(self.mode == mode)).clicked() {
                             self.mode = mode;
                             self.single_view = false;
                             self.send_layout();
                         }
                     }
-                    if compact_action(ui, crate::i18n::label("Tela cheia", "Full screen"), !videos.is_empty()).on_hover_text("F11").clicked() {
+                    if !compact && crate::desktop_ui::header_button(ui, crate::i18n::label("Tela cheia", "Full screen"), !videos.is_empty(), None).on_hover_text("F11").clicked() {
                         self.set_fullscreen(&ctx, true);
                     }
                 });
-                ui.add_space(16.0);
+                ui.add_space(if compact { 8.0 } else { 16.0 });
                 }
                 let available = ui.available_size();
                 let rect = ui.allocate_space(available).1;
@@ -1020,20 +1034,19 @@ impl eframe::App for App {
                     } else {
                         crate::i18n::label("Conecte-se à sala e traga sua tela para a conversa.","Join the room and share your screen.")
                     };
-                    ui.painter().text(
-                        rect.center() - Vec2::new(0.0, 20.0),
-                        egui::Align2::CENTER_CENTER,
-                        title,
-                        egui::FontId::proportional(24.0),
-                        TEXT,
-                    );
-                    ui.painter().text(
-                        rect.center() + Vec2::new(0.0, 20.0),
-                        egui::Align2::CENTER_CENTER,
-                        subtitle,
-                        egui::FontId::proportional(14.0),
-                        MUTED,
-                    );
+                    if rect.height() >= 32.0 {
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink(8.0)), |ui| {
+                            ui.set_clip_rect(ui.clip_rect().intersect(rect));
+                            ui.centered_and_justified(|ui| {
+                                ui.vertical_centered(|ui| {
+                                    ui.label(RichText::new(title).size(if rect.height() < 100.0 { 16.0 } else { 24.0 }).color(TEXT));
+                                    if rect.height() >= 100.0 {
+                                        ui.label(RichText::new(subtitle).size(14.0).color(MUTED));
+                                    }
+                                });
+                            });
+                        });
+                    }
                 } else {
                     let focus = self
                         .focus
@@ -1469,7 +1482,7 @@ pub fn run() -> anyhow::Result<()> {
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1320.0, 820.0])
-            .with_min_inner_size([800.0, 600.0]),
+            .with_min_inner_size([460.0, 360.0]),
         renderer: eframe::Renderer::Glow,
         ..Default::default()
     };

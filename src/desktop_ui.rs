@@ -292,12 +292,48 @@ pub(crate) fn session_status(ui: &mut egui::Ui, sharing: bool, camera_active: bo
     ui.add_space(6.0);
 }
 
+pub(crate) fn session_actions(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
+    let width = ui.available_width();
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+        if width < 520.0 {
+            ui.spacing_mut().interact_size.x = ((width - 8.0) / 2.0).floor();
+        }
+        content(ui);
+    });
+}
+
 pub(crate) fn session_button(ui: &mut egui::Ui, label: &str, enabled: bool, primary: bool) -> egui::Response {
-    let text = RichText::new(label).color(if primary { PANEL } else { TEXT });
-    let response = ui.add_enabled(enabled, egui::Button::new(text)
-        .fill(if primary { ACCENT } else { SURFACE })
+    session_action(ui, label, enabled, if primary { PANEL } else { TEXT }, if primary { ACCENT } else { SURFACE })
+}
+
+pub(crate) fn session_stop(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
+    session_action(ui, label, enabled, Color32::from_rgb(255, 178, 170), Color32::from_rgb(59, 34, 34))
+}
+
+pub(crate) fn session_menu(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
+    let more = session_button(ui, crate::i18n::label("Mais opções", "More options"), true, false);
+    egui::Popup::menu(&more).width(254.0).show(content);
+}
+
+pub(crate) fn display_scale(ui: &mut egui::Ui) {
+    ui.label(crate::i18n::label("Escala da interface", "Interface scale"));
+    ui.horizontal_wrapped(|ui| {
+        let current = ui.ctx().zoom_factor();
+        for (factor, label) in [(1.0, "100%"), (1.5, "150%"), (2.0, "200%")] {
+            if ui.selectable_label((current - factor).abs() < 0.01, label).clicked() {
+                ui.ctx().set_zoom_factor(factor);
+                ui.close();
+            }
+        }
+    });
+}
+
+fn session_action(ui: &mut egui::Ui, label: &str, enabled: bool, color: Color32, fill: Color32) -> egui::Response {
+    let response = ui.add_enabled(enabled, egui::Button::new(RichText::new(label).size(14.0).color(color))
+        .fill(fill)
         .wrap_mode(egui::TextWrapMode::Extend)
-        .min_size(Vec2::new(0.0, 38.0)).corner_radius(8));
+        .min_size(Vec2::new(ui.spacing().interact_size.x, 40.0)).corner_radius(8));
     if response.has_focus() {
         ui.painter().rect_stroke(
             response.rect.expand(2.0), 9.0, egui::Stroke::new(2.0, TEXT),
@@ -324,7 +360,7 @@ pub(crate) fn home_panel(ui: &mut egui::Ui, status: &str, content: impl FnOnce(&
                 )).size(16.0).color(MUTED));
                 if !status.is_empty() { ui.label(RichText::new(status).color(TEXT)); }
                 ui.add_space(12.0);
-                egui::Frame::new().fill(PANEL).corner_radius(12).inner_margin(18).show(ui, content);
+                content(ui);
             });
         });
     });
@@ -351,9 +387,21 @@ pub(crate) fn confirm_leave(ctx: &egui::Context) -> Option<bool> {
     modal.inner.or_else(|| modal.should_close().then_some(false))
 }
 
+pub(crate) fn header_button(ui: &mut egui::Ui, label: &str, enabled: bool, selected: Option<bool>) -> egui::Response {
+    let active = selected == Some(true);
+    let mut button = egui::Button::new(RichText::new(label).size(13.0).color(if active { ACCENT } else { TEXT }))
+        .fill(if active { Color32::from_rgb(40, 51, 40) } else { SURFACE })
+        .stroke(egui::Stroke::new(1.0, if active { ACCENT.gamma_multiply(0.5) } else { BORDER }))
+        .wrap_mode(egui::TextWrapMode::Extend)
+        .min_size(Vec2::new(0.0, 34.0))
+        .corner_radius(8);
+    if let Some(selected) = selected { button = button.selected(selected); }
+    ui.add_enabled(enabled, button)
+}
+
 /// Share the visible room name so someone with access can find it in the catalog.
 pub(crate) fn copy_room_name(ui: &mut egui::Ui, name: &str) {
-    let response = compact(ui, crate::i18n::label("Copiar nome da sala", "Copy room name"), true)
+    let response = header_button(ui, crate::i18n::label("Copiar nome da sala", "Copy room name"), true, None)
         .on_hover_text(crate::i18n::label(
             "Quem tem acesso ao servidor pode procurar este nome na lista de salas.",
             "People with server access can find this name in the room list.",

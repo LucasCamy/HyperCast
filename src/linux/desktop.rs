@@ -269,38 +269,60 @@ impl App {
                         crate::i18n::label("Nesta sala, você pode assistir.", "You can watch in this room.")
                     } else if self.status.is_empty() { &state_status } else { &self.status };
                     crate::desktop_ui::session_status(ui, sharing, self.snapshot.camera_active, status);
-                    ui.horizontal_wrapped(|ui| {
-                    if crate::desktop_ui::session_button(ui,if sharing{crate::i18n::label("Trocar tela ou janela","Change screen or window")}else{crate::i18n::label("Compartilhar tela","Share screen")},connected&&can_publish&&!selecting&&super::media::factory_available(self.codec,self.encoder).unwrap_or(true),true).clicked(){self.send(Command::StreamSettings(self.stream_settings));self.send(Command::Share(Source::Portal,self.codec,self.encoder,self.upload));}
-                    if std::env::var("WAYLAND_DISPLAY").is_err()&&!sharing&&crate::desktop_ui::session_button(ui,crate::i18n::label("Tela inteira (X11)","Entire screen (X11)"),connected&&can_publish&&!selecting&&super::media::factory_available(self.codec,self.encoder).unwrap_or(true),false).clicked(){self.send(Command::StreamSettings(self.stream_settings));self.send(Command::Share(Source::X11,self.codec,self.encoder,self.upload));}
-                    if (sharing||selecting)&&crate::desktop_ui::session_button(ui,if selecting{crate::i18n::label("Cancelar seleção","Cancel selection")}else{crate::i18n::label("Parar compartilhamento","Stop sharing")},true,false).clicked(){self.send(if selecting{Command::CancelSelection}else{Command::Stop});}
-                    let camera_label = if self.snapshot.camera_starting {
-                        crate::i18n::label("Abrindo câmera…", "Opening camera…")
-                    } else if self.snapshot.camera_active {
-                        crate::i18n::label("Desligar câmera", "Turn off camera")
-                    } else {
-                        crate::i18n::label("Ligar câmera", "Turn on camera")
+                    use crate::desktop_ui::{session_actions, session_button, session_menu, session_stop};
+                    let ready = connected && can_publish && !selecting
+                        && super::media::factory_available(self.codec, self.encoder).unwrap_or(true);
+                    let share = |app: &Self, source| {
+                        app.send(Command::StreamSettings(app.stream_settings));
+                        app.send(Command::Share(source, app.codec, app.encoder, app.upload));
                     };
-                    if crate::desktop_ui::session_button(ui, camera_label, connected && can_publish && !self.snapshot.camera_starting, self.snapshot.camera_active).clicked() {
-                        self.send(Command::ToggleCamera);
-                    }
-                    if ui.checkbox(&mut self.audio,crate::i18n::label("Áudio do sistema","System audio")).changed(){self.send(Command::Audio(self.audio));}
-
-                    ui.menu_button(crate::i18n::label("Som recebido", "Received audio"), |ui| {
-                        let label = ui.label(crate::i18n::label("Volume", "Volume")).id;
-                        if crate::desktop_ui::volume_slider(ui, &mut self.layout.volume).labelled_by(label).changed() {
-                            self.layout();
+                    session_actions(ui, |ui| {
+                        if selecting || sharing {
+                            let label = if selecting { crate::i18n::label("Cancelar seleção", "Cancel selection") } else { crate::i18n::label("Parar compartilhamento", "Stop screen sharing") };
+                            if session_stop(ui, label, true).clicked() {
+                                self.send(if selecting { Command::CancelSelection } else { Command::Stop });
+                            }
+                        } else if session_button(ui, crate::i18n::label("Compartilhar tela", "Share screen"), ready, true).clicked() {
+                            share(self, Source::Portal);
                         }
-                    });
-                    if crate::desktop_ui::session_button(ui,if self.layout.paused{crate::i18n::label("Retomar vídeo","Resume video")}else{crate::i18n::label("Pausar vídeo recebido","Pause incoming video")},connected,false).clicked(){self.layout.paused=!self.layout.paused;self.layout();}
-                    ui.horizontal(|ui|{
-                        if small(ui,crate::i18n::label("Diagnóstico","Diagnostics")).clicked(){self.debug=true;}
-                        if (self.engine.is_some()||self.departure.is_some()||self.joining.is_some())&&small(ui,crate::i18n::label("Sair da sala","Leave room")).clicked(){if sharing || self.snapshot.camera_active { self.confirm_leave = true; } else { self.leave_room(ctx, false); }}
-                    });
+                        let camera = if self.snapshot.camera_starting {
+                            crate::i18n::label("Abrindo câmera…", "Opening camera…")
+                        } else if self.snapshot.camera_active {
+                            crate::i18n::label("Desligar câmera", "Turn off camera")
+                        } else {
+                            crate::i18n::label("Ligar câmera", "Turn on camera")
+                        };
+                        if session_button(ui, camera, connected && can_publish && !self.snapshot.camera_starting, false).clicked() {
+                            self.send(Command::ToggleCamera);
+                        }
+                        session_menu(ui, |ui| {
+                            if sharing && ui.add_enabled(ready, egui::Button::new(crate::i18n::label("Trocar fonte", "Change source"))).clicked() {
+                                share(self, Source::Portal); ui.close();
+                            }
+                            if !sharing && std::env::var_os("WAYLAND_DISPLAY").is_none()
+                                && ui.add_enabled(ready, egui::Button::new(crate::i18n::label("Tela inteira (X11)", "Entire screen (X11)"))).clicked() {
+                                share(self, Source::X11); ui.close();
+                            }
+                            if ui.add_enabled(can_publish, egui::Checkbox::new(&mut self.audio, crate::i18n::label("Áudio do sistema", "System audio"))).changed() {
+                                self.send(Command::Audio(self.audio));
+                            }
+                            ui.separator();
+                            let label = ui.label(crate::i18n::label("Volume recebido", "Incoming volume")).id;
+                            if crate::desktop_ui::volume_slider(ui, &mut self.layout.volume).labelled_by(label).changed() { self.layout(); }
+                            let pause = if self.layout.paused { crate::i18n::label("Retomar vídeo recebido", "Resume incoming video") } else { crate::i18n::label("Pausar vídeo recebido", "Pause incoming video") };
+                            if ui.button(pause).clicked() { self.layout.paused = !self.layout.paused; self.layout(); ui.close(); }
+                            if ui.add_enabled(connected && !resetting, egui::Button::new(crate::i18n::label("Reconectar vídeo recebido", "Reconnect incoming video"))).clicked() { self.restart_reception(); ui.close(); }
+                            crate::desktop_ui::display_scale(ui);
+                            if ui.button(crate::i18n::label("Diagnóstico", "Diagnostics")).clicked() { self.debug = true; ui.close(); }
+                        });
+                        if session_stop(ui, crate::i18n::label("Sair da sala", "Leave room"), self.engine.is_some()).clicked() {
+                            if sharing || self.snapshot.camera_active { self.confirm_leave = true; } else { self.leave_room(ctx, false); }
+                        }
                     });
                 });
         }
         if connected && !self.fullscreen && self.sidebar_open {
-            egui::Panel::left("sidebar").exact_size(if ctx.content_rect().width() < 1000.0 { 236.0 } else { 284.0 }).frame(egui::Frame::new().fill(PANEL).inner_margin(20)).show(root,|ui|{
+            egui::Panel::left("sidebar").exact_size((ctx.content_rect().width() * 0.32).clamp(140.0, 284.0)).frame(egui::Frame::new().fill(PANEL).inner_margin(20)).show(root,|ui|{
                 ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
                 egui::ScrollArea::vertical().auto_shrink([false,false]).show(ui,|ui|{
                     ui.horizontal(|ui|{crate::desktop_ui::brand_mark(ui,28.0);ui.label(RichText::new("HYPERCAST").size(16.0).strong());
@@ -352,7 +374,7 @@ impl App {
             .frame(
                 egui::Frame::new()
                     .fill(BG)
-                    .inner_margin(if self.fullscreen { 8 } else { 28 }),
+                    .inner_margin(if self.fullscreen { 8 } else if ctx.content_rect().width() < 600.0 { 12 } else { 28 }),
             )
             .show(root, |ui| {
                 if !connected && !self.fullscreen {
@@ -384,19 +406,19 @@ impl App {
                         if small(ui,crate::i18n::label("Trocar acesso ao servidor","Change server access")).clicked(){self.leave_room(ctx,false);self.access.logout(&self.address);}
                     }
 
-                        if small(ui, crate::i18n::label("Atualizar", "Update")).clicked() { self.updates = true; }
-                        if small(ui, crate::i18n::label("Diagnóstico", "Diagnostics")).clicked() { self.debug = true; }
+                        crate::desktop_ui::session_menu(ui, |ui| {
+                            crate::desktop_ui::display_scale(ui);
+                            if ui.button(crate::i18n::label("Atualizar", "Update")).clicked() { self.updates = true; ui.close(); }
+                            if ui.button(crate::i18n::label("Diagnóstico", "Diagnostics")).clicked() { self.debug = true; ui.close(); }
+                        });
                     });
                     return;
                 }
 
                 ui.horizontal_wrapped(|ui| {
-                    let refresh=ui.add_enabled(connected&&!resetting,egui::Button::new("↻").corner_radius(6)).on_hover_text(crate::i18n::label("Reconectar recepção · F5","Reconnect playback · F5"));
-                    refresh.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,connected&&!resetting,crate::i18n::label("Reconectar recepção","Reconnect playback")));
-                    if refresh.clicked(){self.restart_reception();}
-                    if resetting{ui.label(crate::i18n::label("Reconectando recepção…","Reconnecting playback…"));}
+                    if resetting { ui.label(crate::i18n::label("Reconectando vídeo recebido…", "Reconnecting incoming video…")); }
                     if !self.fullscreen {
-                        if small(ui,if self.sidebar_open {crate::i18n::label("Ocultar painel","Hide panel")}else{crate::i18n::label("Pessoas e opções","People and settings")}).clicked(){self.sidebar_open=!self.sidebar_open;}
+                        if crate::desktop_ui::header_button(ui, if self.sidebar_open {crate::i18n::label("Ocultar painel","Hide panel")}else{crate::i18n::label("Pessoas e opções","People and settings")}, true, None).clicked(){self.sidebar_open=!self.sidebar_open;}
                         ui.heading(if self.room_title.is_empty() { crate::i18n::label("Sala", "Room") } else { &self.room_title });
                         ui.label(crate::desktop_ui::room_state(connected, reconnecting));
                         if !self.room_title.is_empty() { crate::desktop_ui::copy_room_name(ui, &self.room_title); }
@@ -419,16 +441,14 @@ impl App {
                                 }
                             });
                         } else {
-                            if small(ui, crate::i18n::label("Tela cheia · F11","Full screen · F11")).clicked() {
+                            if crate::desktop_ui::header_button(ui, crate::i18n::label("Tela cheia", "Full screen"), !screens.is_empty(), None).on_hover_text("F11").clicked() {
                                 self.fullscreen(ctx, true);
                             }
                             for (mode, name) in
                                 [(ViewMode::Grid, crate::i18n::label("Em grade", "Grid")), (ViewMode::Spotlight, crate::i18n::label("Em destaque","Focus"))]
                             {
-                                if ui
-                                    .selectable_value(&mut self.layout.mode, mode, name)
-                                    .changed()
-                                {
+                                if crate::desktop_ui::header_button(ui, name, true, Some(self.layout.mode == mode)).clicked() {
+                                    self.layout.mode = mode;
                                     self.layout();
                                 }
                             }
@@ -557,7 +577,7 @@ pub fn run() -> anyhow::Result<()> {
                 "../../assets/hypercast.png"
             ))?)
             .with_inner_size([1320.0, 820.0])
-            .with_min_inner_size([800.0, 600.0]),
+            .with_min_inner_size([460.0, 360.0]),
         renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
