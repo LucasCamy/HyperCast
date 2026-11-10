@@ -431,7 +431,14 @@ impl LocalParticipant {
                         .and_then(|e| e.scalability_mode.as_ref())
                         .map(|m| options::spatial_layers_from_scalability_mode(m) > 1)
                         .unwrap_or(false);
-                if (options.simulcast && encodings.len() > 1) || is_svc_multilayer || options.video_encoder == options::VideoEncoderBackend::PreEncoded {
+                // Signal the codec for a single-layer camera as well. The SFU
+                // uses it to match the camera's media section when the same
+                // publisher also sends a screen with a different codec.
+                if (options.simulcast && encodings.len() > 1)
+                    || is_svc_multilayer
+                    || options.video_encoder == options::VideoEncoderBackend::PreEncoded
+                    || options.source == TrackSource::Camera
+                {
                     req.simulcast_codecs = vec![proto::SimulcastCodec {
                         codec: options.video_codec.as_str().to_string(),
                         cid: track.rtc_track().id(),
