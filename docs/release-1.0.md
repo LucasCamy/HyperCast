@@ -21,3 +21,17 @@ de falha, registre a ação que a reproduz, o resultado esperado, o observado e
 apenas os trechos de log necessários, sem credenciais. Qualquer falha que
 impeça entrar, assistir, parar uma transmissão ou atualizar o pacote bloqueia
 o lançamento. Critérios pendentes precisam de evidência antes da versão final.
+
+## Primeira execução do roteiro — 10/11/2026
+
+Base do cliente: `3804c81`, versão `0.9.2`. O LiveKit foi construído e
+executado em um projeto Docker local de validação, encerrado após os testes.
+
+| Verificação | Resultado |
+| --- | --- |
+| Suítes automatizadas | Windows: 53 aprovados e 11 ignorados. Linux em WSL: 51 aprovados e 11 ignorados na repetição. Na primeira execução, o teste de encerramento durante o handshake WebSocket expirou antes de aceitar a conexão de teste. Passou isoladamente e na repetição completa. Python: 32 aprovados e 3 ignorados. |
+| Interface do portátil Windows | Entrou na sala local, pausou e retomou o vídeo e abriu e cancelou o seletor de fonte em 150% e 200% de escala interna. Saiu da sala. O teste usou o executável da pasta de empacotamento. |
+| Codecs e cotas do SFU | O teste com fontes geradas confirmou tela HEVC e câmera H.264 no mesmo publicador. Outro teste confirmou três telas e três câmeras geradas, recusou o sétimo vídeo e recebeu uma câmera na vaga liberada por uma tela. |
+| Distribuição Windows | ZIP portátil e instalador gerados e conferidos contra o arquivo de SHA-256 local. A instalação e a atualização em perfil limpo ficam pendentes. O computador já tem uma instalação registrada. |
+| Distribuição Linux | AppImage gerado e conferido contra o SHA-256 local. Abriu em WSL/X11 e entrou na sala local. Os quatro comandos da barra foram encontrados pelo AT-SPI. Esse build não inclui suporte NVIDIA no WebRTC, pois os cabeçalhos CUDA não estavam disponíveis. O teste em uma instalação física continua pendente. |
+| Hardware e acessibilidade | Webcam física, três telas reais sob carga, leitura por voz e Linux físico com Wayland ficam pendentes nesta execução. |
