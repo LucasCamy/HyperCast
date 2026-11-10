@@ -52,5 +52,6 @@ fn main() {
         println!("cargo:rustc-link-lib=mmdevapi");
         println!("cargo:rustc-link-lib=windowsapp");
         println!("cargo:rustc-link-lib=dwmapi");
+        println!("cargo:rustc-link-lib=gdi32");
     }
 }

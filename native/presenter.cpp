@@ -125,5 +125,16 @@ int hc_presenter_frame(void* handle, void* texture, uint32_t slice, uint32_t fw,
     catch (...) { return -1; }
 }
 void hc_presenter_hide(void* handle) noexcept { if (handle) static_cast<Presenter*>(handle)->hide(); }
+int hc_presenter_cutout(void* handle, int width, int height, const int* rect) noexcept {
+    HWND window = static_cast<Presenter*>(handle)->window;
+    if (!rect) return SetWindowRgn(window, nullptr, TRUE);
+    HRGN visible = CreateRectRgn(0, 0, width, height);
+    HRGN cutout = CreateRectRgn(rect[0], rect[1], rect[2], rect[3]);
+    const bool combined = visible && cutout && CombineRgn(visible, visible, cutout, RGN_DIFF) != ERROR;
+    if (cutout) DeleteObject(cutout);
+    if (combined && SetWindowRgn(window, visible, TRUE)) return 1; // Windows owns the region now.
+    if (visible) DeleteObject(visible);
+    return 0;
+}
 void hc_presenter_close(void* handle) noexcept { delete static_cast<Presenter*>(handle); }
 }

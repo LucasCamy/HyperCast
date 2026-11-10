@@ -345,9 +345,9 @@ pub(crate) fn session_stop(ui: &mut egui::Ui, label: &str, enabled: bool) -> egu
     session_action(ui, label, enabled, Color32::from_rgb(255, 178, 170), Color32::from_rgb(59, 34, 34))
 }
 
-pub(crate) fn session_menu(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
+pub(crate) fn session_menu(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) -> Option<egui::Rect> {
     let more = session_button(ui, crate::i18n::label("Mais opções", "More options"), true, false);
-    egui::Popup::menu(&more).width(254.0).show(content);
+    egui::Popup::menu(&more).width(254.0).show(content).map(|popup| popup.response.rect)
 }
 
 pub(crate) fn display_scale(ui: &mut egui::Ui) {

@@ -450,7 +450,7 @@ impl App {
         let _ = engine.commands.send(command);
     }
 
-    fn sharing_controls(&mut self,ui:&mut egui::Ui,connected:bool,can_publish:bool,publishing:bool,active:Option<crate::video_capture::CaptureTarget>,status:&str){
+    fn sharing_controls(&mut self,ui:&mut egui::Ui,connected:bool,can_publish:bool,publishing:bool,active:Option<crate::video_capture::CaptureTarget>,status:&str) -> Option<egui::Rect> {
         ui.spacing_mut().item_spacing=Vec2::new(8.0,8.0);
         let (camera_active, camera_starting) = self.engine.as_ref().map_or((false, false), |engine| {
             let state = engine.shared.lock().unwrap();
@@ -463,6 +463,7 @@ impl App {
         };
         crate::desktop_ui::session_status(ui, publishing, camera_active, status);
         use crate::desktop_ui::{session_actions, session_button, session_menu, session_stop};
+        let mut menu_rect = None;
         session_actions(ui, |ui| {
             let share = if publishing {
                 session_stop(ui, crate::i18n::label("Parar compartilhamento", "Stop screen sharing"), true)
@@ -486,7 +487,7 @@ impl App {
             if session_button(ui, camera, connected && can_publish && !camera_starting, false).clicked() {
                 if let Some(engine) = &self.engine { let _ = engine.commands.send(Command::ToggleCamera); }
             }
-            session_menu(ui, |ui| {
+            menu_rect = session_menu(ui, |ui| {
                 if publishing {
                     let change = ui.add_enabled(connected && can_publish, egui::Button::new(crate::i18n::label("Trocar fonte", "Change source")));
                     if change.clicked() { self.choose_source(share.id); ui.close(); }
@@ -521,6 +522,7 @@ impl App {
                 if publishing || camera_active { self.confirm_leave = true; } else { self.leave_room(ui.ctx(), false); }
             }
         });
+        menu_rect
     }
     fn restart_reception(&mut self) {
         if let Some(engine)=&self.engine {let _=engine.commands.send(Command::RestartReception);}
@@ -792,15 +794,17 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
-        if !self.fullscreen && (connected || reconnecting) {
+        let menu_rect = if !self.fullscreen && (connected || reconnecting) {
             egui::Panel::bottom("session_actions")
                 .resizable(false)
                 .frame(crate::desktop_ui::session_bar())
                 .show(ui, |ui| {
                     self.sharing_controls(ui, connected, can_publish, publishing, active_target,
-                        if source_error.is_empty() { &status } else { &source_error });
-                });
-        }
+                        if source_error.is_empty() { &status } else { &source_error })
+                }).inner
+        } else {
+            None
+        };
 
         if connected && !self.fullscreen && self.sidebar_open {
         egui::Panel::left("room_sidebar")
@@ -1172,6 +1176,18 @@ impl eframe::App for App {
                                     (canvas.width() * scale) as i32,
                                     (canvas.height() * scale) as i32,
                                 ];
+                                // The video is a native child window above egui's paint layers.
+                                let cutout = menu_rect.map(|rect| rect.expand(3.0).intersect(canvas))
+                                    .filter(|rect| rect.is_positive())
+                                    .map(|rect| [
+                                        (rect.left() * scale).floor() as i32 - bounds[0],
+                                        (rect.top() * scale).floor() as i32 - bounds[1],
+                                        (rect.right() * scale).ceil() as i32 - bounds[0],
+                                        (rect.bottom() * scale).ceil() as i32 - bounds[1],
+                                    ]);
+                                if !presenter.set_cutout([bounds[2], bounds[3]], cutout) {
+                                    continue;
+                                }
                                 if self.last_presented.get(identity).is_some_and(
                                     |(last, old_bounds)| {
                                         presenter.visible()

@@ -21,12 +21,14 @@ unsafe extern "C" {
         cap: usize,
     ) -> i32;
     fn hc_presenter_hide(handle: *mut c_void);
+    fn hc_presenter_cutout(handle: *mut c_void, width: i32, height: i32, rect: *const i32) -> i32;
     fn hc_presenter_close(handle: *mut c_void);
 }
 pub struct Presenter {
     handle: NonNull<c_void>,
     _ui_thread: PhantomData<Rc<()>>,
     visible: bool,
+    cutout: Option<([i32; 2], [i32; 4])>,
 }
 impl Presenter {
     /// Parent is the live app window. Constructor and all calls stay on its UI thread.
@@ -37,6 +39,7 @@ impl Presenter {
             handle,
             _ui_thread: PhantomData,
             visible: false,
+            cutout: None,
         })
     }
     /// Borrowed texture must stay alive through the GPU fence inside this call.
@@ -75,6 +78,18 @@ impl Presenter {
         unsafe {
             hc_presenter_hide(self.handle.as_ptr());
         }
+    }
+    pub fn set_cutout(&mut self, size: [i32; 2], rect: Option<[i32; 4]>) -> bool {
+        let cutout = rect.map(|rect| (size, rect));
+        if self.cutout == cutout {
+            return true;
+        }
+        let rect_ptr = rect.as_ref().map_or(std::ptr::null(), |rect| rect.as_ptr());
+        if unsafe { hc_presenter_cutout(self.handle.as_ptr(), size[0], size[1], rect_ptr) } == 0 {
+            return false;
+        }
+        self.cutout = cutout;
+        true
     }
     pub fn visible(&self) -> bool {
         self.visible
