@@ -61,6 +61,8 @@ pub struct Shared {
     pub recovering: HashMap<String,bool>,
     pub publishing: bool,
     pub can_publish: bool,
+    pub camera_active: bool,
+    pub camera_starting: bool,
     pub identity: String,
     pub room: String,
     pub status: String,
@@ -87,6 +89,7 @@ pub struct Layout {
     pub volume: u32,
 }
 pub enum Command {
+    ToggleCamera,
     RateMode(crate::adaptive_upload::Mode),
     #[cfg(test)]
     StallReader(String),
@@ -313,14 +316,26 @@ impl Cast {
     }
 }
 
+pub(crate) fn video_key(owner: &str, source: TrackSource) -> String {
+    if source == TrackSource::Camera { format!("{owner}/camera") } else { owner.to_owned() }
+}
+
+pub(crate) fn video_owner(key: &str) -> &str {
+    key.strip_suffix("/camera").unwrap_or(key)
+}
+
+fn is_room_video(source: TrackSource) -> bool {
+    matches!(source, TrackSource::Screenshare | TrackSource::Camera)
+}
+
 fn update_subscriptions(room: &Room, layout: &Layout, receive_monitor: &crate::reception_recovery::runtime::Monitor) {
     let mut screens = Vec::new();
     for participant in room.remote_participants().into_values() {
         for publication in participant.track_publications().into_values() {
-            if publication.source() == TrackSource::Screenshare
+            if is_room_video(publication.source())
                 && publication.kind() == TrackKind::Video
             {
-                screens.push((participant.identity().to_string(), publication));
+                screens.push((video_key(participant.identity().as_str(), publication.source()), publication));
             }
         }
     }
@@ -335,10 +350,10 @@ fn update_subscriptions(room: &Room, layout: &Layout, receive_monitor: &crate::r
     let mut count = 0;
     for (identity, publication) in &screens {
         let enabled = !layout.paused
-            && count < 3
+            && count < 6
             && !receive_monitor.held(&publication.sid().to_string())
             && (layout.mode == ViewMode::Grid || Some(identity.as_str()) == focus);
-        if count<3 {crate::subscription::keep_receiver(publication,enabled);count+=1;}
+        if count<6 {crate::subscription::keep_receiver(publication,enabled);count+=1;}
         else if publication.is_desired(){publication.set_subscribed(false);}
         if publication.simulcasted() && enabled {
             publication.set_video_quality(VideoQuality::High);
@@ -377,13 +392,13 @@ fn attach_video(runtime:&tokio::runtime::Runtime, track:RemoteVideoTrack, owner_
             let mut state = state.lock().unwrap();
             // A new live screen takes precedence over a departed
             // participant's frozen surface, keeping the GPU bound.
-            if state.frames.len() >= 3 && !state.frames.contains_key(&identity) {
+            if state.frames.len() >= 6 && !state.frames.contains_key(&identity) {
                 if let Some(oldest) = state.frozen.iter().min_by_key(|(_, at)| *at).map(|(id, _)| id.clone()) {
                     state.frozen.remove(&oldest);
                     state.frames.remove(&oldest);
                 }
             }
-            if state.frames.len() < 3
+            if state.frames.len() < 6
                 || state.frames.contains_key(&identity)
             {
                 if state.frozen.remove(&identity).is_some() {
@@ -394,7 +409,7 @@ fn attach_video(runtime:&tokio::runtime::Runtime, track:RemoteVideoTrack, owner_
                     Arc::new(VideoFrame::Remote(frame,Instant::now())),
                 );
                 state.received += 1;
-                if state.received_streams.len()>=3 && !state.received_streams.contains_key(&identity) {
+                if state.received_streams.len()>=6 && !state.received_streams.contains_key(&identity) {
                     if let Some(old)=state.received_streams.keys().next().cloned(){state.received_streams.remove(&old);}
                 }
                 let sequence=state.received;state.received_streams.insert(identity.clone(),sequence);
@@ -478,6 +493,8 @@ impl Engine {
                 layout.focus = std::env::var("HYPERCAST_FOCUS").ok();
                 let mut manual_layout = layout.clone();
                 let mut window_hidden = false;
+                let mut camera: Option<crate::windows_camera::Camera> = None;
+                let mut camera_start = None;
                 let mut cast: Option<Cast> = None;
                 let mut recovery: Option<((CaptureTarget, Codec), Instant)> = None;
                 let mut recovery_attempts = 0u8;
@@ -532,9 +549,9 @@ impl Engine {
                             for p in participant.track_publications().into_values() {
                                 if !p.is_desired(){continue;}
                                 match p.track() {
-                                    Some(RemoteTrack::Video(track)) if p.source()==TrackSource::Screenshare && !receive_monitor.held(&p.sid().to_string()) && sinks.get(&p.sid()).is_none_or(|s|s.task.is_finished()) && (sinks.contains_key(&p.sid()) || sinks.len()<3) => {
+                                    Some(RemoteTrack::Video(track)) if is_room_video(p.source()) && !receive_monitor.held(&p.sid().to_string()) && sinks.get(&p.sid()).is_none_or(|s|s.task.is_finished()) && (sinks.contains_key(&p.sid()) || sinks.len()<6) => {
                                         if let Some(old)=sinks.remove(&p.sid()){old.abort();}
-                                        sinks.insert(p.sid(),attach_video(&runtime,track,&participant.identity().to_string(),&state,&ctx));
+                                        sinks.insert(p.sid(),attach_video(&runtime,track,&video_key(participant.identity().as_str(), p.source()),&state,&ctx));
                                     },
                                     Some(RemoteTrack::Audio(track)) if p.source()==TrackSource::ScreenshareAudio && p.is_enabled() && !audio_sinks.contains_key(&p.sid()) && audio_sinks.len()<3 => {
                                         audio_sinks.insert(p.sid(),AudioReceiver::start(&runtime,track,audio_volume.clone(),audio_received.clone()));
@@ -577,6 +594,19 @@ impl Engine {
                             Command::AmdProfile(profile)=>{if cast.is_none(){amd_profile=profile;}},
                             Command::RateMode(mode)=>{if cast.is_none()&&recovery.is_none(){rate_mode=mode;}},
                             Command::UploadProfile(profile)=>{if cast.is_none()&&recovery.is_none(){upload=profile;}},
+                            Command::ToggleCamera => {
+                                if let Some(active) = camera.take() {
+                                    runtime.block_on(active.stop(&room));
+                                    state.lock().unwrap().camera_active = false;
+                                } else if camera_start.is_none() && state.lock().unwrap().can_publish {
+                                    let room = room.clone();
+                                    camera_start = Some(runtime.spawn(async move {
+                                        crate::windows_camera::Camera::open(&room).await
+                                    }));
+                                    state.lock().unwrap().camera_starting = true;
+                                    ctx.request_repaint();
+                                }
+                            }
                             Command::Disconnect => {
                                 crate::diagnostics::write("connection", "User disconnected", "");
                                 break 'session;
@@ -700,16 +730,16 @@ impl Engine {
                                 publication,
                                 participant,
                             } => {
-                                if reception_restart.is_some() || !publication.is_desired() || receive_monitor.held(&publication.sid().to_string()){continue;}
+                                if reception_restart.is_some() || !is_room_video(publication.source()) || !publication.is_desired() || receive_monitor.held(&publication.sid().to_string()){continue;}
                                 let Some(RemoteTrack::Video(track))=publication.track() else{continue;};
                                 if let Some(previous) = sinks.remove(&publication.sid()) {
                                     previous.task.abort();
                                 }
-                                if sinks.len() >= 3 {
+                                if sinks.len() >= 6 {
                                     publication.set_subscribed(false);
                                     continue;
                                 }
-                                sinks.insert(publication.sid(),attach_video(&runtime,track,&participant.identity().to_string(),&state,&ctx));
+                                sinks.insert(publication.sid(),attach_video(&runtime,track,&video_key(participant.identity().as_str(), publication.source()),&state,&ctx));
                             }
                             RoomEvent::TrackUnsubscribed { publication, .. } => {
                                 // An old unsubscribe can be queued after a new subscribe for the same SID.
@@ -732,7 +762,7 @@ impl Engine {
                                 }
                                 if publication.kind() == TrackKind::Video {
                                     let mut shared = state.lock().unwrap();
-                                    let identity = participant.identity().to_string();
+                                    let identity = video_key(participant.identity().as_str(), publication.source());
                                     if !shared.frozen.contains_key(&identity) { shared.frames.remove(&identity); }
                                 }
                                 if reception_restart.is_none(){update_subscriptions(&room, &layout, &receive_monitor);}
@@ -740,7 +770,7 @@ impl Engine {
                             RoomEvent::ParticipantDisconnected(participant) => {
                                 let identity = participant.identity().to_string();
                                 sinks.retain(|_, sink| {
-                                    if sink.owner == identity {
+                                    if video_owner(&sink.owner) == identity {
                                         sink.abort();
                                         false
                                     } else {
@@ -748,6 +778,7 @@ impl Engine {
                                     }
                                 });
                                 let mut shared = state.lock().unwrap();
+                                shared.frames.remove(&video_key(&identity, TrackSource::Camera));
                                 if shared.frames.contains_key(&identity) {
                                     shared.frozen.entry(identity).or_insert_with(Instant::now);
                                     crate::diagnostics::write("recovery_view", "Retained screen during participant interruption", "");
@@ -907,13 +938,12 @@ impl Engine {
                         shared.screens = room
                             .remote_participants()
                             .into_values()
-                            .filter(|p| {
-                                p.track_publications().into_values().any(|track| {
-                                    track.source() == TrackSource::Screenshare
-                                        && track.kind() == TrackKind::Video
-                                })
+                            .flat_map(|participant| {
+                                let owner = participant.identity().to_string();
+                                participant.track_publications().into_values()
+                                    .filter(|track| is_room_video(track.source()) && track.kind() == TrackKind::Video)
+                                    .map(move |track| video_key(&owner, track.source()))
                             })
-                            .map(|p| p.identity().to_string())
                             .collect();
                         shared.participants = room
                             .remote_participants()
@@ -965,6 +995,31 @@ impl Engine {
                         drop(shared);
                         diagnostic_tick = Instant::now();
                     }
+                    if camera_start.as_ref().is_some_and(tokio::task::JoinHandle::is_finished) {
+                        if let Some(task) = camera_start.take() {
+                            let result = runtime.block_on(task);
+                            let mut shared = state.lock().unwrap();
+                            shared.camera_starting = false;
+                            match result {
+                                Ok(Ok(active)) => {
+                                    camera = Some(active);
+                                    shared.camera_active = true;
+                                }
+                                Ok(Err(error)) => shared.status = error.to_string(),
+                                Err(error) => shared.status = error.to_string(),
+                            }
+                            ctx.request_repaint();
+                        }
+                    }
+                    if let Some(error) = camera.as_ref().and_then(|active| active.failure()) {
+                        if let Some(active) = camera.take() {
+                            runtime.block_on(active.stop(&room));
+                        }
+                        let mut shared = state.lock().unwrap();
+                        shared.camera_active = false;
+                        shared.status = error;
+                        ctx.request_repaint();
+                    }
                     let fps = cast
                         .as_ref()
                         .filter(|cast| !cast.paused)
@@ -976,6 +1031,16 @@ impl Engine {
                 if let Some(value) = cast {
                     value.stop(&runtime);
                 }
+                if let Some(task) = camera_start {
+                    task.abort();
+                    if let Ok(Ok(active)) = runtime.block_on(task) {
+                        runtime.block_on(active.stop(&room));
+                    }
+                }
+                if let Some(active) = camera {
+                    runtime.block_on(active.stop(&room));
+                }
+                state.lock().unwrap().camera_active = false;
                 audio_sinks.clear();
                 for (_, task) in sinks {
                     task.abort();
@@ -993,6 +1058,8 @@ impl Engine {
             evidence.event(crate::evidence::EventKind::Disconnected);
             state.connected = false;
             state.reconnecting=false;state.reception_resetting=false;state.can_publish=false;
+            state.camera_starting = false;
+            state.camera_active = false;
             state.publishing = false;
             state.frames.clear();
             state.frozen.clear();

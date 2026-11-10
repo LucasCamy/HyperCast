@@ -212,3 +212,36 @@ pub fn preferences_controls(ui:&mut egui::Ui,store:&mut crate::preferences::Stor
     if store.retry_available()&&compact(ui,crate::i18n::label("Tentar salvar novamente","Retry saving"),true).clicked(){store.retry();}
     reset
 }
+
+/// Preserve the existing one-row layout for up to three streams.
+pub(crate) fn video_grid_card(area: egui::Rect, index: usize, count: usize, gap: f32) -> egui::Rect {
+    let columns = count.clamp(1, 3);
+    let rows = count.max(1).div_ceil(columns);
+    let row = index / columns;
+    let column = index % columns;
+    let row_count = count.saturating_sub(row * columns).clamp(1, columns);
+    let width = ((area.width() - gap * (row_count - 1) as f32) / row_count as f32).max(0.0);
+    let height = ((area.height() - gap * (rows - 1) as f32) / rows as f32).max(0.0);
+    egui::Rect::from_min_size(
+        area.min + egui::vec2(column as f32 * (width + gap), row as f32 * (height + gap)),
+        egui::vec2(width, height),
+    )
+}
+
+#[cfg(test)]
+#[test]
+fn video_grid_preserves_three_columns_and_fits_six_cards() {
+    let area = egui::Rect::from_min_size(egui::pos2(20.0, 30.0), egui::vec2(932.0, 616.0));
+    let gap = 16.0;
+    for index in 0..3 {
+        let screen = video_grid_card(area, index, 3, gap);
+        assert_eq!(screen.size(), egui::vec2(300.0, 616.0));
+        assert_eq!(screen.min, egui::pos2(20.0 + index as f32 * 316.0, 30.0));
+    }
+    let cards: Vec<_> = (0..6).map(|index| video_grid_card(area, index, 6, gap)).collect();
+    for (index, card) in cards.iter().enumerate() {
+        assert_eq!(card.size(), egui::vec2(300.0, 300.0));
+        assert!(area.contains_rect(*card));
+        assert!(cards[..index].iter().all(|previous| !card.intersects(*previous)));
+    }
+}

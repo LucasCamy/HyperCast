@@ -201,7 +201,7 @@ impl App {
                 }
             }).response.interact(egui::Sense::click());
         if response.double_clicked() {
-            self.layout.focus=self.engine.as_ref().and_then(|e|e.state.lock().unwrap().screens.iter().find(|s|s.sid==sid).map(|s|s.owner.clone()));
+            self.layout.focus = Some(sid.to_owned());
             self.layout.mode=ViewMode::Spotlight;
             self.layout();
         }
@@ -288,7 +288,7 @@ impl App {
                         ui.label(crate::i18n_format!("{} (você) · {}","{} (you) · {}",if self.name.is_empty(){"Linux"}else{&self.name},if sharing{crate::i18n::label("Transmitindo","Sharing")}else{crate::i18n::label("Assistindo","Watching")}));
                         for(id,name)in participants{
                             let live=screens.iter().any(|s|s.owner==id);let title=if name.is_empty(){id.clone()}else{name};
-                            let focused=!self.layout.paused && self.layout.mode==ViewMode::Spotlight && (self.layout.focus.as_ref()==Some(&id) || (self.layout.focus.is_none() && screens.first().is_some_and(|s|s.owner==id)));
+                            let focused=!self.layout.paused && self.layout.mode==ViewMode::Spotlight && (self.layout.focus.as_ref().is_some_and(|focus| focus == &id || screens.iter().any(|s| &s.sid == focus && s.owner == id)) || (self.layout.focus.is_none() && screens.first().is_some_and(|s|s.owner==id)));
                             let response=button(ui,&format!("{title} · {}",if live {if focused {crate::i18n::label("Em destaque · transmitindo","Focused · sharing")}else{crate::i18n::label("Transmitindo","Sharing")}}else{crate::i18n::label("Assistindo","Watching")}),live,focused);
                             if response.clicked(){self.layout.focus=Some(id);if response.double_clicked(){self.layout.mode=ViewMode::Spotlight;}self.layout();}
                         }
@@ -318,6 +318,16 @@ impl App {
                     if button(ui,if sharing{crate::i18n::label("Trocar tela ou janela","Change screen or window")}else{crate::i18n::label("Compartilhar tela/janela","Share screen/window")},connected&&can_publish&&!selecting&&super::media::factory_available(self.codec,self.encoder).unwrap_or(true),true).clicked(){self.send(Command::StreamSettings(self.stream_settings));self.send(Command::Share(Source::Portal,self.codec,self.encoder,self.upload));}
                     if std::env::var("WAYLAND_DISPLAY").is_err()&&!sharing&&button(ui,crate::i18n::label("Tela inteira (X11)","Entire screen (X11)"),connected&&can_publish&&!selecting&&super::media::factory_available(self.codec,self.encoder).unwrap_or(true),false).clicked(){self.send(Command::StreamSettings(self.stream_settings));self.send(Command::Share(Source::X11,self.codec,self.encoder,self.upload));}
                     if (sharing||selecting)&&button(ui,if selecting{crate::i18n::label("Cancelar seleção","Cancel selection")}else{crate::i18n::label("Parar compartilhamento","Stop sharing")},true,false).clicked(){self.send(if selecting{Command::CancelSelection}else{Command::Stop});}
+                    let camera_label = if self.snapshot.camera_starting {
+                        crate::i18n::label("Abrindo câmera…", "Opening camera…")
+                    } else if self.snapshot.camera_active {
+                        crate::i18n::label("Desligar câmera", "Turn off camera")
+                    } else {
+                        crate::i18n::label("Ligar câmera", "Turn on camera")
+                    };
+                    if button(ui, camera_label, connected && can_publish && !self.snapshot.camera_starting, self.snapshot.camera_active).clicked() {
+                        self.send(Command::ToggleCamera);
+                    }
                     if ui.checkbox(&mut self.audio,crate::i18n::label("Áudio do sistema","System audio")).changed(){self.send(Command::Audio(self.audio));}
                     if self.audio{ui.label(RichText::new(crate::i18n::label("O áudio recebido fica silenciado durante o envio para evitar eco.","Received audio is muted while sharing to prevent echo.")).size(11.0).color(MUTED));}
                     if self.access.busy || self.joining.is_some() || self.departure.is_some(){ui.spinner();}
@@ -393,20 +403,19 @@ impl App {
                         ui.label(RichText::new(crate::i18n::label("Um lugar para trabalhar juntos.","A place to work together.")).size(24.0));
                     });
                 } else if self.layout.mode == ViewMode::Grid && !self.fullscreen {
-                    let width = (ui.available_width() - (screens.len() - 1) as f32 * 12.0)
-                        / screens.len() as f32;
-                    let height = ui.available_height();
-                    ui.horizontal(|ui| {
-                        for screen in &screens {
-                            self.video(ui, &screen.sid, &screen.name, Vec2::new(width, height));
-                        }
-                    });
+                    let area = ui.available_rect_before_wrap();
+                    for (index, screen) in screens.iter().enumerate() {
+                        let card = crate::desktop_ui::video_grid_card(area, index, screens.len(), 12.0);
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(card), |ui| {
+                            self.video(ui, &screen.sid, &screen.name, card.size());
+                        });
+                    }
                 } else {
                     let focus = self
                         .layout
                         .focus
                         .as_deref()
-                        .and_then(|id| screens.iter().find(|s| s.owner == id))
+                        .and_then(|id| screens.iter().find(|s| s.sid == id || s.owner == id))
                         .unwrap_or(&screens[0]);
                     self.video(ui, &focus.sid, &focus.name, ui.available_size());
                 }

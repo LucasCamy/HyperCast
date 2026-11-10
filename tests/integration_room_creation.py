@@ -46,7 +46,7 @@ def main():
         else:raise AssertionError('Session device binding bypassed')
         payload=json.loads(__import__('base64').urlsafe_b64decode(member['token'].split('.')[1]+'=='))
         assert payload['video']['room']==created['room'] and payload['video']['canPublish']
-        assert payload['video']['canPublishSources']==['screen_share','screen_share_audio']
+        assert payload['video']['canPublishSources']==['screen_share','screen_share_audio','camera']
         try:post('/api/rooms',{'room_name':'Forbidden','request_id':uuid.uuid4().hex},created['invite'])
         except urllib.error.HTTPError as error:assert error.code==401
         else:raise AssertionError('A room invitation granted creator authority')

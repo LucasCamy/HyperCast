@@ -2,7 +2,7 @@
 from pathlib import Path
 path = Path("pkg/rtc/participant.go")
 source = path.read_text()
-anchor = '\tif len(p.pendingTracks) >= cMaxPendingTracks {'
+anchor = '\tbackupCodecPolicy := req.BackupCodecPolicy'
 assert source.count(anchor) == 1
 guard = '''\tif reason := p.hypercastCheckPublication(req); reason != "" {
         p.sendRequestResponse(&livekit.RequestResponse{
@@ -20,10 +20,10 @@ path.write_text(source.replace(anchor, guard + anchor))
 source = path.read_text()
 anchor = '\tp.UpTrackManager.Close(isExpectedToResume)\n'
 assert source.count(anchor) == 1
-source = source.replace(anchor, anchor + '\thypercastRooms.release(p.ClaimGrants().Video.Room, string(p.ID()))\n')
+source = source.replace(anchor, anchor + '\thypercastRooms.release(p.ClaimGrants().Video.Room, string(p.ID()), livekit.TrackSource_SCREEN_SHARE)\n\thypercastRooms.release(p.ClaimGrants().Video.Room, string(p.ID()), livekit.TrackSource_CAMERA)\n')
 anchor = '\t\tp.listener().OnTrackUnpublished(p, mt)\n'
 assert source.count(anchor) == 1
-source = source.replace(anchor, '\t\tif ti.Source == livekit.TrackSource_SCREEN_SHARE { p.hypercastEndScreen(quotaRoom, quotaParticipant) }\n' + anchor)
+source = source.replace(anchor, '\t\tif ti.Source == livekit.TrackSource_SCREEN_SHARE { p.hypercastEndScreen(quotaRoom, quotaParticipant) }\n\t\tif ti.Source == livekit.TrackSource_CAMERA { hypercastRooms.release(quotaRoom, quotaParticipant, ti.Source) }\n' + anchor)
 anchor = '\ttrackID := livekit.TrackID(ti.Sid)\n\tmt.AddOnClose('
 assert source.count(anchor) == 1
 source = source.replace(anchor, '\tquotaRoom, quotaParticipant := p.ClaimGrants().Video.Room, string(p.ID())\n' + anchor)

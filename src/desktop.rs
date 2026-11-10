@@ -176,6 +176,7 @@ struct App {
     started: Instant,
     smoke_seconds: Option<u64>,
     rendered: u64,
+    camera_textures: HashMap<String, (std::sync::Weak<crate::desktop_engine::VideoFrame>, egui::TextureHandle)>,
     last_presented: HashMap<String, (Arc<crate::desktop_engine::VideoFrame>, [i32; 4])>,
     smoke_reconnected: bool,
     smoke_layout_stage: u8,
@@ -261,6 +262,7 @@ impl App {
                 .and_then(|v| v.parse::<u64>().ok())
                 .filter(|v| (1..=300).contains(v)),
             rendered: 0,
+            camera_textures: HashMap::new(),
             last_presented: HashMap::new(),
             smoke_reconnected: false,
             smoke_layout_stage: 0,
@@ -303,7 +305,7 @@ impl App {
         else {self.mode=self.before_fullscreen_mode;}
         self.send_layout();
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(enabled));
-        self.last_presented.clear();
+        self.last_presented.clear();self.camera_textures.clear();
     }
     fn window_selection(&mut self,ui:&mut egui::Ui,space:f32)->bool {
         let mut selected=false;
@@ -438,6 +440,22 @@ impl App {
             ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Truncate);
             ui.label(RichText::new(status).size(11.0).color(MUTED)).on_hover_text(status);
         });
+        let (camera_active, camera_starting) = self.engine.as_ref().map_or((false, false), |engine| {
+            let state = engine.shared.lock().unwrap();
+            (state.camera_active, state.camera_starting)
+        });
+        let camera_label = if camera_starting {
+            crate::i18n::label("Abrindo câmera…", "Opening camera…")
+        } else if camera_active {
+            crate::i18n::label("Desligar câmera", "Turn off camera")
+        } else {
+            crate::i18n::label("Ligar câmera", "Turn on camera")
+        };
+        if crate::desktop_ui::action(ui, camera_label, connected && can_publish && !camera_starting, camera_active).clicked() {
+            if let Some(engine) = &self.engine {
+                let _ = engine.commands.send(Command::ToggleCamera);
+            }
+        }
         let app_audio=if publishing{active.is_some_and(|t|t.process().is_some())}else{self.window_mode};
         if ui.add_enabled(!connected||can_publish,egui::Checkbox::new(&mut self.system_audio,if app_audio{crate::i18n::label("Áudio do aplicativo","App audio")}else{crate::i18n::label("Áudio do sistema","System audio")}))
             .on_hover_text(crate::i18n::label("Som do sistema ou do aplicativo escolhido, sem microfone. Pode incluir outras janelas do mesmo programa.","System or selected app audio, without microphone. May include other windows of the same app.")).changed(){
@@ -467,7 +485,7 @@ impl App {
     }
     fn restart_reception(&mut self) {
         if let Some(engine)=&self.engine {let _=engine.commands.send(Command::RestartReception);}
-        self.presenters.clear();self.last_presented.clear();self.error.clear();
+        self.presenters.clear();self.last_presented.clear();self.camera_textures.clear();self.error.clear();
     }
     fn send_layout(&self) {
         if let Some(engine) = &self.engine {
@@ -483,7 +501,7 @@ impl App {
     fn leave_room(&mut self,ctx:&egui::Context,join_next:bool) {
         if let Some(engine)=&self.engine{engine.request_exit();}
         self.creator.cancel_automatic_join();self.creator.open=false;
-        self.presenters.clear();self.last_presented.clear();self.window_previews.clear();
+        self.presenters.clear();self.last_presented.clear();self.camera_textures.clear();self.window_previews.clear();
         self.focus=None;self.single_view=false;self.paused=false;
         self.auto_connect=false;self.pending_join=join_next;
         if self.departure.is_none(){self.departure=Some(crate::room_transition::Departure::start(self.engine.take(),ctx.clone()));}
@@ -516,7 +534,7 @@ impl Drop for App {
         self.save_preferences();
         if let Some(engine)=&self.engine{engine.request_exit();}
         let _ = crate::preferences::save_name(&self.name);
-        self.presenters.clear();self.last_presented.clear();self.engine=None;
+        self.presenters.clear();self.last_presented.clear();self.camera_textures.clear();self.engine=None;
         if self.smoke_seconds.is_some(){println!("GUI shutdown: {} retained GPU decoder surfaces",livekit::webrtc::native::d3d11_live_surfaces());}
     }
 }
@@ -590,7 +608,7 @@ impl eframe::App for App {
             self.smoke_reconnected = true;
             self.engine = None;
             self.presenters.clear();
-            self.last_presented.clear();
+            self.last_presented.clear();self.camera_textures.clear();
             println!(
                 "GUI lifecycle: {} retained GPU decoder surfaces after disconnect",
                 livekit::webrtc::native::d3d11_live_surfaces()
@@ -652,6 +670,7 @@ impl eframe::App for App {
         if !publishing && !identity.is_empty() && self.focus.as_ref()==Some(&identity) {
             self.focus=None;self.send_layout();
         }
+        self.camera_textures.retain(|key, _| videos.iter().any(|(id, _)| id == key));
         people.sort();
         screens.sort();
         videos.sort_by_key(|(id, _)| id.clone());
@@ -840,13 +859,14 @@ impl eframe::App for App {
                         }
                         people.sort_by(|a,b| screens.contains(&b.0).cmp(&screens.contains(&a.0)).then_with(|| a.1.cmp(&b.1)).then_with(|| a.0.cmp(&b.0)));
                         for (identity, name) in &people {
-                            let live = screens.contains(identity);
-                            let focused = watched.as_ref()==Some(identity);
+                            let target = screens.iter().find(|key| *key == identity).or_else(|| screens.iter().find(|key| crate::desktop_engine::video_owner(key) == identity));
+                            let live = target.is_some();
+                            let focused = target.is_some_and(|key| watched.as_ref() == Some(key));
                             let response=choice_card(ui, if name.is_empty() { crate::i18n::label("Participante","Participant") } else { name }, if live { if focused && self.mode == ViewMode::Spotlight { crate::i18n::label("Em destaque · compartilhando","Focused · sharing") } else { crate::i18n::label("Compartilhando tela","Sharing screen") } } else { crate::i18n::label("Assistindo à sala","Watching the room") }, focused && live && self.mode==ViewMode::Spotlight, live, Some(name.chars().next().unwrap_or('P')));
                             if response.clicked()
                             {
                                 self.single_view=response.double_clicked();
-                                self.focus = Some(identity.clone());
+                                self.focus = target.cloned();
                                 self.mode = ViewMode::Spotlight;
                                 self.send_layout();
                             }
@@ -993,7 +1013,7 @@ impl eframe::App for App {
                     let mut selected: Vec<_> = videos
                         .iter()
                         .filter(|(id, _)| self.mode == ViewMode::Grid || Some(id) == focus.as_ref())
-                        .take(3)
+                        .take(6)
                         .collect();
                     if selected.is_empty() {
                         for presenter in self.presenters.values_mut() {
@@ -1029,16 +1049,12 @@ impl eframe::App for App {
                         Vec::new()
                     };
                     let count = (selected.len() + unseen.len()).max(1);
-                    let width = (rect.width() - 16.0 * (count - 1) as f32) / count as f32;
                     let scale = ctx.pixels_per_point();
                     let mut visible = Vec::new();
                     for (index, (identity, frame)) in selected.iter().enumerate() {
                         let thumbnail = self.mode == ViewMode::Spotlight && index > 0;
                         let card = if self.mode == ViewMode::Grid || count == 1 {
-                            egui::Rect::from_min_size(
-                                rect.min + Vec2::new(index as f32 * (width + 16.0), 0.0),
-                                Vec2::new(width, rect.height()),
-                            )
+                            crate::desktop_ui::video_grid_card(rect, index, count, 16.0)
                         } else if index == 0 {
                             egui::Rect::from_min_size(
                                 rect.min,
@@ -1064,16 +1080,24 @@ impl eframe::App for App {
                             canvas.min + Vec2::new(0.0, 32.0),
                             canvas.max - Vec2::new(0.0, 32.0),
                         );
+                        let owner = crate::desktop_engine::video_owner(identity);
+                        let is_camera = owner != identity.as_str();
                         let name = people
                             .iter()
-                            .find(|(id, _)| id.as_str() == identity.as_str())
+                            .find(|(id, _)| id.as_str() == owner)
                             .map(|(_, name)| name.as_str())
                             .filter(|name| !name.is_empty())
-                            .unwrap_or(identity);
+                            .unwrap_or(owner);
+                        let label = if frame.local() {
+                            crate::i18n::label("Minha tela", "My screen").to_owned()
+                        } else {
+                            let kind = if is_camera { crate::i18n::label("Câmera", "Camera") } else { crate::i18n::label("Tela", "Screen") };
+                            format!("{name} · {kind}")
+                        };
                         ui.painter().text(
                             card.min + Vec2::new(16.0, 20.0),
                             egui::Align2::LEFT_CENTER,
-                            if frame.local() { crate::i18n::label("Minha tela","My screen") } else { name },
+                            &label,
                             egui::FontId::proportional(13.0),
                             TEXT,
                         );
@@ -1097,7 +1121,7 @@ impl eframe::App for App {
                             } else if thumbnail && !frame.local() {
                                 crate::i18n::label("Último quadro • pausada","Last frame • paused").into()
                             } else {
-                                format!("{} × {} • GPU", frame_width, frame_height)
+                                format!("{frame_width} × {frame_height}")
                             },
                             egui::FontId::proportional(12.0),
                             MUTED,
@@ -1152,6 +1176,31 @@ impl eframe::App for App {
                                 quality.evidence.record(crate::evidence::Stage::PresentCall,present_started.elapsed());
                                 visible.push((*identity).clone());
                             }
+                        } else if is_camera {
+                            if let crate::desktop_engine::VideoFrame::Remote(remote, _) = frame.as_ref() {
+                                let frame_ref = Arc::downgrade(frame);
+                                let entry = self.camera_textures.entry((*identity).clone());
+                                let texture = entry.or_insert_with(|| {
+                                    (std::sync::Weak::new(), ctx.load_texture(identity.as_str(), egui::ColorImage::filled([1, 1], egui::Color32::BLACK), egui::TextureOptions::LINEAR))
+                                });
+                                if !texture.0.ptr_eq(&frame_ref) {
+                                    let mut rgba = vec![0; frame_width as usize * frame_height as usize * 4];
+                                    remote.buffer.to_argb(
+                                        livekit::webrtc::video_frame::VideoFormatType::ABGR,
+                                        &mut rgba, frame_width * 4, frame_width as i32, frame_height as i32,
+                                    );
+                                    texture.1.set(egui::ColorImage::from_rgba_unmultiplied(
+                                        [frame_width as usize, frame_height as usize], &rgba,
+                                    ), egui::TextureOptions::LINEAR);
+                                    texture.0 = frame_ref;
+                                }
+                                if canvas.is_positive() && frame_width != 0 && frame_height != 0 {
+                                    let size = Vec2::new(frame_width as f32, frame_height as f32);
+                                    let scale = (canvas.width() / size.x).min(canvas.height() / size.y);
+                                    ui.painter().image(texture.1.id(), egui::Rect::from_center_size(canvas.center(), size * scale),
+                                        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+                                }
+                            }
                         } else {
                             self.error =
                                 crate::i18n::label("O decoder não entregou uma textura GPU compatível.","The decoder did not return a compatible GPU texture.").into();
@@ -1174,15 +1223,19 @@ impl eframe::App for App {
                             egui::Stroke::new(1.0, BORDER),
                             egui::StrokeKind::Inside,
                         );
-                        let name = people
-                            .iter()
-                            .find(|(owner, _)| owner == *id)
-                            .map(|(_, name)| name.as_str())
-                            .unwrap_or(id.as_str());
+                        let owner = crate::desktop_engine::video_owner(id);
+                        let name = people.iter().find(|(identity, _)| identity == owner)
+                            .map(|(_, name)| name.as_str()).unwrap_or(owner);
+                        let kind = if owner == id.as_str() {
+                            crate::i18n::label("Tela", "Screen")
+                        } else {
+                            crate::i18n::label("Câmera", "Camera")
+                        };
+                        let label = format!("{name} · {kind}");
                         ui.painter().text(
                             card.center() - Vec2::new(0.0, 14.0),
                             egui::Align2::CENTER_CENTER,
-                            name,
+                            label,
                             egui::FontId::proportional(14.0),
                             TEXT,
                         );
@@ -1312,7 +1365,7 @@ impl eframe::App for App {
                 });
             self.updater.open=open;
             if install {
-                self.engine=None;self.presenters.clear();self.last_presented.clear();
+                self.engine=None;self.presenters.clear();self.last_presented.clear();self.camera_textures.clear();
                 let result=self.updater.installer.as_ref().unwrap().launch(&self.updater.installation);
                 match result {
                     Ok(())=>ctx.send_viewport_cmd(egui::ViewportCommand::Close),

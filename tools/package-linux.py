@@ -4,7 +4,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parent.parent
 TOOL_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
 TOOL_SHA256="95cbe7cce9717fce90c484e34052ee7c7f1d7635b33c12525b4776826a7d29b6"
-PLUGIN_NAMES=("coreelements","app","audioconvert","audioresample","videoconvertscale","videorate","videoparsersbad","nvcodec","va","x265","pulseaudio","pipewire","ximagesrc","videotestsrc","audiotestsrc","typefindfunctions")
+PLUGIN_NAMES=("coreelements","app","audioconvert","audioresample","videoconvertscale","videorate","videoparsersbad","nvcodec","va","x265","pulseaudio","pipewire","ximagesrc","videotestsrc","audiotestsrc","typefindfunctions","playback","video4linux2","jpeg")
 # All mandatory modules in the bundled PipeWire client.conf must be present.
 # Missing client-device/session-manager makes pw_context_new fail, and the
 # 1.0.5 GStreamer PipeWire plugin subsequently dereferences that null context.

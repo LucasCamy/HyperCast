@@ -13,7 +13,11 @@ ROOT = Path(__file__).resolve().parent.parent
 def main():
     key, secret = rt.load_env()
     room = "multi-test-" + uuid.uuid4().hex[:12]
-    exe = ROOT/"target/x86_64-pc-windows-msvc/debug/hypercast.exe"
+    exe = Path(os.environ.get("HYPERCAST_TEST_EXE", ROOT/"target/x86_64-pc-windows-msvc/debug/hypercast.exe"))
+    codec = os.environ.get("HYPERCAST_TEST_CODEC", "av1")
+    outputs = os.environ.get("HYPERCAST_TEST_OUTPUTS", "0,0,0").split(",")
+    if len(outputs) != 3:
+        raise ValueError("HYPERCAST_TEST_OUTPUTS must list three output indexes")
     publishers = []
     gui = None
     logs = []
@@ -22,7 +26,7 @@ def main():
             token = rt.issue(room,f"Amigo{index+1}","publisher",key,secret,ROOT/"infra/admission.sqlite3")
             log = open(ROOT/f".tools/multi-publisher-{index+1}.log","wb")
             logs.append(log)
-            publishers.append(subprocess.Popen([str(exe),"--encode","--codec","av1","--publish-url","ws://127.0.0.1:8100","--seconds","25"],
+            publishers.append(subprocess.Popen([str(exe),"--encode","--codec",codec,"--output",outputs[index],"--publish-url","ws://127.0.0.1:8100","--seconds","25"],
                 cwd=ROOT,env={**os.environ,"HYPERCAST_URL":os.environ.get("HYPERCAST_TEST_URL","ws://127.0.0.1:8100"),"HYPERCAST_ROOM_TOKEN":token},stdout=log,stderr=subprocess.STDOUT))
         try:
             rt.issue(room,"Fourth","publisher",key,secret,ROOT/"infra/admission.sqlite3")

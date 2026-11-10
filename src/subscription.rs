@@ -81,7 +81,7 @@ pub fn reset_receivers(room:&livekit::Room) {
     use livekit::prelude::TrackSource;
     for p in room.remote_participants().into_values() {
         for publication in p.track_publications().into_values() {
-            if matches!(publication.source(),TrackSource::Screenshare|TrackSource::ScreenshareAudio)
+            if matches!(publication.source(),TrackSource::Screenshare|TrackSource::ScreenshareAudio|TrackSource::Camera)
                 && (publication.is_desired() || publication.is_subscribed()) {
                 publication.set_enabled(false);
             }

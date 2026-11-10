@@ -37,6 +37,8 @@ pub struct Screen {
 #[derive(Default,Clone)]
 pub struct State {
     pub connected: bool,
+    pub camera_active: bool,
+    pub camera_starting: bool,
     pub quality:crate::video_metrics::QualitySnapshot,
     pub reception_resetting: bool,
     pub reception_restarts: u64,
@@ -72,6 +74,7 @@ impl Default for Layout {
     }
 }
 pub enum Command {
+    ToggleCamera,
     RateMode(crate::adaptive_upload::Mode),
     #[cfg(test)]
     StallReader(String),
@@ -188,32 +191,39 @@ fn refresh(
             let name = p.name().to_owned();
             p.track_publications()
                 .into_values()
-                .filter(|t| t.source() == TrackSource::Screenshare)
+                .filter(|t| matches!(t.source(), TrackSource::Screenshare | TrackSource::Camera))
                 .map(move |publication| {
                     (
                         Screen {
                             sid: publication.sid().to_string(),
                             owner: owner.clone(),
-                            name: name.clone(),
+                            name: format!("{name} · {}", if publication.source() == TrackSource::Camera {
+                                crate::i18n::label("Câmera", "Camera")
+                            } else {
+                                crate::i18n::label("Tela", "Screen")
+                            }),
                         },
                         publication,
                     )
                 })
         })
         .collect();
-    screens.sort_by(|a, b| a.0.owner.cmp(&b.0.owner));
-    screens.truncate(3);
+    screens.sort_by_key(|(screen, publication)| {
+        (publication.source() == TrackSource::Camera, screen.owner.clone())
+    });
+    screens.truncate(6);
     let focus = layout
         .focus
         .as_deref()
-        .filter(|id| screens.iter().any(|s| s.0.owner == *id))
-        .or_else(|| screens.first().map(|s| s.0.owner.as_str()));
+        .and_then(|id| screens.iter().find(|s| s.0.sid == id || s.0.owner == id))
+        .or_else(|| screens.first())
+        .map(|s| s.0.sid.as_str());
     let mut active = HashMap::new();
     for (screen, publication) in &screens {
         let wanted = delivery_demand(
             layout.mode,
             !layout.paused,
-            Some(screen.owner.as_str()) == focus,
+            Some(screen.sid.as_str()) == focus,
             publication.simulcasted(),
         );
         let enabled = wanted != Demand::Paused;
@@ -238,7 +248,10 @@ fn refresh(
             let enabled = !mute_playback
                 && !layout.paused
                 && layout.volume > 0
-                && active.values().any(|id| id == &owner);
+                && screens.iter().any(|(screen, video)| {
+                    screen.owner == owner && video.source() == TrackSource::Screenshare
+                        && active.contains_key(&screen.sid)
+                });
             crate::subscription::keep_receiver(&publication,enabled);
         }
     }
@@ -366,6 +379,8 @@ async fn session(
     let mut layout = Layout::default();
     let mut video_sinks = HashMap::<String, Sink>::new();
     let mut audio_sinks = HashMap::<String, Sink>::new();
+    let mut camera: Option<super::camera::Camera> = None;
+    let mut camera_start = None;
     let mut capture: Option<Capture> = None;
     let mut publisher: Option<EncodedPublisher> = None;
     let mut audio: Option<AudioCast> = None;
@@ -400,6 +415,20 @@ async fn session(
                     #[cfg(test)] Command::FailCapture=>{pending=Some(tokio::spawn(async{panic!("injected capture task failure")}));shared.lock().unwrap().selecting=true;},
                     #[cfg(test)] Command::StallReader(sid)=>{if let Some(sink)=video_sinks.get(&sid){sink.1.store(true,Ordering::Relaxed);}},
                     Command::Disconnect=>break,
+                    Command::ToggleCamera => {
+                        if let Some(active) = camera.take() {
+                            active.stop(&room).await;
+                            shared.lock().unwrap().camera_active = false;
+                        } else if camera_start.is_none()
+                            && room.local_participant().permission().is_some_and(|grant| grant.can_publish)
+                        {
+                            let room = room.clone();
+                            camera_start = Some(tokio::spawn(async move {
+                                super::camera::Camera::open(&room).await
+                            }));
+                            shared.lock().unwrap().camera_starting = true;
+                        }
+                    },
                     Command::RateMode(value)=>{if capture.is_none()&&pending.is_none(){rate_mode=value;}},
                     Command::StreamSettings(value)=>{if capture.is_none()&&pending.is_none()&&value.valid(){settings=value;}},
                     Command::RestartReception=>{
@@ -444,7 +473,7 @@ async fn session(
                         let Some(RemoteTrack::Video(track))=publication.track() else{continue;};
                         let sid=publication.sid().to_string();
                         eprintln!("Linux reception: stage=subscribed sid={sid}");
-                        if publication.source()==TrackSource::Screenshare && (video_sinks.contains_key(&sid)||video_sinks.len()<3) {
+                        if matches!(publication.source(), TrackSource::Screenshare | TrackSource::Camera) && (video_sinks.contains_key(&sid)||video_sinks.len()<6) {
                             video_sinks.insert(sid.clone(),attach_video(track,&sid,&shared,&ctx));
                         }
                     },
@@ -459,6 +488,29 @@ async fn session(
                     _=>{last_refresh=Instant::now()-Duration::from_secs(1);},
                 },
                 _=ticks.tick()=>{
+                    if camera_start.as_ref().is_some_and(tokio::task::JoinHandle::is_finished) {
+                        if let Some(task) = camera_start.take() {
+                            let result = task.await;
+                            let mut state = shared.lock().unwrap();
+                            state.camera_starting = false;
+                            match result {
+                                Ok(Ok(active)) => {
+                                    camera = Some(active);
+                                    state.camera_active = true;
+                                }
+                                Ok(Err(error)) => state.status = error.to_string(),
+                                Err(error) => state.status = error.to_string(),
+                            }
+                        }
+                    }
+                    if let Some(error) = camera.as_mut().and_then(|active| active.tick().err()) {
+                        if let Some(active) = camera.take() {
+                            active.stop(&room).await;
+                        }
+                        let mut state = shared.lock().unwrap();
+                        state.camera_active = false;
+                        state.status = format!("{}: {error}", crate::i18n::label("Câmera", "Camera"));
+                    }
                     if retiring.as_ref().is_some_and(|task|task.is_finished()) {
                         if retiring.take().unwrap().await.is_err(){shared.lock().unwrap().status=crate::i18n::label("A origem anterior falhou ao encerrar; você pode tentar novamente.","The previous source failed to stop; you can try again.").into();}
                         shared.lock().unwrap().selecting=pending.is_some();
@@ -526,7 +578,7 @@ async fn session(
                                 if !p.is_desired(){continue;}
                                 let sid=p.sid().to_string();
                                 match p.track(){
-                                    Some(RemoteTrack::Video(track)) if p.source()==TrackSource::Screenshare && !recovery.held(&sid) && video_sinks.get(&sid).is_none_or(|s|s.0.is_finished()) && (video_sinks.contains_key(&sid)||video_sinks.len()<3)=>{
+                                    Some(RemoteTrack::Video(track)) if matches!(p.source(), TrackSource::Screenshare | TrackSource::Camera) && !recovery.held(&sid) && video_sinks.get(&sid).is_none_or(|s|s.0.is_finished()) && (video_sinks.contains_key(&sid)||video_sinks.len()<6)=>{
                                         video_sinks.insert(sid.clone(),attach_video(track,&sid,&shared,&ctx));
                                     },
                                     Some(RemoteTrack::Audio(track)) if p.source()==TrackSource::ScreenshareAudio && p.is_enabled() && audio.is_none() && !layout.paused && layout.volume>0 && !audio_sinks.contains_key(&sid) && audio_sinks.len()<3=>{
@@ -632,6 +684,17 @@ async fn session(
     if let Some(p) = publisher.take() {
         let _ = p.stop().await;
     }
+    if let Some(task) = camera_start {
+        task.abort();
+        if let Ok(Ok(active)) = task.await {
+            active.stop(&room).await;
+        }
+    }
+    if let Some(active) = camera.take() {
+        active.stop(&room).await;
+    }
+    shared.lock().unwrap().camera_active = false;
+    shared.lock().unwrap().camera_starting = false;
     video_sinks.clear();
     audio_sinks.clear();
     let _ = room.close().await;

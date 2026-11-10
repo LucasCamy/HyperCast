@@ -10,6 +10,8 @@ pub mod updater;
 #[cfg(all(windows, feature = "desktop"))]
 pub mod desktop_engine;
 #[cfg(all(windows, feature = "desktop"))]
+mod windows_camera;
+#[cfg(all(windows, feature = "desktop"))]
 pub mod diagnostics;
 #[cfg(feature = "desktop")]
 pub mod invitation;

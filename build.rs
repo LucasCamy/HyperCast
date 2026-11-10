@@ -8,6 +8,7 @@ fn main() {
     println!("cargo:rerun-if-changed=native/system_audio.cpp");
     println!("cargo:rerun-if-changed=native/window_capture.cpp");
     println!("cargo:rerun-if-changed=native/presenter.cpp");
+    println!("cargo:rerun-if-changed=native/camera.cpp");
     println!("cargo:rerun-if-changed=native/vendor/nvEncodeAPI.h");
     println!("cargo:rerun-if-changed=assets/hypercast.ico");
     println!("cargo:rerun-if-changed=assets/hypercast.rc");
@@ -32,6 +33,7 @@ fn main() {
             .file("native/nvenc.cpp")
             .file("native/amf.cpp")
             .file("native/presenter.cpp")
+            .file("native/camera.cpp")
             .file("native/system_audio.cpp")
             .file("native/window_capture.cpp")
             .include("native/vendor")
@@ -43,6 +45,10 @@ fn main() {
         println!("cargo:rustc-link-lib=dxgi");
         println!("cargo:rustc-link-lib=d3dcompiler");
         println!("cargo:rustc-link-lib=ole32");
+        println!("cargo:rustc-link-lib=mf");
+        println!("cargo:rustc-link-lib=mfplat");
+        println!("cargo:rustc-link-lib=mfreadwrite");
+        println!("cargo:rustc-link-lib=mfuuid");
         println!("cargo:rustc-link-lib=mmdevapi");
         println!("cargo:rustc-link-lib=windowsapp");
         println!("cargo:rustc-link-lib=dwmapi");
