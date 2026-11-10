@@ -23,7 +23,6 @@ room:
     - mime: video/H265
     - mime: video/AV1
     - mime: video/H264
-    - mime: video/VP8
   playout_delay:
     enabled: true
     min: 0

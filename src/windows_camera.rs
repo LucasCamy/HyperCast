@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow, bail};
 use livekit::{
-    options::{TrackPublishOptions, VideoEncoding},
+    options::{TrackPublishOptions, VideoCodec, VideoEncoding},
     prelude::*,
     webrtc::{
         video_frame::{I420Buffer, VideoFrame, VideoRotation},
@@ -83,6 +83,7 @@ impl Camera {
                 LocalTrack::Video(track),
                 TrackPublishOptions {
                     source: TrackSource::Camera,
+                    video_codec: VideoCodec::H264,
                     video_encoding: Some(VideoEncoding {
                         max_bitrate: 2_500_000,
                         max_framerate: 30.0,

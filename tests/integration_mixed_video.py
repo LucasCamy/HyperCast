@@ -40,7 +40,7 @@ async def main():
         source = rtc.VideoSource(320, 180, is_screencast=kind == screen)
         track = rtc.LocalVideoTrack.create_video_track("screen" if kind == screen else "camera", source)
         result = await room.local_participant.publish_track(track, rtc.TrackPublishOptions(
-            source=kind, video_codec=rtc.VideoCodec.VP8, simulcast=False))
+            source=kind, video_codec=rtc.VideoCodec.H264, simulcast=False))
         sources[result.sid] = source
         return result
 
