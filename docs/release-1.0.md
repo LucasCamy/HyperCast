@@ -35,3 +35,20 @@ executado em um projeto Docker local de validação, encerrado após os testes.
 | Distribuição Windows | ZIP portátil e instalador gerados e conferidos contra o arquivo de SHA-256 local. A instalação e a atualização em perfil limpo ficam pendentes. O computador já tem uma instalação registrada. |
 | Distribuição Linux | AppImage gerado e conferido contra o SHA-256 local. Abriu em WSL/X11 e entrou na sala local. Os quatro comandos da barra foram encontrados pelo AT-SPI. Esse build não inclui suporte NVIDIA no WebRTC, pois os cabeçalhos CUDA não estavam disponíveis. O teste em uma instalação física continua pendente. |
 | Hardware e acessibilidade | Webcam física, três telas reais sob carga, leitura por voz e Linux físico com Wayland ficam pendentes nesta execução. |
+
+## Instalação e atualização em perfil limpo — 10/11/2026
+
+- **Windows Sandbox:** instalação limpa, abertura e saída da interface e
+  desinstalação passaram. O executável instalado corresponde ao SHA-256 do
+  candidato. Em seguida, o instalador oficial 0.9.1 foi aplicado e atualizado
+  pelo instalador local 0.9.2. Nome, idioma e preferências mantiveram os mesmos
+  hashes durante a atualização. A interface voltou a abrir e a desinstalação
+  removeu o executável e o registro. A instalação do usuário no host permaneceu
+  registrada. O teste executou a atualização pelo instalador, sem exercitar o
+  download do atualizador integrado.
+- **Linux em WSL/X11:** o AppImage candidato iniciou e encerrou em um perfil
+  XDG vazio. Em um segundo perfil isolado, o AppImage oficial 0.9.1 iniciou
+  primeiro. Após substituir o AppImage, o candidato 0.9.2 iniciou e preservou
+  nome, idioma, FPS, volume, estado da lateral e modo de grade. Os testes usaram
+  extração do AppImage e renderização por software, sem validar FUSE ou Wayland
+  em uma instalação física.
