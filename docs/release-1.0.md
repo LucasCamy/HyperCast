@@ -64,3 +64,13 @@ executado em um projeto Docker local de validação, encerrado após os testes.
 | Windows para Linux | O AppImage em WSLg/Wayland recebeu a janela de teste transmitida pelo cliente Windows. O diagnóstico registrou 1.629 quadros recebidos, duas texturas e 1.357 unidades de áudio recebidas. |
 | Linux para Windows | O AppImage em WSL/X11 iniciou o compartilhamento de um desktop virtual pelo menu acessado via AT-SPI. O cliente Windows recebeu 581 quadros e apresentou 575 pela GPU. O áudio no sentido Linux para Windows continua pendente. |
 | Menu sobre a transmissão | No Windows, a janela de vídeo nativa cobria parte do menu Mais opções. No build de depuração com a correção, dois clientes reproduziram uma transmissão em movimento. O menu permaneceu legível, o comando de pausa respondeu e o vídeo voltou a ocupar a área inteira ao retomar. |
+
+## Chave, três transmissões e escala no Windows — 10/11/2026
+
+| Verificação | Resultado |
+| --- | --- |
+| Chave de acesso no formulário | Em um perfil isolado, o formulário exibiu “Informe uma chave de acesso válida” para uma chave curta e “Chave inválida, expirada ou revogada” para uma chave bem-formada rejeitada com HTTP 401. Corrigir a chave na mesma janela liberou o acesso à lista de salas. |
+| Três compartilhamentos simultâneos | Três clientes Windows compartilharam janelas de teste distintas em HEVC pelo LiveKit local. Um quarto cliente assistiu às três no Grid, com texto e contadores em movimento. Uma quarta tentativa de publicar foi recusada pelo SFU e o participante permaneceu na sala. Pausar e retomar restaurou os três vídeos. O cenário usou janelas de teste no mesmo computador. |
+| Escala do HyperCast | O primeiro teste visual encontrou cartões espremidos e textos sobrepostos a 200%. A grade agora usa mais colunas quando falta altura e reduz as margens dos cartões baixos. O reteste com três transmissões mostrou imagens e títulos separados a 150% e 200%. A escala do Windows foi verificada separadamente, mas o aplicativo não chegou aos DPI esperados nas tentativas, então esse teste continua pendente. |
+| Narrador | A recapitulação do Narrador confirmou o nome e o papel de botão de Mais opções. Tab chegou ao botão. Não foi possível confirmar a leitura e a operação completas de Pausar, Retomar e Sair pelo Narrador. |
+| Suíte Windows | 54 testes passaram e 11 foram ignorados. |

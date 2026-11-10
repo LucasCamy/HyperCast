@@ -1107,11 +1107,17 @@ impl eframe::App for App {
                             egui::Stroke::new(1.0, BORDER),
                             egui::StrokeKind::Inside,
                         );
-                        let canvas = card.shrink2(Vec2::new(8.0, 8.0));
+                        let compact_card = card.height() < 140.0;
+                        let padding = if compact_card { 4.0 } else { 8.0 };
+                        let header_height = if compact_card { 22.0 } else { 40.0 };
+                        let footer_height = if compact_card { padding } else { 40.0 };
                         let canvas = egui::Rect::from_min_max(
-                            canvas.min + Vec2::new(0.0, 32.0),
-                            canvas.max - Vec2::new(0.0, 32.0),
+                            card.min + Vec2::new(padding, header_height),
+                            card.max - Vec2::new(padding, footer_height),
                         );
+                        if !canvas.is_positive() {
+                            continue;
+                        }
                         let owner = crate::desktop_engine::video_owner(identity);
                         let is_camera = owner != identity.as_str();
                         let name = people
@@ -1126,8 +1132,9 @@ impl eframe::App for App {
                             let kind = if is_camera { crate::i18n::label("Câmera", "Camera") } else { crate::i18n::label("Tela", "Screen") };
                             format!("{name} · {kind}")
                         };
-                        ui.painter().text(
-                            card.min + Vec2::new(16.0, 20.0),
+                        let card_painter = ui.painter().with_clip_rect(card);
+                        card_painter.text(
+                            card.min + Vec2::new(if compact_card { 8.0 } else { 16.0 }, header_height * 0.5),
                             egui::Align2::LEFT_CENTER,
                             &label,
                             egui::FontId::proportional(13.0),
@@ -1135,7 +1142,8 @@ impl eframe::App for App {
                         );
                         let response=ui.interact(card, egui::Id::new(("focus",identity)),egui::Sense::click());
                         response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,true,crate::i18n_format!("Transmissão de {}","Stream from {}",if frame.local(){crate::i18n::label("Minha tela","My screen")}else{name})));
-                        if response.double_clicked() || (response.clicked() && response.interact_pointer_pos().is_none_or(|p|p.y<card.top()+32.0))
+                        let title_hit_height = if compact_card { header_height } else { 32.0 };
+                        if response.double_clicked() || (response.clicked() && response.interact_pointer_pos().is_none_or(|p|p.y<card.top()+title_hit_height))
                         {
                             self.single_view=response.double_clicked();
                             self.focus = Some((*identity).clone());
@@ -1143,21 +1151,23 @@ impl eframe::App for App {
                             self.send_layout();
                         }
                         let (frame_width, frame_height) = frame.dimensions();
-                        ui.painter().text(
-                            card.left_bottom() + Vec2::new(16.0, -18.0),
-                            egui::Align2::LEFT_CENTER,
-                            if frozen.contains(identity) {
-                                crate::i18n::label("Reconectando • último quadro","Reconnecting • last frame").into()
-                            } else if let Some(exhausted)=recovering.get(identity) {
-                                crate::reception_recovery::status_label(*exhausted).into()
-                            } else if thumbnail && !frame.local() {
-                                crate::i18n::label("Último quadro • pausada","Last frame • paused").into()
-                            } else {
-                                format!("{frame_width} × {frame_height}")
-                            },
-                            egui::FontId::proportional(12.0),
-                            MUTED,
-                        );
+                        if !compact_card {
+                            card_painter.text(
+                                card.left_bottom() + Vec2::new(16.0, -18.0),
+                                egui::Align2::LEFT_CENTER,
+                                if frozen.contains(identity) {
+                                    crate::i18n::label("Reconectando • último quadro","Reconnecting • last frame").into()
+                                } else if let Some(exhausted)=recovering.get(identity) {
+                                    crate::reception_recovery::status_label(*exhausted).into()
+                                } else if thumbnail && !frame.local() {
+                                    crate::i18n::label("Último quadro • pausada","Last frame • paused").into()
+                                } else {
+                                    format!("{frame_width} × {frame_height}")
+                                },
+                                egui::FontId::proportional(12.0),
+                                MUTED,
+                            );
+                        }
                         let surface = frame.surface();
                         if let Some((texture, slice)) = surface {
                             if !self.presenters.contains_key(identity) {

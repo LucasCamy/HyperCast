@@ -215,17 +215,33 @@ pub fn preferences_controls(ui:&mut egui::Ui,store:&mut crate::preferences::Stor
 
 /// Fit stream cards to the usable width while keeping every stream visible.
 pub(crate) fn video_grid_card(area: egui::Rect, index: usize, count: usize, gap: f32) -> egui::Rect {
-    let columns = count.clamp(1, if area.width() >= 900.0 { 3 } else if area.width() >= 480.0 { 2 } else { 1 });
-    let rows = count.max(1).div_ceil(columns);
+    let preferred_columns = if area.width() >= 900.0 { 3 } else if area.width() >= 480.0 { 2 } else { 1 };
+    let count = count.max(1);
+    let rows_with_room = ((area.height() + gap) / (56.0 + gap)).floor() as usize;
+    let columns_that_fit = ((area.width() + gap) / (96.0 + gap)).floor() as usize;
+    let columns = count.div_ceil(rows_with_room.max(1))
+        .clamp(preferred_columns, columns_that_fit.clamp(preferred_columns, 3))
+        .min(count);
+    let rows = count.div_ceil(columns);
+    let row_gap = gap.min(area.height().max(0.0) / rows as f32 * 0.25);
     let row = index / columns;
     let column = index % columns;
     let row_count = count.saturating_sub(row * columns).clamp(1, columns);
     let width = ((area.width() - gap * (row_count - 1) as f32) / row_count as f32).max(0.0);
-    let height = ((area.height() - gap * (rows - 1) as f32) / rows as f32).max(0.0);
+    let height = ((area.height() - row_gap * (rows - 1) as f32) / rows as f32).max(0.0);
     egui::Rect::from_min_size(
-        area.min + egui::vec2(column as f32 * (width + gap), row as f32 * (height + gap)),
+        area.min + egui::vec2(column as f32 * (width + gap), row as f32 * (height + row_gap)),
         egui::vec2(width, height),
     )
+}
+
+#[cfg(test)]
+#[test]
+fn shallow_room_grid_uses_more_columns_to_keep_video_visible() {
+    let area = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 84.0));
+    let cards: Vec<_> = (0..3).map(|index| video_grid_card(area, index, 3, 16.0)).collect();
+    assert!(cards.iter().all(|card| card.top() == 0.0 && card.height() == 84.0));
+    assert!(cards.iter().all(|card| area.expand(0.01).contains_rect(*card)));
 }
 
 #[cfg(test)]
