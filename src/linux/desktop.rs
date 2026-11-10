@@ -312,6 +312,12 @@ impl App {
                             let pause = if self.layout.paused { crate::i18n::label("Retomar vídeo recebido", "Resume incoming video") } else { crate::i18n::label("Pausar vídeo recebido", "Pause incoming video") };
                             if ui.button(pause).clicked() { self.layout.paused = !self.layout.paused; self.layout(); ui.close(); }
                             if ui.add_enabled(connected && !resetting, egui::Button::new(crate::i18n::label("Reconectar vídeo recebido", "Reconnect incoming video"))).clicked() { self.restart_reception(); ui.close(); }
+                            if ctx.content_rect().width() < 600.0 {
+                                if !self.room_title.is_empty() { crate::desktop_ui::copy_room_name(ui, &self.room_title); }
+                                if ui.add_enabled(!screens.is_empty(), egui::Button::new(crate::i18n::label("Tela cheia", "Full screen"))).clicked() {
+                                    self.fullscreen(ctx, true); ui.close();
+                                }
+                            }
                             crate::desktop_ui::display_scale(ui);
                             if ui.button(crate::i18n::label("Diagnóstico", "Diagnostics")).clicked() { self.debug = true; ui.close(); }
                         });
@@ -415,52 +421,64 @@ impl App {
                     return;
                 }
 
-                ui.horizontal_wrapped(|ui| {
-                    if resetting { ui.label(crate::i18n::label("Reconectando vídeo recebido…", "Reconnecting incoming video…")); }
-                    if !self.fullscreen {
-                        if crate::desktop_ui::header_button(ui, if self.sidebar_open {crate::i18n::label("Ocultar painel","Hide panel")}else{crate::i18n::label("Pessoas e opções","People and settings")}, true, None).clicked(){self.sidebar_open=!self.sidebar_open;}
-                        ui.heading(if self.room_title.is_empty() { crate::i18n::label("Sala", "Room") } else { &self.room_title });
-                        ui.label(crate::desktop_ui::room_state(connected, reconnecting));
-                        if !self.room_title.is_empty() { crate::desktop_ui::copy_room_name(ui, &self.room_title); }
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if self.fullscreen {
-                            if crate::desktop_ui::exit_fullscreen(ui).clicked() {
-                                self.fullscreen(ctx, false);
+                let compact = ctx.content_rect().width() < 600.0;
+                if self.fullscreen {
+                    ui.horizontal_wrapped(|ui| {
+                        if crate::desktop_ui::exit_fullscreen(ui).clicked() { self.fullscreen(ctx, false); }
+                        ui.menu_button(crate::i18n::label("Som recebido", "Received audio"), |ui| {
+                            let label = ui.label(crate::i18n::label("Volume recebido", "Incoming volume")).id;
+                            if crate::desktop_ui::volume_slider(ui, &mut self.layout.volume).labelled_by(label).changed() { self.layout(); }
+                            if ui.button(crate::i18n::label("Silenciar", "Mute")).clicked() {
+                                self.layout.volume = 0;
+                                self.layout();
                             }
-                            ui.menu_button("Volume", |ui| {
-                                if ui
-                                    .add(egui::Slider::new(&mut self.layout.volume, 0..=100))
-                                    .changed()
-                                {
-                                    self.layout();
-                                }
-                                if small(ui, crate::i18n::label("Silenciar","Mute")).clicked() {
-                                    self.layout.volume = 0;
-                                    self.layout();
-                                }
-                            });
+                        });
+                    });
+                } else {
+                    let title = if self.room_title.is_empty() { crate::i18n::label("Sala", "Room") } else { &self.room_title };
+                    ui.add(egui::Label::new(RichText::new(title).size(if compact { 18.0 } else { 24.0 }).strong()).truncate())
+                        .on_hover_text(title);
+                    let status = if resetting {
+                        crate::i18n::label("Reconectando vídeo recebido…", "Reconnecting incoming video…")
+                    } else {
+                        crate::desktop_ui::room_state(connected, reconnecting)
+                    };
+                    ui.label(RichText::new(status).size(13.0).color(MUTED));
+                    ui.add_space(8.0);
+                    ui.horizontal_wrapped(|ui| {
+                        let panel = if self.sidebar_open {
+                            crate::i18n::label("Ocultar painel", "Hide panel")
                         } else {
-                            if crate::desktop_ui::header_button(ui, crate::i18n::label("Tela cheia", "Full screen"), !screens.is_empty(), None).on_hover_text("F11").clicked() {
-                                self.fullscreen(ctx, true);
-                            }
-                            for (mode, name) in
-                                [(ViewMode::Grid, crate::i18n::label("Em grade", "Grid")), (ViewMode::Spotlight, crate::i18n::label("Em destaque","Focus"))]
-                            {
-                                if crate::desktop_ui::header_button(ui, name, true, Some(self.layout.mode == mode)).clicked() {
-                                    self.layout.mode = mode;
-                                    self.layout();
-                                }
+                            crate::i18n::label("Pessoas e opções", "People and settings")
+                        };
+                        if crate::desktop_ui::header_button(ui, panel, true, None).clicked() {
+                            self.sidebar_open = !self.sidebar_open;
+                        }
+                        if !compact && !self.room_title.is_empty() {
+                            crate::desktop_ui::copy_room_name(ui, &self.room_title);
+                        }
+                        for (mode, label) in [
+                            (ViewMode::Grid, crate::i18n::label("Em grade", "Grid")),
+                            (ViewMode::Spotlight, crate::i18n::label("Em destaque", "Focus")),
+                        ] {
+                            if crate::desktop_ui::header_button(ui, label, true, Some(self.layout.mode == mode)).clicked() {
+                                self.layout.mode = mode;
+                                self.layout();
                             }
                         }
+                        if !compact && crate::desktop_ui::header_button(ui, crate::i18n::label("Tela cheia", "Full screen"), !screens.is_empty(), None).on_hover_text("F11").clicked() {
+                            self.fullscreen(ctx, true);
+                        }
                     });
-                });
-
-                ui.add_space(16.0);
+                }
+                ui.add_space(if compact { 8.0 } else { 16.0 });
                 if self.layout.paused || screens.is_empty() {
-                    ui.centered_and_justified(|ui| {
-                        ui.label(RichText::new(if self.layout.paused { crate::i18n::label("Vídeo pausado por você", "You paused incoming video") } else { crate::i18n::label("Nenhum vídeo compartilhado", "No shared video yet") }).size(24.0));
-                    });
+                    let area = ui.allocate_space(ui.available_size()).1;
+                    ui.painter().rect_filled(area, 12.0, PANEL);
+                    if crate::desktop_ui::playback_empty(ui, area, self.layout.paused, reconnecting || resetting, can_publish) {
+                        self.layout.paused = false;
+                        self.layout();
+                    }
                 } else if self.layout.mode == ViewMode::Grid && !self.fullscreen {
                     let area = ui.available_rect_before_wrap();
                     for (index, screen) in screens.iter().enumerate() {

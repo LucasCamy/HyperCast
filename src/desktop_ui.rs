@@ -292,6 +292,40 @@ pub(crate) fn session_status(ui: &mut egui::Ui, sharing: bool, camera_active: bo
     ui.add_space(6.0);
 }
 
+/// A paused viewer can resume without searching the room controls.
+pub(crate) fn playback_empty(ui: &mut egui::Ui, area: egui::Rect, paused: bool, reconnecting: bool, can_publish: bool) -> bool {
+    if area.width() < 32.0 || area.height() < 32.0 {
+        return false;
+    }
+    let title = if paused {
+        crate::i18n::label("Vídeo pausado por você", "You paused incoming video")
+    } else if reconnecting {
+        crate::i18n::label("Aguardando a conexão voltar", "Waiting for the connection to return")
+    } else {
+        crate::i18n::label("Nenhum vídeo compartilhado", "No shared video yet")
+    };
+    let hint = if can_publish {
+        crate::i18n::label("Compartilhe sua tela ou aguarde alguém começar.", "Share your screen or wait for someone to start.")
+    } else {
+        crate::i18n::label("Você pode assistir quando alguém compartilhar.", "You can watch when someone starts sharing.")
+    };
+    let compact = area.height() < 108.0;
+    let mut resume = false;
+    ui.scope_builder(egui::UiBuilder::new().max_rect(area.shrink(8.0)), |ui| {
+        ui.set_clip_rect(ui.clip_rect().intersect(area));
+        ui.vertical_centered(|ui| {
+            ui.add_space(if compact { 0.0 } else { (area.height() / 2.0 - 44.0).max(0.0) });
+            ui.label(RichText::new(title).size(if compact { 16.0 } else { 24.0 }).color(TEXT));
+            if paused && area.height() >= 76.0 {
+                resume = session_button(ui, crate::i18n::label("Retomar vídeo recebido", "Resume incoming video"), true, true).clicked();
+            } else if !compact && !reconnecting {
+                ui.label(RichText::new(hint).size(14.0).color(MUTED));
+            }
+        });
+    });
+    resume
+}
+
 pub(crate) fn session_actions(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     let width = ui.available_width();
     ui.horizontal_wrapped(|ui| {

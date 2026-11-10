@@ -1020,32 +1020,9 @@ impl eframe::App for App {
                     for presenter in self.presenters.values_mut() {
                         presenter.hide();
                     }
-                    let title = if self.paused {
-                        crate::i18n::label("Vídeo pausado por você","You paused incoming video")
-                    } else if connected {
-                        crate::i18n::label("Nenhum vídeo compartilhado","No shared video yet")
-                    } else {
-                        crate::i18n::label("Você está fora de uma sala","You are outside a room")
-                    };
-                    let subtitle = if self.paused {
-                        crate::i18n::label("Retome quando quiser acompanhar a sala.","Resume whenever you want to watch the room.")
-                    } else if connected {
-                        if can_publish { crate::i18n::label("Compartilhe sua tela ou aguarde alguém começar.", "Share your screen or wait for someone to start.") } else { crate::i18n::label("Você pode assistir quando alguém compartilhar.", "You can watch when someone starts sharing.") }
-                    } else {
-                        crate::i18n::label("Conecte-se à sala e traga sua tela para a conversa.","Join the room and share your screen.")
-                    };
-                    if rect.height() >= 32.0 {
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink(8.0)), |ui| {
-                            ui.set_clip_rect(ui.clip_rect().intersect(rect));
-                            ui.centered_and_justified(|ui| {
-                                ui.vertical_centered(|ui| {
-                                    ui.label(RichText::new(title).size(if rect.height() < 100.0 { 16.0 } else { 24.0 }).color(TEXT));
-                                    if rect.height() >= 100.0 {
-                                        ui.label(RichText::new(subtitle).size(14.0).color(MUTED));
-                                    }
-                                });
-                            });
-                        });
+                    if crate::desktop_ui::playback_empty(ui, rect, self.paused, reconnecting || reception_resetting, can_publish) {
+                        self.paused = false;
+                        self.send_layout();
                     }
                 } else {
                     let focus = self
