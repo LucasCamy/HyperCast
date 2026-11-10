@@ -52,3 +52,15 @@ executado em um projeto Docker local de validação, encerrado após os testes.
   nome, idioma, FPS, volume, estado da lateral e modo de grade. Os testes usaram
   extração do AppImage e renderização por software, sem validar FUSE ou Wayland
   em uma instalação física.
+
+## Validações complementares sem câmera — 10/11/2026
+
+| Verificação | Resultado |
+| --- | --- |
+| Atualizador integrado | Em Windows Sandbox limpo, o 0.9.1 publicado encontrou o 0.9.2 publicado, baixou o instalador pela interface e reiniciou no executável atualizado. Nome, idioma, FPS, volume e grade foram preservados. O pacote candidato local foi validado separadamente pelo instalador, conforme a seção anterior. |
+| Entrada e convites | O serviço de admissão, com banco temporário, rejeitou chave inválida com código 401. Duas sessões válidas criaram e encontraram a sala. Um cliente entrou por convite curto e o outro pelo catálogo, saiu e voltou a entrar. A rejeição foi verificada no serviço. A mensagem do formulário ainda precisa ser confirmada no cliente. |
+| Reconexão | Dois clientes Windows do candidato transmitiram e receberam uma janela de teste em movimento com áudio. Uma interrupção de quatro segundos na sinalização do transmissor forçou a reconexão. O espectador preservou o último quadro e voltou a receber vídeo e áudio. |
+| AppImage e FUSE | O candidato abriu e encerrou em perfil limpo com montagem FUSE, em Wayland no WSLg, com `DISPLAY` desativado. A captura via portal do sistema e o áudio em Linux físico ainda precisam ser testados. |
+| Windows para Linux | O AppImage em WSLg/Wayland recebeu a janela de teste transmitida pelo cliente Windows. O diagnóstico registrou 1.629 quadros recebidos, duas texturas e 1.357 unidades de áudio recebidas. |
+| Linux para Windows | O AppImage em WSL/X11 iniciou o compartilhamento de um desktop virtual pelo menu acessado via AT-SPI. O cliente Windows recebeu 581 quadros e apresentou 575 pela GPU. O áudio no sentido Linux para Windows continua pendente. |
+| Menu sobre a transmissão | No Windows, a janela de vídeo nativa cobria parte do menu Mais opções. No build de depuração com a correção, dois clientes reproduziram uma transmissão em movimento. O menu permaneceu legível, o comando de pausa respondeu e o vídeo voltou a ocupar a área inteira ao retomar. |
