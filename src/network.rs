@@ -58,11 +58,18 @@ pub(crate) async fn connect(
     address: &str,
     token: &str,
 ) -> Result<(Room, tokio::sync::mpsc::UnboundedReceiver<RoomEvent>)> {
-    connect_with_policy(address, token, std::env::var("HYPERCAST_RELAY_ONLY").as_deref() == Ok("1")).await
+    connect_with_policy(
+        address,
+        token,
+        std::env::var("HYPERCAST_RELAY_ONLY").as_deref() == Ok("1"),
+    )
+    .await
 }
 
 pub(crate) async fn connect_with_policy(
-    address: &str, token: &str, relay_only: bool,
+    address: &str,
+    token: &str,
+    relay_only: bool,
 ) -> Result<(Room, tokio::sync::mpsc::UnboundedReceiver<RoomEvent>)> {
     if std::env::var("HYPERCAST_TRACE_CODEC").as_deref() == Ok("1")
         && log::set_logger(&DIAGNOSTIC_LOG).is_ok()
@@ -82,24 +89,49 @@ pub(crate) async fn connect_with_policy(
     options.single_peer_connection = false;
     options.connect_timeout = Duration::from_secs(10);
     if relay_only {
-        options.rtc_config.ice_transport_type = livekit::webrtc::peer_connection_factory::IceTransportsType::Relay;
+        options.rtc_config.ice_transport_type =
+            livekit::webrtc::peer_connection_factory::IceTransportsType::Relay;
     }
     Ok(Room::connect(address, token, options).await?)
 }
 
 /// Initial desktop joins only. Established rooms retain the SDK reconnect policy.
-#[cfg(feature="desktop")]
-pub(crate) async fn connect_desktop(address:&str,token:&str,relay:bool,waiting:impl FnMut(u32,std::time::Duration))
-    ->Result<(Room,tokio::sync::mpsc::UnboundedReceiver<RoomEvent>)> {
-    crate::resilience::retry(||connect_with_policy(address,token,relay),transient_connection_error,waiting).await
+#[cfg(feature = "desktop")]
+pub(crate) async fn connect_desktop(
+    address: &str,
+    token: &str,
+    relay: bool,
+    waiting: impl FnMut(u32, std::time::Duration),
+) -> Result<(Room, tokio::sync::mpsc::UnboundedReceiver<RoomEvent>)> {
+    crate::resilience::retry(
+        || connect_with_policy(address, token, relay),
+        transient_connection_error,
+        waiting,
+    )
+    .await
 }
-#[cfg(feature="desktop")]
-fn transient_connection_error(error:&anyhow::Error)->bool {
-    use livekit::{RoomError,rtc_engine::EngineError};
-    if matches!(error.downcast_ref::<RoomError>(),Some(RoomError::Engine(EngineError::Connection(_)))){return true;}
-    error.chain().any(|cause|cause.downcast_ref::<std::io::Error>().is_some_and(|e|matches!(e.kind(),
-        std::io::ErrorKind::TimedOut|std::io::ErrorKind::ConnectionRefused|std::io::ErrorKind::ConnectionReset|
-        std::io::ErrorKind::ConnectionAborted|std::io::ErrorKind::NotConnected|std::io::ErrorKind::Interrupted)))
+#[cfg(feature = "desktop")]
+fn transient_connection_error(error: &anyhow::Error) -> bool {
+    use livekit::{RoomError, rtc_engine::EngineError};
+    if matches!(
+        error.downcast_ref::<RoomError>(),
+        Some(RoomError::Engine(EngineError::Connection(_)))
+    ) {
+        return true;
+    }
+    error.chain().any(|cause| {
+        cause.downcast_ref::<std::io::Error>().is_some_and(|e| {
+            matches!(
+                e.kind(),
+                std::io::ErrorKind::TimedOut
+                    | std::io::ErrorKind::ConnectionRefused
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::NotConnected
+                    | std::io::ErrorKind::Interrupted
+            )
+        })
+    })
 }
 
 pub async fn diagnostic(address: &str, token: &str, seconds: u32) -> Result<()> {
@@ -154,7 +186,7 @@ pub async fn admission_probe(address: &str, token: &str, reject_first: bool) -> 
 pub struct EncodedPublisher {
     room: Arc<Room>,
     publication: LocalTrackPublication,
-    track_id:String,
+    track_id: String,
     source: NativeVideoSource,
     codec: EncodedVideoCodec,
     resolution: VideoResolution,
@@ -164,17 +196,23 @@ pub struct EncodedPublisher {
 }
 
 /// Keep a pending publication without capturing or transmitting screen pixels.
-pub async fn admission_hold(address: &str, token: &str, seconds: u32, release_after: Option<u32>) -> Result<()> {
+pub async fn admission_hold(
+    address: &str,
+    token: &str,
+    seconds: u32,
+    release_after: Option<u32>,
+) -> Result<()> {
     let (room, mut events) = connect(address, token).await?;
     let room = Arc::new(room);
     let event_task = tokio::spawn(async move { while events.recv().await.is_some() {} });
-    let publisher = EncodedPublisher::in_room(room.clone(), 1920, 1080, 120, 40_000_000, true).await?;
+    let publisher =
+        EncodedPublisher::in_room(room.clone(), 1920, 1080, 120, 40_000_000, true).await?;
     println!("Admission hold: publication accepted without pixel capture");
     let before_release = release_after.unwrap_or(seconds).min(seconds);
     tokio::time::sleep(Duration::from_secs(before_release as u64)).await;
     publisher.stop().await?;
     println!("Admission hold: unpublished, remaining connected");
-    tokio::time::sleep(Duration::from_secs((seconds-before_release) as u64)).await;
+    tokio::time::sleep(Duration::from_secs((seconds - before_release) as u64)).await;
     room.close().await?;
     event_task.abort();
     Ok(())
@@ -210,7 +248,7 @@ impl EncodedPublisher {
         let source = NativeVideoSource::new_encoded(resolution.clone());
         let track =
             LocalVideoTrack::create_video_track("screen", RtcVideoSource::Native(source.clone()));
-        let track_id=track.rtc_track().id();
+        let track_id = track.rtc_track().id();
         let publication = room
             .local_participant()
             .publish_track(
@@ -257,12 +295,17 @@ impl EncodedPublisher {
     pub fn take_keyframe_request(&self) -> bool {
         self.source.take_keyframe_request() || !self.seen_keyframe
     }
-    pub fn restart_keyframe(&mut self){self.seen_keyframe=false;}
-    pub fn set_resolution_if_changed(&mut self,width:u32,height:u32){
-        if self.resolution.width!=width || self.resolution.height!=height {self.set_resolution(width,height);}
+    pub fn restart_keyframe(&mut self) {
+        self.seen_keyframe = false;
     }
-    pub fn set_resolution(&mut self,width:u32,height:u32){
-        self.resolution=VideoResolution{width,height};self.restart_keyframe();
+    pub fn set_resolution_if_changed(&mut self, width: u32, height: u32) {
+        if self.resolution.width != width || self.resolution.height != height {
+            self.set_resolution(width, height);
+        }
+    }
+    pub fn set_resolution(&mut self, width: u32, height: u32) {
+        self.resolution = VideoResolution { width, height };
+        self.restart_keyframe();
     }
     pub fn take_rate_control_request(
         &self,
@@ -271,10 +314,13 @@ impl EncodedPublisher {
     }
     /// Complete access unit (HEVC Annex B / AV1 OBU), not individual RTP packets.
     pub fn push(&mut self, bytes: &[u8], timestamp_us: i64, keyframe: bool) -> Result<bool> {
-        match self.room.connection_state(){
-            ConnectionState::Reconnecting=>{self.restart_keyframe();return Ok(false);}
-            ConnectionState::Disconnected=>anyhow::bail!("Room disconnected"),
-            ConnectionState::Connected=>{}
+        match self.room.connection_state() {
+            ConnectionState::Reconnecting => {
+                self.restart_keyframe();
+                return Ok(false);
+            }
+            ConnectionState::Disconnected => anyhow::bail!("Room disconnected"),
+            ConnectionState::Connected => {}
         }
         ensure!(
             !bytes.is_empty() && bytes.len() <= 16 * 1024 * 1024,
@@ -331,9 +377,17 @@ impl EncodedPublisher {
             return Ok(()); // SDK teardown releases the closed publication graph.
         }
         // A full SDK reconnect can replace the publication SID while retaining the RTC track.
-        let sid=self.room.local_participant().track_publications().into_values()
-            .find(|p|p.track().is_some_and(|t|t.rtc_track().id()==self.track_id))
-            .map(|p|p.sid()).unwrap_or_else(||self.publication.sid());
+        let sid = self
+            .room
+            .local_participant()
+            .track_publications()
+            .into_values()
+            .find(|p| {
+                p.track()
+                    .is_some_and(|t| t.rtc_track().id() == self.track_id)
+            })
+            .map(|p| p.sid())
+            .unwrap_or_else(|| self.publication.sid());
         self.room.local_participant().unpublish_track(&sid).await?;
         Ok(())
     }
@@ -365,10 +419,17 @@ pub fn print_ice_path(label: &str, stats: &[livekit::webrtc::stats::RtcStats]) {
         });
         let Some(remote) = remote else { continue };
         let local = stats.iter().find_map(|entry| match entry {
-            RtcStats::LocalCandidate(candidate) if candidate.rtc.id == pair.candidate_pair.local_candidate_id => Some(candidate),
+            RtcStats::LocalCandidate(candidate)
+                if candidate.rtc.id == pair.candidate_pair.local_candidate_id =>
+            {
+                Some(candidate)
+            }
             _ => None,
         });
-        let relay = local.is_some_and(|c| c.local_candidate.candidate_type == Some(livekit::webrtc::stats::IceCandidateType::Relay));
+        let relay = local.is_some_and(|c| {
+            c.local_candidate.candidate_type
+                == Some(livekit::webrtc::stats::IceCandidateType::Relay)
+        });
         let relay_protocol = local.and_then(|c| c.local_candidate.relay_protocol);
         let protocol = match remote.remote_candidate.protocol.as_str() {
             "udp" => "udp",
@@ -379,11 +440,21 @@ pub fn print_ice_path(label: &str, stats: &[livekit::webrtc::stats::RtcStats]) {
         let rtt = pair.candidate_pair.current_round_trip_time * 1000.0;
         if rtt.is_finite() && rtt >= 0.0 {
             println!("WebRTC ICE {label}: {protocol}, remote {scope}, network RTT {rtt:.2} ms");
-            println!("WebRTC route {label}: local relay={relay}, relay transport={relay_protocol:?}");
+            println!(
+                "WebRTC route {label}: local relay={relay}, relay transport={relay_protocol:?}"
+            );
             #[cfg(all(windows, feature = "desktop"))]
-            crate::diagnostics::write("route", &format!("{label}: local relay={relay}, relay transport={relay_protocol:?}"), "");
+            crate::diagnostics::write(
+                "route",
+                &format!("{label}: local relay={relay}, relay transport={relay_protocol:?}"),
+                "",
+            );
             #[cfg(all(windows, feature = "desktop"))]
-            crate::diagnostics::write("ice", &format!("{label}: {protocol}, remote {scope}, network RTT {rtt:.2} ms"), "");
+            crate::diagnostics::write(
+                "ice",
+                &format!("{label}: {protocol}, remote {scope}, network RTT {rtt:.2} ms"),
+                "",
+            );
         }
     }
 }
@@ -429,9 +500,12 @@ mod tests {
 }
 
 /// Only numeric aggregate counters: no participant identifiers, addresses or content.
-pub fn video_stats_lines(publisher:&[livekit::webrtc::stats::RtcStats],subscriber:&[livekit::webrtc::stats::RtcStats])->Vec<String> {
+pub fn video_stats_lines(
+    publisher: &[livekit::webrtc::stats::RtcStats],
+    subscriber: &[livekit::webrtc::stats::RtcStats],
+) -> Vec<String> {
     use livekit::webrtc::stats::RtcStats;
-    let mut lines=Vec::new();
+    let mut lines = Vec::new();
     for entry in publisher.iter().chain(subscriber.iter()) {
         match entry {
             RtcStats::OutboundRtp(r) if r.stream.kind=="video"=>lines.push(format!("outbound cumulative frames={} bytes={} target_bps={:.0} nack={} pli={} fir={}",r.outbound.frames_sent,r.sent.bytes_sent,r.outbound.target_bitrate,r.outbound.nack_count,r.outbound.pli_count,r.outbound.fir_count)),
@@ -439,42 +513,100 @@ pub fn video_stats_lines(publisher:&[livekit::webrtc::stats::RtcStats],subscribe
             _=>{}
         }
     }
-    lines.truncate(8);lines
+    lines.truncate(8);
+    lines
 }
 
-#[cfg(all(test,feature="desktop"))]
+#[cfg(all(test, feature = "desktop"))]
 mod recovery_tests {
     use super::*;
-    #[test]fn only_typed_transport_failures_are_retried(){
-        use livekit::{RoomError,rtc_engine::EngineError};
-        assert!(transient_connection_error(&anyhow::Error::new(RoomError::Engine(EngineError::Connection("timeout".into())))));
-        assert!(transient_connection_error(&anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::ConnectionReset))));
-        assert!(!transient_connection_error(&anyhow::anyhow!("401 unauthorized timeout")));
-        assert!(!transient_connection_error(&anyhow::Error::new(RoomError::Internal("invalid token".into()))));
-        assert!(!transient_connection_error(&anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied))));
+    #[test]
+    fn only_typed_transport_failures_are_retried() {
+        use livekit::{RoomError, rtc_engine::EngineError};
+        assert!(transient_connection_error(&anyhow::Error::new(
+            RoomError::Engine(EngineError::Connection("timeout".into()))
+        )));
+        assert!(transient_connection_error(&anyhow::Error::new(
+            std::io::Error::from(std::io::ErrorKind::ConnectionReset)
+        )));
+        assert!(!transient_connection_error(&anyhow::anyhow!(
+            "401 unauthorized timeout"
+        )));
+        assert!(!transient_connection_error(&anyhow::Error::new(
+            RoomError::Internal("invalid token".into())
+        )));
+        assert!(!transient_connection_error(&anyhow::Error::new(
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied)
+        )));
         assert!(!transient_connection_error(&anyhow::anyhow!("Use WSS")));
     }
 }
 
 /// Only numeric counters; never copy SDK identifiers into the exported snapshot.
-pub fn video_network_sample(stats:&[livekit::webrtc::stats::RtcStats])->Option<crate::video_metrics::VideoNetwork>{
+pub fn video_network_sample(
+    stats: &[livekit::webrtc::stats::RtcStats],
+) -> Option<crate::video_metrics::VideoNetwork> {
     use livekit::webrtc::stats::RtcStats;
-    let mut n=crate::video_metrics::VideoNetwork::default();
-    for entry in stats{match entry{
-        RtcStats::Transport(t)=>{if let Some(pair)=stats.iter().find_map(|p|match p{RtcStats::CandidatePair(p) if !t.transport.selected_candidate_pair_id.is_empty() && p.rtc.id==t.transport.selected_candidate_pair_id=>Some(p),_=>None}){let ms=pair.candidate_pair.current_round_trip_time*1000.0;if ms.is_finite()&&ms>=0.0{n.rtt_ms=Some(ms);}}},
-        RtcStats::InboundRtp(r) if r.stream.kind=="video"=>{n.streams+=1;n.bytes=n.bytes.saturating_add(r.inbound.bytes_received);n.packets=n.packets.saturating_add(r.received.packets_received);n.lost=n.lost.saturating_add(r.received.packets_lost);n.decoded+=r.inbound.frames_decoded as u64;n.dropped+=r.inbound.frames_dropped as u64;n.decode_ms+=r.inbound.total_decode_time*1000.0;},
-        _=>{}
-    }}
-    (n.rtt_ms.is_some()||n.streams>0).then_some(n)
+    let mut n = crate::video_metrics::VideoNetwork::default();
+    for entry in stats {
+        match entry {
+            RtcStats::Transport(t) => {
+                if let Some(pair) = stats.iter().find_map(|p| match p {
+                    RtcStats::CandidatePair(p)
+                        if !t.transport.selected_candidate_pair_id.is_empty()
+                            && p.rtc.id == t.transport.selected_candidate_pair_id =>
+                    {
+                        Some(p)
+                    }
+                    _ => None,
+                }) {
+                    let ms = pair.candidate_pair.current_round_trip_time * 1000.0;
+                    if ms.is_finite() && ms >= 0.0 {
+                        n.rtt_ms = Some(ms);
+                    }
+                }
+            }
+            RtcStats::InboundRtp(r) if r.stream.kind == "video" => {
+                n.streams += 1;
+                n.bytes = n.bytes.saturating_add(r.inbound.bytes_received);
+                n.packets = n.packets.saturating_add(r.received.packets_received);
+                n.lost = n.lost.saturating_add(r.received.packets_lost);
+                n.decoded += r.inbound.frames_decoded as u64;
+                n.dropped += r.inbound.frames_dropped as u64;
+                n.decode_ms += r.inbound.total_decode_time * 1000.0;
+            }
+            _ => {}
+        }
+    }
+    (n.rtt_ms.is_some() || n.streams > 0).then_some(n)
 }
 
-#[cfg(all(test,feature="desktop"))]mod network_sample_tests{
+#[cfg(all(test, feature = "desktop"))]
+mod network_sample_tests {
     use super::*;
-    #[test]fn only_video_counters_and_selected_transport_are_exported(){
-        use livekit::webrtc::stats::{RtcStats,InboundRtpStats};
-        let mut video=InboundRtpStats::default();video.stream.kind="video".into();video.inbound.track_identifier="private-screen-name".into();video.inbound.bytes_received=6000;video.received.packets_received=5;video.received.packets_lost=1;video.inbound.frames_decoded=3;video.inbound.total_decode_time=0.006;
-        let mut audio=video.clone();audio.stream.kind="audio".into();audio.inbound.bytes_received=999999;
-        let sample=video_network_sample(&[RtcStats::InboundRtp(video),RtcStats::InboundRtp(audio)]).unwrap();
-        assert_eq!(sample.streams,1);assert_eq!(sample.bytes,6000);assert_eq!(sample.packets,5);assert_eq!(sample.lost,1);assert_eq!(sample.decoded,3);assert_eq!(sample.decode_ms,6.0);assert!(sample.rtt_ms.is_none());
+    #[test]
+    fn only_video_counters_and_selected_transport_are_exported() {
+        use livekit::webrtc::stats::{InboundRtpStats, RtcStats};
+        let mut video = InboundRtpStats::default();
+        video.stream.kind = "video".into();
+        video.inbound.track_identifier = "private-screen-name".into();
+        video.inbound.bytes_received = 6000;
+        video.received.packets_received = 5;
+        video.received.packets_lost = 1;
+        video.inbound.frames_decoded = 3;
+        video.inbound.total_decode_time = 0.006;
+        let mut audio = video.clone();
+        audio.stream.kind = "audio".into();
+        audio.inbound.bytes_received = 999999;
+        let sample =
+            video_network_sample(&[RtcStats::InboundRtp(video), RtcStats::InboundRtp(audio)])
+                .unwrap();
+        assert_eq!(sample.streams, 1);
+        assert_eq!(sample.bytes, 6000);
+        assert_eq!(sample.packets, 5);
+        assert_eq!(sample.lost, 1);
+        assert_eq!(sample.decoded, 3);
+        assert_eq!(sample.decode_ms, 6.0);
+        assert!(sample.rtt_ms.is_none());
     }
 }

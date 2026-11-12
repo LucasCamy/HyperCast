@@ -26,12 +26,18 @@ struct Presenter {
     ComPtr<ID3D11Query> fence;
     uint32_t width = 0, height = 0, source_width = 0, source_height = 0;
     bool ready = false;
+    bool visible = false;
+    RECT bounds{};
     explicit Presenter(HWND parent) {
         window = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 1, 1, parent, nullptr, GetModuleHandleW(nullptr), nullptr);
         if (!window) throw std::runtime_error("Cannot create DirectX video canvas");
     }
     ~Presenter() { if (window) DestroyWindow(window); }
-    void hide() { ShowWindow(window, SW_HIDE); }
+    void hide() {
+        if (!visible) return;
+        ShowWindow(window, SW_HIDE);
+        visible = false;
+    }
     void present(ID3D11Texture2D* texture, uint32_t slice, uint32_t frame_width, uint32_t frame_height, int x, int y, uint32_t w, uint32_t h) {
         if (!texture || !w || !h || w > 8192 || h > 8192 || !frame_width || !frame_height) { hide(); return; }
         D3D11_TEXTURE2D_DESC input_desc{}; texture->GetDesc(&input_desc);
@@ -113,7 +119,14 @@ struct Presenter {
             if (GetTickCount64() - start > 1000) throw std::runtime_error("Presentation GPU timeout");
             Sleep(0);
         }
-        SetWindowPos(window, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        const RECT next_bounds{x, y, x + static_cast<LONG>(w), y + static_cast<LONG>(h)};
+        if (!visible || !EqualRect(&bounds, &next_bounds)) {
+            if (!SetWindowPos(window, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW)) {
+                throw std::runtime_error("Cannot position DirectX video canvas");
+            }
+            bounds = next_bounds;
+            visible = true;
+        }
         hr(chain->Present(0, 0), "Present video");
     }
 };
@@ -125,5 +138,16 @@ int hc_presenter_frame(void* handle, void* texture, uint32_t slice, uint32_t fw,
     catch (...) { return -1; }
 }
 void hc_presenter_hide(void* handle) noexcept { if (handle) static_cast<Presenter*>(handle)->hide(); }
+int hc_presenter_cutout(void* handle, int width, int height, const int* rect) noexcept {
+    HWND window = static_cast<Presenter*>(handle)->window;
+    if (!rect) return SetWindowRgn(window, nullptr, TRUE);
+    HRGN visible = CreateRectRgn(0, 0, width, height);
+    HRGN cutout = CreateRectRgn(rect[0], rect[1], rect[2], rect[3]);
+    const bool combined = visible && cutout && CombineRgn(visible, visible, cutout, RGN_DIFF) != ERROR;
+    if (cutout) DeleteObject(cutout);
+    if (combined && SetWindowRgn(window, visible, TRUE)) return 1; // Windows owns the region now.
+    if (visible) DeleteObject(visible);
+    return 0;
+}
 void hc_presenter_close(void* handle) noexcept { delete static_cast<Presenter*>(handle); }
 }

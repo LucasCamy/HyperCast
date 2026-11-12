@@ -98,7 +98,7 @@ class Admission:
                 db.rollback(); raise
         grants = {'room':invite['room'],'roomJoin':True,'canSubscribe':True,
             'canPublish':invite['role']=='publisher','canPublishData':False,'canUpdateOwnMetadata':False}
-        if grants['canPublish']: grants['canPublishSources']=['screen_share','screen_share_audio']
+        if grants['canPublish']: grants['canPublishSources']=['screen_share','screen_share_audio','camera']
         token = rt.sign({'iss':self.key,'sub':identity,'name':member['name'] if member else name,
             'nbf':now-5,'exp':now+300,'video':grants},self.secret)
         with closing(self.db()) as db:

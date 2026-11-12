@@ -17,31 +17,46 @@ var hypercastLimit = func() int {
     return value
 }()
 
+const hypercastVideoLimit = 6
+
+type hypercastPublication struct {
+    participant string
+    source livekit.TrackSource
+}
+
 type hypercastReservations struct {
     sync.Mutex
-    rooms map[string]map[string]bool
+    rooms map[string]map[hypercastPublication]bool
 }
-var hypercastRooms = hypercastReservations{rooms: make(map[string]map[string]bool)}
+var hypercastRooms = hypercastReservations{rooms: make(map[string]map[hypercastPublication]bool)}
 
-func (q *hypercastReservations) reserve(room, participant string, limit int) bool {
+func (q *hypercastReservations) reserve(room, participant string, source livekit.TrackSource, screenLimit int) bool {
     q.Lock()
     defer q.Unlock()
     members := q.rooms[room]
-    if members == nil { members = make(map[string]bool); q.rooms[room] = members }
-    if members[participant] || len(members) >= limit { return false }
-    members[participant] = true
+    if members == nil { members = make(map[hypercastPublication]bool); q.rooms[room] = members }
+    publication := hypercastPublication{participant, source}
+    if members[publication] || len(members) >= hypercastVideoLimit { return false }
+    if source == livekit.TrackSource_SCREEN_SHARE {
+        screens := 0
+        for active := range members {
+            if active.source == source { screens++ }
+        }
+        if screens >= screenLimit { return false }
+    }
+    members[publication] = true
     return true
 }
-func (q *hypercastReservations) release(room, participant string) {
+func (q *hypercastReservations) release(room, participant string, source livekit.TrackSource) {
     q.Lock()
     defer q.Unlock()
-    delete(q.rooms[room], participant)
+    delete(q.rooms[room], hypercastPublication{participant, source})
     if len(q.rooms[room]) == 0 { delete(q.rooms, room) }
 }
 func (q *hypercastReservations) contains(room, participant string) bool {
     q.Lock()
     defer q.Unlock()
-    return q.rooms[room][participant]
+    return q.rooms[room][hypercastPublication{participant, livekit.TrackSource_SCREEN_SHARE}]
 }
 
 func hypercastAllowedIdentity(identity string, _ int) bool {
@@ -65,12 +80,12 @@ func hypercastQuota(identity string, limit int, req *livekit.AddTrackRequest, ex
         if !hasScreen { return "System audio requires a screen publication" }
         return ""
     }
-    if req.Type != livekit.TrackType_VIDEO { return "Only screen video is permitted" }
-    if req.Source != livekit.TrackSource_SCREEN_SHARE {
-        return "Only screen_share video may be published"
+    if req.Type != livekit.TrackType_VIDEO { return "Only screen or camera video is permitted" }
+    if req.Source != livekit.TrackSource_SCREEN_SHARE && req.Source != livekit.TrackSource_CAMERA {
+        return "Only screen or camera video may be published"
     }
     for _, track := range existing {
-        if track.Source == req.Source { return "This publisher slot already has this screen track" }
+        if track.Source == req.Source { return "This participant already has a video track from this source" }
     }
     return ""
 }
@@ -87,8 +102,8 @@ func (p *ParticipantImpl) hypercastCheckPublication(req *livekit.AddTrackRequest
         if !hypercastRooms.contains(p.ClaimGrants().Video.Room, string(p.ID())) { return "System audio screen is stopping" }
         return ""
     }
-    if !hypercastRooms.reserve(p.ClaimGrants().Video.Room, string(p.ID()), hypercastLimit) {
-        return "Room screen publication limit reached"
+    if !hypercastRooms.reserve(p.ClaimGrants().Video.Room, string(p.ID()), req.Source, hypercastLimit) {
+        return "Room video publication limit reached"
     }
     return ""
 }
@@ -106,7 +121,7 @@ func (p *ParticipantImpl) hypercastEndScreen(room, participant string) {
         pending.trackInfos = kept
         if len(kept) == 0 { delete(p.pendingTracks, cid) }
     }
-    hypercastRooms.release(room, participant)
+    hypercastRooms.release(room, participant, livekit.TrackSource_SCREEN_SHARE)
     p.pendingTracksLock.Unlock()
     // Track close callbacks also acquire pendingTracksLock. Never invoke them
     // under that lock. The removed room reservation denies new audio requests.

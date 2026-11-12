@@ -26,16 +26,32 @@ func TestHypercastQuota(t *testing.T) {
 }
 
 func TestHypercastConcurrentRoomReservations(t *testing.T) {
-    q := hypercastReservations{rooms: make(map[string]map[string]bool)}
+    q := hypercastReservations{rooms: make(map[string]map[hypercastPublication]bool)}
     var wg sync.WaitGroup
     var accepted atomic.Int32
     for i := 0; i < 12; i++ {
         wg.Add(1)
-        go func(id int) { defer wg.Done(); if q.reserve("room", fmt.Sprint(id), 3) { accepted.Add(1) } }(i)
+        go func(id int) { defer wg.Done(); if q.reserve("room", fmt.Sprint(id), livekit.TrackSource_SCREEN_SHARE, 3) { accepted.Add(1) } }(i)
     }
     wg.Wait()
     if accepted.Load() != 3 { t.Fatalf("admitted %d", accepted.Load()) }
-    if !q.reserve("other", "independent", 1) { t.Fatal("rooms share quota") }
-    q.release("other", "independent")
-    if !q.reserve("other", "next", 1) { t.Fatal("unpublication did not free quota") }
+    if !q.reserve("other", "independent", livekit.TrackSource_SCREEN_SHARE, 1) { t.Fatal("rooms share quota") }
+    q.release("other", "independent", livekit.TrackSource_SCREEN_SHARE)
+    if !q.reserve("other", "next", livekit.TrackSource_SCREEN_SHARE, 1) { t.Fatal("unpublication did not free quota") }
+}
+
+func TestHypercastMixedVideoReservations(t *testing.T) {
+    q := hypercastReservations{rooms: make(map[string]map[hypercastPublication]bool)}
+    screen, camera := livekit.TrackSource_SCREEN_SHARE, livekit.TrackSource_CAMERA
+    for _, id := range []string{"a", "b", "c"} {
+        if !q.reserve("room", id, screen, 3) || !q.reserve("room", id, camera, 3) {
+            t.Fatal("three screens and three cameras should fit")
+        }
+    }
+    if q.reserve("room", "d", camera, 3) { t.Fatal("seventh video admitted") }
+    q.release("room", "a", screen)
+    if q.reserve("room", "a", camera, 3) { t.Fatal("duplicate camera admitted") }
+    if !q.reserve("room", "d", camera, 3) { t.Fatal("camera could not use vacated screen slot") }
+    q.release("room", "d", camera)
+    if !q.reserve("room", "d", screen, 3) { t.Fatal("screen could not use vacated camera slot") }
 }

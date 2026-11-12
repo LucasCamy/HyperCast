@@ -1,3 +1,4 @@
+mod camera;
 mod desktop;
 pub(crate) mod engine;
 mod media;

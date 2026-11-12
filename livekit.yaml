@@ -28,7 +28,7 @@ room:
     max: 0
 limit:
   subscription_limit_audio: 3
-  subscription_limit_video: 3
+  subscription_limit_video: 6
   # num_tracks and bytes_per_sec are NODE allocation limits, not room quotas.
   # Bitrate 35-45 Mbps belongs to the encoder, not a node-wide SFU limit.
 logging:

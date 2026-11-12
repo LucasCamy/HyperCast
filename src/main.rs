@@ -13,10 +13,10 @@ struct Args {
     gui: bool,
     #[arg(long)]
     list: bool,
-    #[cfg(all(target_os="linux",feature="desktop"))]
+    #[cfg(all(target_os = "linux", feature = "desktop"))]
     #[arg(long)]
     linux_media_test: bool,
-    #[cfg(all(target_os="linux",feature="desktop"))]
+    #[cfg(all(target_os = "linux", feature = "desktop"))]
     #[arg(long)]
     linux_publish_test_url: Option<String>,
     #[cfg(feature = "livekit-network")]
@@ -87,7 +87,12 @@ fn main() -> Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     #[cfg(feature = "livekit-network")]
     if let Some(address) = &args.admission_hold_url {
-        return runtime.block_on(hypercast::network::admission_hold(address, &hypercast::network::token_from_env()?, args.seconds, args.admission_release_after));
+        return runtime.block_on(hypercast::network::admission_hold(
+            address,
+            &hypercast::network::token_from_env()?,
+            args.seconds,
+            args.admission_release_after,
+        ));
     }
     #[cfg(feature = "livekit-network")]
     if let Some(address) = &args.admission_probe_url {
@@ -176,15 +181,23 @@ fn main() -> Result<()> {
     let (mut encoded_frames, mut encoded_bytes, mut encode_timings) = (0u64, 0u64, Vec::new());
     #[cfg(all(feature = "nvenc", feature = "livekit-network"))]
     let mut publisher = if let Some(address) = &args.publish_url {
-        Some(runtime.block_on(hypercast::network::EncodedPublisher::open(
-            address,
-            &hypercast::network::token_from_env()?,
-            encoder.as_ref().map(|e|e.dimensions().0).unwrap_or(capture_width),
-            encoder.as_ref().map(|e|e.dimensions().1).unwrap_or(capture_height),
-            args.fps,
-            args.bitrate,
-            matches!(args.codec, hypercast::encoder::Codec::Av1),
-        ))?)
+        Some(
+            runtime.block_on(hypercast::network::EncodedPublisher::open(
+                address,
+                &hypercast::network::token_from_env()?,
+                encoder
+                    .as_ref()
+                    .map(|e| e.dimensions().0)
+                    .unwrap_or(capture_width),
+                encoder
+                    .as_ref()
+                    .map(|e| e.dimensions().1)
+                    .unwrap_or(capture_height),
+                args.fps,
+                args.bitrate,
+                matches!(args.codec, hypercast::encoder::Codec::Av1),
+            ))?,
+        )
     } else {
         None
     };
@@ -306,7 +319,7 @@ fn main() -> Result<()> {
         encode_timings.sort_by(f64::total_cmp);
         println!(
             "{}: {} frames, {:.2} FPS, {:.2} Mbps, copy+encode p95 {:.3} ms",
-            encoder.as_ref().map_or("GPU",|e|e.backend_name()),
+            encoder.as_ref().map_or("GPU", |e| e.backend_name()),
             encoded_frames,
             encoded_frames as f64 / start.elapsed().as_secs_f64(),
             encoded_bytes as f64 * 8.0 / start.elapsed().as_secs_f64() / 1_000_000.0,
@@ -324,20 +337,43 @@ fn main() -> Result<()> {
 fn main() -> Result<()> {
     let args = Args::parse();
     #[cfg(all(target_os = "linux", feature = "desktop"))]
-    if let Some(address)=&args.linux_publish_test_url{return tokio::runtime::Runtime::new()?.block_on(hypercast::linux::publish_self_test(address,args.seconds));}
+    if let Some(address) = &args.linux_publish_test_url {
+        return tokio::runtime::Runtime::new()?
+            .block_on(hypercast::linux::publish_self_test(address, args.seconds));
+    }
     #[cfg(all(target_os = "linux", feature = "desktop"))]
-    if args.linux_media_test {return tokio::runtime::Runtime::new()?.block_on(hypercast::linux::media_self_test());}
+    if args.linux_media_test {
+        return tokio::runtime::Runtime::new()?.block_on(hypercast::linux::media_self_test());
+    }
     #[cfg(all(target_os = "linux", feature = "desktop"))]
-    if args.gui || std::env::args().len() == 1 {return hypercast::linux::run();}
+    if args.gui || std::env::args().len() == 1 {
+        return hypercast::linux::run();
+    }
     #[cfg(feature = "livekit-network")]
     {
-        let runtime=tokio::runtime::Runtime::new()?;
-        if let Some(address)=args.connect_url {return runtime.block_on(hypercast::network::diagnostic(&address,&hypercast::network::token_from_env()?,args.seconds));}
-        if let Some(address)=args.receive_url {
-            let frames=runtime.block_on(hypercast::receiver::receive(&address,&hypercast::network::token_from_env()?,hypercast::receiver::ReceiveOptions {
-                mode:args.view_mode,focus_identity:args.focus,pause_after:args.pause_after.map(|n|std::time::Duration::from_secs(n as u64)),duration:std::time::Duration::from_secs(args.seconds as u64)
-            }))?;
-            anyhow::ensure!(frames>0,"No video frames received");return Ok(());
+        let runtime = tokio::runtime::Runtime::new()?;
+        if let Some(address) = args.connect_url {
+            return runtime.block_on(hypercast::network::diagnostic(
+                &address,
+                &hypercast::network::token_from_env()?,
+                args.seconds,
+            ));
+        }
+        if let Some(address) = args.receive_url {
+            let frames = runtime.block_on(hypercast::receiver::receive(
+                &address,
+                &hypercast::network::token_from_env()?,
+                hypercast::receiver::ReceiveOptions {
+                    mode: args.view_mode,
+                    focus_identity: args.focus,
+                    pause_after: args
+                        .pause_after
+                        .map(|n| std::time::Duration::from_secs(n as u64)),
+                    duration: std::time::Duration::from_secs(args.seconds as u64),
+                },
+            ))?;
+            anyhow::ensure!(frames > 0, "No video frames received");
+            return Ok(());
         }
     }
     anyhow::bail!("Use --gui for Linux desktop or --connect-url/--receive-url for diagnostics")
