@@ -184,245 +184,274 @@ impl Catalog {
         let mut selected = None;
         let mut action = None;
         let mut refresh = false;
-        let modal = controls::scrolling_dialog(
+        let modal = controls::dialog(
             ctx,
             crate::i18n::label("Escolher sala", "Choose room"),
             "saved_rooms_window",
-            440.0,
+            640.0,
             |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        egui::RichText::new(if self.busy {
-                            crate::i18n::label("Atualizando salas…", "Refreshing rooms…").into()
-                        } else {
-                            crate::i18n_format!(
-                                "{} sala(s) disponível(is)",
-                                "{} room(s) available",
-                                self.rooms.len()
-                            )
-                        })
-                        .size(12.0)
-                        .color(controls::MUTED),
-                    );
-                    if controls::compact(
-                        ui,
-                        crate::i18n::label("Atualizar lista", "Refresh list"),
-                        !self.busy,
-                    )
-                    .clicked()
-                    {
-                        refresh = true;
-                    }
-                });
-                let name_label = ui.label(crate::i18n::label("Seu nome", "Your name")).id;
-                controls::input(
-                    ui,
-                    name,
-                    crate::i18n::label(
-                        "Como quer aparecer na sala",
-                        "Your display name in the room",
-                    ),
-                    false,
-                    64,
-                    current_room.is_none() && !transitioning,
-                )
-                .labelled_by(name_label);
-                if !self.status.is_empty() {
-                    ui.label(&self.status);
-                }
-                if !self.busy && self.rooms.is_empty() {
-                    ui.label(crate::i18n::label(
-                        "Nenhuma sala salva. Crie uma para começar.",
-                        "No saved rooms. Create one to get started.",
-                    ));
-                }
-                let card_width = ui.available_width();
-                for entry in &self.rooms {
-                    ui.push_id(&entry.room, |ui| {
-                        egui::Frame::new()
-                            .fill(controls::SURFACE)
-                            .stroke(egui::Stroke::new(1.0, controls::BORDER))
-                            .corner_radius(10)
-                            .inner_margin(12)
-                            .show(ui, |ui| {
-                                ui.set_width((card_width - 26.0).max(0.0));
-                                let width = ui.available_width();
-                                let title_width = if width >= 220.0 { width - 98.0 } else { width };
-                                let current = current_room == Some(entry.room.as_str());
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.allocate_ui_with_layout(
-                                        egui::vec2(title_width, 0.0),
-                                        egui::Layout::top_down(egui::Align::Min),
-                                        |ui| {
-                                            ui.set_min_width(title_width);
-                                            ui.label(
-                                                egui::RichText::new(&entry.title)
-                                                    .strong()
-                                                    .size(15.0),
-                                            );
-                                            ui.label(
-                                                egui::RichText::new(crate::i18n_format!(
-                                                    "{} · {} pessoa(s)",
-                                                    "{} · {} person(s)",
-                                                    if entry.expired {
-                                                        crate::i18n::label("Expirada", "Expired")
-                                                    } else if entry.persistent {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), 34.0),
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        refresh = controls::refresh_rooms_button(ui, !self.busy).clicked();
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            if current_room.is_none() {
+                                controls::input(
+                                    ui,
+                                    name,
+                                    crate::i18n::label("Seu nome", "Your name"),
+                                    false,
+                                    64,
+                                    !transitioning,
+                                );
+                            } else {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(crate::i18n_format!(
+                                            "{} sala(s)",
+                                            "{} room(s)",
+                                            self.rooms.len()
+                                        ))
+                                        .color(controls::MUTED),
+                                    )
+                                    .truncate(),
+                                );
+                            }
+                        });
+                    },
+                );
+                // Reserve the dialog frame and margins after laying out the fixed controls.
+                let list_height = (ctx.content_rect().height() - ui.min_size().y - 38.0).max(0.0);
+                ui.spacing_mut().scroll.floating = false;
+                egui::ScrollArea::vertical()
+                    .id_salt("saved_rooms_list")
+                    .auto_shrink([false, true])
+                    .min_scrolled_height(0.0)
+                    .max_height(list_height)
+                    .show(ui, |ui| {
+                        if !self.status.is_empty() {
+                            ui.add(egui::Label::new(&self.status).truncate())
+                                .on_hover_text(&self.status);
+                        }
+                        if self.rooms.is_empty() {
+                            ui.label(if self.busy {
+                                crate::i18n::label("Atualizando salas…", "Refreshing rooms…")
+                            } else {
+                                crate::i18n::label(
+                                    "Nenhuma sala salva. Crie uma para começar.",
+                                    "No saved rooms. Create one to get started.",
+                                )
+                            });
+                        }
+                        let valid_name = !name.is_empty()
+                            && name.len() <= 64
+                            && name
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+                        let card_width = ui.available_width();
+                        for entry in &self.rooms {
+                            ui.push_id(&entry.room, |ui| {
+                                egui::Frame::new()
+                                    .fill(controls::SURFACE)
+                                    .stroke(egui::Stroke::new(1.0, controls::BORDER))
+                                    .corner_radius(10)
+                                    .inner_margin(8)
+                                    .show(ui, |ui| {
+                                        ui.set_width((card_width - 18.0).max(0.0));
+                                        let current = current_room == Some(entry.room.as_str());
+                                        ui.allocate_ui_with_layout(
+                                            egui::vec2(ui.available_width(), 36.0),
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                let enabled = !self.busy
+                                                    && !transitioning
+                                                    && !entry.expired
+                                                    && !current
+                                                    && valid_name;
+                                                let enter = controls::primary(
+                                                    ui,
+                                                    if current {
                                                         crate::i18n::label(
-                                                            "Permanente",
-                                                            "Permanent",
+                                                            "Nesta sala",
+                                                            "Current room",
                                                         )
                                                     } else {
-                                                        crate::i18n::label(
-                                                            "Temporária · 24 h",
-                                                            "Temporary · 24 h",
-                                                        )
+                                                        crate::i18n::label("Entrar", "Join")
                                                     },
-                                                    entry.participants
-                                                ))
-                                                .size(12.0)
-                                                .color(controls::MUTED),
+                                                    enabled,
+                                                    egui::vec2(
+                                                        if current { 88.0 } else { 64.0 },
+                                                        36.0,
+                                                    ),
+                                                );
+                                                enter.widget_info(|| {
+                                                    egui::WidgetInfo::labeled(
+                                                        egui::WidgetType::Button,
+                                                        enabled,
+                                                        crate::i18n_format!(
+                                                            "Entrar em {}",
+                                                            "Join {}",
+                                                            entry.title
+                                                        ),
+                                                    )
+                                                });
+                                                if enter.clicked() {
+                                                    selected = Some(CreatedRoom {
+                                                        room: entry.room.clone(),
+                                                        title: entry.title.clone(),
+                                                    });
+                                                }
+                                                ui.with_layout(
+                                                    egui::Layout::top_down(egui::Align::Min),
+                                                    |ui| {
+                                                        ui.spacing_mut().item_spacing.y = 2.0;
+                                                        ui.add(
+                                                            egui::Label::new(
+                                                                egui::RichText::new(&entry.title)
+                                                                    .strong()
+                                                                    .size(15.0),
+                                                            )
+                                                            .truncate(),
+                                                        )
+                                                        .on_hover_text(&entry.title);
+                                                        let summary = crate::i18n_format!(
+                                                            "{} · {} pessoa(s)",
+                                                            "{} · {} person(s)",
+                                                            if entry.expired {
+                                                                crate::i18n::label(
+                                                                    "Expirada", "Expired",
+                                                                )
+                                                            } else if entry.persistent {
+                                                                crate::i18n::label(
+                                                                    "Permanente",
+                                                                    "Permanent",
+                                                                )
+                                                            } else {
+                                                                crate::i18n::label(
+                                                                    "Temporária · 24 h",
+                                                                    "Temporary · 24 h",
+                                                                )
+                                                            },
+                                                            entry.participants
+                                                        );
+                                                        ui.add(
+                                                            egui::Label::new(
+                                                                egui::RichText::new(&summary)
+                                                                    .size(12.0)
+                                                                    .color(controls::MUTED),
+                                                            )
+                                                            .truncate(),
+                                                        )
+                                                        .on_hover_text(summary);
+                                                    },
+                                                );
+                                            },
+                                        );
+                                        let can_delete = !self.busy
+                                            && !transitioning
+                                            && entry.participants == 0
+                                            && !current;
+                                        ui.horizontal_wrapped(|ui| {
+                                            let mut persistent = entry.persistent;
+                                            let checkbox = ui.add_enabled(
+                                                !self.busy,
+                                                egui::Checkbox::new(
+                                                    &mut persistent,
+                                                    crate::i18n::label(
+                                                        "Manter esta sala",
+                                                        "Keep this room",
+                                                    ),
+                                                ),
                                             );
-                                        },
-                                    );
-                                    let valid_name = !name.is_empty()
-                                        && name.len() <= 64
-                                        && name.bytes().all(|b| {
-                                            b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
+                                            checkbox.widget_info(|| {
+                                                egui::WidgetInfo::selected(
+                                                    egui::WidgetType::Checkbox,
+                                                    !self.busy,
+                                                    persistent,
+                                                    crate::i18n_format!(
+                                                        "Manter sala {}",
+                                                        "Keep room {}",
+                                                        entry.title
+                                                    ),
+                                                )
+                                            });
+                                            if checkbox.changed() {
+                                                action = Some(CatalogAction::Keep(
+                                                    entry.room.clone(),
+                                                    persistent,
+                                                ));
+                                            }
+                                            {
+                                                let delete = controls::compact(
+                                                    ui,
+                                                    crate::i18n::label(
+                                                        "Excluir sala",
+                                                        "Delete room",
+                                                    ),
+                                                    can_delete,
+                                                );
+                                                delete.widget_info(|| {
+                                                    egui::WidgetInfo::labeled(
+                                                        egui::WidgetType::Button,
+                                                        can_delete,
+                                                        crate::i18n_format!(
+                                                            "Excluir sala {}",
+                                                            "Delete room {}",
+                                                            entry.title
+                                                        ),
+                                                    )
+                                                });
+                                                if delete.clicked() {
+                                                    self.confirm_delete = Some(entry.room.clone());
+                                                }
+                                            }
                                         });
-                                    let enabled = !self.busy
-                                        && !transitioning
-                                        && !entry.expired
-                                        && !current
-                                        && valid_name;
-                                    let enter = controls::primary(
-                                        ui,
-                                        if current {
-                                            crate::i18n::label("Nesta sala", "Current room")
-                                        } else {
-                                            crate::i18n::label("Entrar", "Join")
-                                        },
-                                        enabled,
-                                        egui::vec2(88.0, 36.0),
-                                    );
-                                    enter.widget_info(|| {
-                                        egui::WidgetInfo::labeled(
-                                            egui::WidgetType::Button,
-                                            enabled,
-                                            crate::i18n_format!(
-                                                "Entrar em {}",
-                                                "Join {}",
-                                                entry.title
-                                            ),
-                                        )
-                                    });
-                                    if enter.clicked() {
-                                        selected = Some(CreatedRoom {
-                                            room: entry.room.clone(),
-                                            title: entry.title.clone(),
-                                        });
-                                    }
-                                });
-                                let can_delete = !self.busy
-                                    && !transitioning
-                                    && entry.participants == 0
-                                    && !current;
-                                ui.horizontal_wrapped(|ui| {
-                                    let mut persistent = entry.persistent;
-                                    let checkbox = ui.add_enabled(
-                                        !self.busy,
-                                        egui::Checkbox::new(
-                                            &mut persistent,
-                                            crate::i18n::label(
-                                                "Manter esta sala",
-                                                "Keep this room",
-                                            ),
-                                        ),
-                                    );
-                                    checkbox.widget_info(|| {
-                                        egui::WidgetInfo::selected(
-                                            egui::WidgetType::Checkbox,
-                                            !self.busy,
-                                            persistent,
-                                            crate::i18n_format!(
-                                                "Manter sala {}",
-                                                "Keep room {}",
-                                                entry.title
-                                            ),
-                                        )
-                                    });
-                                    if checkbox.changed() {
-                                        action = Some(CatalogAction::Keep(
-                                            entry.room.clone(),
-                                            persistent,
-                                        ));
-                                    }
-                                    {
-                                        let delete = controls::compact(
-                                            ui,
-                                            crate::i18n::label("Excluir sala", "Delete room"),
-                                            can_delete,
-                                        );
-                                        delete.widget_info(|| {
-                                            egui::WidgetInfo::labeled(
-                                                egui::WidgetType::Button,
-                                                can_delete,
-                                                crate::i18n_format!(
-                                                    "Excluir sala {}",
-                                                    "Delete room {}",
-                                                    entry.title
-                                                ),
-                                            )
-                                        });
-                                        if delete.clicked() {
-                                            self.confirm_delete = Some(entry.room.clone());
+                                        if self.confirm_delete.as_deref() == Some(&entry.room) {
+                                            ui.horizontal_wrapped(|ui| {
+                                                ui.label(
+                                                    egui::RichText::new(crate::i18n::label(
+                                                        "Excluir esta sala?",
+                                                        "Delete this room?",
+                                                    ))
+                                                    .size(11.0)
+                                                    .color(controls::MUTED),
+                                                );
+                                                if controls::compact(
+                                                    ui,
+                                                    crate::i18n::label("Cancelar", "Cancel"),
+                                                    !self.busy,
+                                                )
+                                                .clicked()
+                                                {
+                                                    self.confirm_delete = None;
+                                                }
+                                                let confirm = controls::compact(
+                                                    ui,
+                                                    crate::i18n::label("Excluir", "Delete"),
+                                                    can_delete,
+                                                );
+                                                confirm.widget_info(|| {
+                                                    egui::WidgetInfo::labeled(
+                                                        egui::WidgetType::Button,
+                                                        can_delete,
+                                                        crate::i18n_format!(
+                                                            "Confirmar exclusão de {}",
+                                                            "Confirm deletion of {}",
+                                                            entry.title
+                                                        ),
+                                                    )
+                                                });
+                                                if confirm.clicked() {
+                                                    action = Some(CatalogAction::Delete(
+                                                        entry.room.clone(),
+                                                    ));
+                                                    self.confirm_delete = None;
+                                                }
+                                            });
                                         }
-                                    }
-                                });
-                                if self.confirm_delete.as_deref() == Some(&entry.room) {
-                                    ui.horizontal_wrapped(|ui| {
-                                        ui.label(
-                                            egui::RichText::new(crate::i18n::label(
-                                                "Excluir esta sala?",
-                                                "Delete this room?",
-                                            ))
-                                            .size(11.0)
-                                            .color(controls::MUTED),
-                                        );
-                                        if controls::compact(
-                                            ui,
-                                            crate::i18n::label("Cancelar", "Cancel"),
-                                            !self.busy,
-                                        )
-                                        .clicked()
-                                        {
-                                            self.confirm_delete = None;
-                                        }
-                                        let confirm = controls::compact(
-                                            ui,
-                                            crate::i18n::label("Excluir", "Delete"),
-                                            can_delete,
-                                        );
-                                        confirm.widget_info(|| {
-                                            egui::WidgetInfo::labeled(
-                                                egui::WidgetType::Button,
-                                                can_delete,
-                                                crate::i18n_format!(
-                                                    "Confirmar exclusão de {}",
-                                                    "Confirm deletion of {}",
-                                                    entry.title
-                                                ),
-                                            )
-                                        });
-                                        if confirm.clicked() {
-                                            action =
-                                                Some(CatalogAction::Delete(entry.room.clone()));
-                                            self.confirm_delete = None;
-                                        }
-                                    });
-                                }
-                                if entry.expired {
-                                    ui.label(
+                                        if entry.expired {
+                                            ui.label(
                                         egui::RichText::new(if entry.participants > 0 {
                                             crate::i18n::label(
                                                 "A limpeza aguarda os participantes saírem.",
@@ -437,21 +466,22 @@ impl Catalog {
                                         .size(11.0)
                                         .color(controls::MUTED),
                                     );
-                                }
+                                        }
+                                    });
                             });
-                    });
-                }
-                if transitioning {
-                    ui.small(crate::i18n::label(
-                        "Aguarde a troca de sala…",
-                        "Wait for the room switch…",
-                    ));
-                } else if current_room.is_some() {
-                    ui.small(crate::i18n::label(
+                        }
+                        if transitioning {
+                            ui.small(crate::i18n::label(
+                                "Aguarde a troca de sala…",
+                                "Wait for the room switch…",
+                            ));
+                        } else if current_room.is_some() {
+                            ui.small(crate::i18n::label(
                         "Ao entrar em outra sala, seu compartilhamento atual será encerrado.",
                         "Joining another room will stop your current stream.",
                     ));
-                }
+                        }
+                    });
             },
         );
         self.open = !modal.should_close() && selected.is_none();
@@ -992,6 +1022,81 @@ pub fn forget_code(address: &str) -> Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.into()),
     }
+}
+
+#[cfg(test)]
+#[test]
+fn compact_catalog_keeps_name_and_first_room_visible_and_clickable() {
+    let title = "Sala com um nome longo para testar janelas pequenas";
+    let mut catalog = Catalog {
+        open: true,
+        origin: "test".into(),
+        last_refresh: Some(std::time::Instant::now()),
+        rooms: (0..8)
+            .map(|index| SavedRoom {
+                room: index.to_string(),
+                title: title.into(),
+                persistent: true,
+                expired: false,
+                participants: 0,
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let ctx = egui::Context::default();
+    let area = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(230.0, 180.0));
+    let mut name = "LayoutTester".to_owned();
+    let mut selected = None;
+    let mut draw = |events| {
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(area),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                if let Some(room) =
+                    catalog.show(ui.ctx(), "test", "session".into(), &mut name, None, false)
+                {
+                    selected = Some(room.room);
+                }
+            },
+        )
+    };
+    for _ in 0..3 {
+        let _ = draw(Vec::new());
+    }
+    let output = draw(Vec::new());
+    let visible_text = |text: &str| {
+        output.shapes.iter().find_map(|shape| {
+            if let egui::Shape::Text(label) = &shape.shape
+                && label.galley.text() == text
+                && shape.clip_rect.contains_rect(label.visual_bounding_rect())
+                && area.contains_rect(label.visual_bounding_rect())
+            {
+                return Some(label.visual_bounding_rect().center());
+            }
+            None
+        })
+    };
+    assert!(
+        visible_text("LayoutTester").is_some(),
+        "Name field is clipped"
+    );
+    let pos = visible_text(crate::i18n::label("Entrar", "Join"))
+        .expect("First room should be reachable without scrolling");
+    for pressed in [true, false] {
+        let _ = draw(vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            },
+        ]);
+    }
+    assert_eq!(selected.as_deref(), Some("0"));
 }
 
 #[cfg(all(test, windows))]
