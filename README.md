@@ -221,4 +221,6 @@ Capturas HDR em scRGB/FP16 são convertidas na GPU para SDR antes do NVENC; a tr
 
 A [0.9.2](docs/0.9.2.md) corrige a realimentação de FPS no envio Windows, preservando a cadência escolhida e o controle de bitrate da rede.
 
+A [0.9.3](docs/0.9.3.md) reorganiza os controles da sala e permite trocar a fonte e a qualidade durante o compartilhamento.
+
 [Notas da versão](docs/0.9.1.md). O relatório inclui durações observáveis, eventos limitados e indicadores de qualidade, com [limites documentados](docs/technical-report.md). A [referência visual](docs/latency-validation.md) acompanha os pacotes para medição posterior. Não há nova comprovação de latência fim a fim nem validação física AMD/Bazzite.

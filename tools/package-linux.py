@@ -2,8 +2,9 @@
 import argparse,hashlib,json,os,re,shutil,subprocess,tempfile,tomllib,urllib.request
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent.parent
-TOOL_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
-TOOL_SHA256="95cbe7cce9717fce90c484e34052ee7c7f1d7635b33c12525b4776826a7d29b6"
+TOOL_VERSION="1.9.1"
+TOOL_URL=f"https://github.com/AppImage/appimagetool/releases/download/{TOOL_VERSION}/appimagetool-x86_64.AppImage"
+TOOL_SHA256="ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
 PLUGIN_NAMES=("coreelements","app","audioconvert","audioresample","videoconvertscale","videorate","videoparsersbad","nvcodec","va","x265","pulseaudio","pipewire","ximagesrc","videotestsrc","audiotestsrc","typefindfunctions","playback","video4linux2","jpeg")
 # All mandatory modules in the bundled PipeWire client.conf must be present.
 # Missing client-device/session-manager makes pw_context_new fail, and the
@@ -34,7 +35,7 @@ def main():
     version=tomllib.loads((ROOT/"Cargo.toml").read_text())["package"]["version"]
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.]+)?",version):raise ValueError("Invalid release version")
     args.output.mkdir(parents=True,exist_ok=True)
-    tools=ROOT/".tools/linux";tools.mkdir(parents=True,exist_ok=True);tool=tools/"appimagetool-x86_64.AppImage"
+    tools=ROOT/".tools/linux";tools.mkdir(parents=True,exist_ok=True);tool=tools/f"appimagetool-{TOOL_VERSION}-x86_64.AppImage"
     if not tool.exists():
         with urllib.request.urlopen(TOOL_URL,timeout=60) as response,tool.open("wb") as output:shutil.copyfileobj(response,output)
     if sha(tool)!=TOOL_SHA256:raise RuntimeError("AppImage tool checksum mismatch; verify upstream asset before updating the pin")
