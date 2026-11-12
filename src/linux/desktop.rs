@@ -1,5 +1,5 @@
 use super::{
-    engine::{Command, Engine, Layout, State},
+    engine::{Command, Engine, Layout, ShareOptions, State},
     media::{Codec, Encoder, Source},
 };
 use crate::{
@@ -33,13 +33,32 @@ fn input(
     crate::desktop_ui::input(ui, value, hint, password, limit, true)
 }
 
+type ShareQuality = (
+    Codec,
+    Encoder,
+    crate::resolution::StreamSettings,
+    crate::bandwidth::UploadProfile,
+    crate::adaptive_upload::Mode,
+);
+
+#[derive(Clone, Copy)]
+struct ShareDraft {
+    editing: bool,
+    audio: bool,
+    source: Option<Source>,
+    tab: crate::desktop_ui::ShareTab,
+    quality: ShareQuality,
+}
+
 struct App {
     address: String,
     name: String,
     sidebar_open: bool,
     invite: String,
     confirm_leave: bool,
-    stream_options_open: bool,
+    share_draft: Option<ShareDraft>,
+    pending_share: Option<(ShareDraft, tokio::sync::oneshot::Receiver<()>)>,
+    share_source: Source,
     saved_room: Option<String>,
     device: String,
     access: ServerAccess,
@@ -62,6 +81,8 @@ struct App {
     stream_settings: crate::resolution::StreamSettings,
     preferences: crate::preferences::Store,
     audio: bool,
+    volume: u32,
+    sound_muted: bool,
     fullscreen: bool,
     debug: bool,
     report_copied: Option<Instant>,
@@ -89,7 +110,9 @@ impl App {
             name: crate::preferences::load_name(),
             sidebar_open: prefs.sidebar,
             confirm_leave: false,
-            stream_options_open: false,
+            share_draft: None,
+            pending_share: None,
+            share_source: Source::Portal,
             invite: std::env::var("HYPERCAST_INVITE").unwrap_or_default(),
             saved_room: None,
             device: crate::invitation::client_id(),
@@ -106,7 +129,6 @@ impl App {
             joining: None,
             status: String::new(),
             layout: Layout {
-                volume: if prefs.muted { 0 } else { prefs.volume },
                 mode: if prefs.grid {
                     ViewMode::Grid
                 } else {
@@ -128,6 +150,8 @@ impl App {
             },
             stream_settings: prefs.stream,
             audio: false,
+            volume: prefs.volume,
+            sound_muted: prefs.muted,
             fullscreen: false,
             debug: false,
             report_copied: None,
@@ -144,8 +168,9 @@ impl App {
         app
     }
     fn save_preferences(&mut self) {
-        let previous = self.preferences.current();
-        let muted = previous.muted && self.layout.volume == 0;
+        if self.share_draft.is_some() || self.pending_share.is_some() {
+            return;
+        }
         self.preferences.update(crate::preferences::Settings {
             codec: if self.codec == Codec::Av1 {
                 crate::preferences::VideoCodec::Av1
@@ -156,12 +181,8 @@ impl App {
             stream: self.stream_settings,
             upload: self.upload,
             rate_mode: self.rate_mode,
-            volume: if muted {
-                previous.volume
-            } else {
-                self.layout.volume
-            },
-            muted,
+            volume: self.volume,
+            muted: self.sound_muted,
             sidebar: self.sidebar_open,
             self_preview: self.preferences.current().self_preview,
             grid: self.layout.mode == ViewMode::Grid,
@@ -177,6 +198,7 @@ impl App {
     }
     fn layout(&self) {
         let mut layout = self.layout.clone();
+        layout.volume = if self.sound_muted { 0 } else { self.volume };
         if self.fullscreen {
             layout.mode = ViewMode::Spotlight;
         }
@@ -188,7 +210,13 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(enabled));
     }
     fn leave_room(&mut self, ctx: &egui::Context, join_next: bool) {
-        self.stream_options_open = false;
+        if let Some(draft) = self
+            .share_draft
+            .take()
+            .or_else(|| self.pending_share.take().map(|(draft, _)| draft))
+        {
+            self.restore_share_quality(draft.quality);
+        }
         if let Some(engine) = &self.engine {
             engine.request_exit();
         }
@@ -342,7 +370,9 @@ impl App {
                 MUTED,
             );
         }
-        let response = ui.interact(card, ui.id().with(sid), egui::Sense::click());
+        let response = ui
+            .interact(card, ui.id().with(sid), egui::Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
         response.widget_info(|| {
             egui::WidgetInfo::labeled(
                 egui::WidgetType::Button,
@@ -350,9 +380,7 @@ impl App {
                 crate::i18n_format!("Transmissão de {}", "Stream from {}", name),
             )
         });
-        if response.double_clicked()
-            || (response.clicked() && response.interact_pointer_pos().is_none())
-        {
+        if response.clicked() {
             self.layout.focus = Some(sid.to_owned());
             self.layout.mode = ViewMode::Spotlight;
             self.layout();
@@ -369,8 +397,7 @@ impl Drop for App {
     }
 }
 impl App {
-    fn video_settings(&mut self, ui: &mut egui::Ui, sharing: bool) {
-        let before = self.stream_settings;
+    fn video_settings(&mut self, ui: &mut egui::Ui) {
         let software = self.encoder == Encoder::Software;
         if software {
             self.stream_settings.fps = 30;
@@ -378,14 +405,12 @@ impl App {
         crate::desktop_ui::stream_settings(
             ui,
             &mut self.stream_settings,
-            !sharing,
+            true,
             if software { 30 } else { 120 },
         );
-        crate::desktop_ui::upload_selector(ui, &mut self.upload, !sharing);
-        if crate::desktop_ui::rate_mode_selector(ui, &mut self.rate_mode, !sharing, true) {
-            self.send(Command::RateMode(self.rate_mode));
-        }
-        ui.add_enabled_ui(!sharing, |ui| {
+        crate::desktop_ui::upload_selector(ui, &mut self.upload, true);
+        crate::desktop_ui::rate_mode_selector(ui, &mut self.rate_mode, true, true);
+        ui.scope(|ui| {
             ui.columns(2, |columns| {
                 for (column, (codec, label)) in columns
                     .iter_mut()
@@ -403,24 +428,23 @@ impl App {
             let hardware_label = "GPU · NVENC / VA-API";
             let software_label =
                 crate::i18n::label("Compatível · HEVC 30 FPS", "Compatible · HEVC 30 FPS");
-            egui::ComboBox::from_id_salt("encoder")
-                .width(ui.available_width())
-                .selected_text(if software {
+            crate::desktop_ui::select_menu(
+                ui,
+                "encoder",
+                if software {
                     software_label
                 } else {
                     hardware_label
-                })
-                .show_ui(ui, |ui| {
+                },
+                |ui| {
                     ui.selectable_value(&mut self.encoder, Encoder::Auto, hardware_label);
                     ui.selectable_value(&mut self.encoder, Encoder::Software, software_label);
-                });
+                },
+            );
         });
         if self.encoder == Encoder::Software {
             self.codec = Codec::Hevc;
             self.stream_settings.fps = 30;
-        }
-        if before != self.stream_settings {
-            self.send(Command::StreamSettings(self.stream_settings));
         }
         if super::media::factory_available(self.codec, self.encoder) == Some(false) {
             ui.label(RichText::new(crate::i18n::label(
@@ -430,7 +454,81 @@ impl App {
         }
     }
 
+    fn share_quality(&self) -> ShareQuality {
+        (
+            self.codec,
+            self.encoder,
+            self.stream_settings,
+            self.upload,
+            self.rate_mode,
+        )
+    }
+
+    fn restore_share_quality(&mut self, quality: ShareQuality) {
+        (
+            self.codec,
+            self.encoder,
+            self.stream_settings,
+            self.upload,
+            self.rate_mode,
+        ) = quality;
+    }
+
+    fn open_share_editor(&mut self, editing: bool) {
+        self.share_draft = Some(ShareDraft {
+            editing,
+            audio: self.audio,
+            source: (!editing).then_some(Source::Portal),
+            tab: crate::desktop_ui::ShareTab::Source,
+            quality: self.share_quality(),
+        });
+        self.debug = false;
+        self.updates = false;
+    }
+
+    fn apply_share(&mut self, mut draft: ShareDraft) {
+        if draft.editing && draft.source.is_none() && draft.quality == self.share_quality() {
+            if self.audio != draft.audio {
+                self.audio = draft.audio;
+                self.send(Command::Audio(self.audio));
+            }
+            return;
+        }
+        let source = draft.source.unwrap_or(self.share_source);
+        draft.source = Some(source);
+        let (applied, result) = tokio::sync::oneshot::channel();
+        self.send(Command::Share(
+            source,
+            self.codec,
+            self.encoder,
+            self.upload,
+            Some(ShareOptions {
+                settings: self.stream_settings,
+                rate_mode: self.rate_mode,
+                audio: draft.audio,
+                applied,
+            }),
+        ));
+        self.pending_share = Some((draft, result));
+    }
+
     fn render(&mut self, root: &mut egui::Ui) {
+        if let Some((draft, mut result)) = self.pending_share.take() {
+            match result.try_recv() {
+                Ok(()) => {
+                    self.audio = draft.audio;
+                    if let Some(source) = draft.source {
+                        self.share_source = source;
+                    }
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                    self.pending_share = Some((draft, result))
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    self.restore_share_quality(draft.quality)
+                }
+            }
+        }
         self.save_preferences();
         let context = root.ctx().clone();
         let ctx = &context;
@@ -441,7 +539,8 @@ impl App {
             if std::mem::take(&mut self.pending_join) {
                 self.connect(ctx);
             } else {
-                self.status = crate::i18n::label("Você saiu da sala", "You left the room").into();
+                self.status =
+                    crate::desktop_ui::left_room_status(self.access.authenticated()).into();
             }
         }
         if let Some(room) = self.creator.poll() {
@@ -511,7 +610,7 @@ impl App {
             self.restart_reception();
         }
         if !self.confirm_leave
-            && !self.stream_options_open
+            && self.share_draft.is_none()
             && (self.fullscreen || connected && !screens.is_empty())
             && ctx.input(|i| i.key_pressed(egui::Key::F11))
         {
@@ -522,41 +621,32 @@ impl App {
         }
         if !self.fullscreen && (connected || reconnecting) {
             crate::desktop_ui::session_panel(ctx.content_rect().width()).show(root, |ui| {
-                let status = if connected && !can_publish {
-                    crate::i18n::label(
-                        "Nesta sala, você pode assistir.",
-                        "You can watch in this room.",
-                    )
-                } else if self.status.is_empty() {
-                    &state_status
-                } else {
-                    &self.status
-                };
-                crate::desktop_ui::session_status(ui, sharing, self.snapshot.camera_active, status);
                 use crate::desktop_ui::{
-                    session_actions, session_button, session_menu, session_stop,
+                    active_share_actions, session_actions, session_button, session_leave,
+                    session_menu, session_playback_actions, session_room_actions, session_stop,
                 };
-                let ready = connected
-                    && can_publish
-                    && !selecting
-                    && super::media::factory_available(self.codec, self.encoder).unwrap_or(true);
-                let share = |app: &Self, source| {
-                    app.send(Command::StreamSettings(app.stream_settings));
-                    app.send(Command::Share(source, app.codec, app.encoder, app.upload));
-                };
-                session_actions(ui, |ui| {
-                    if selecting || sharing {
-                        let label = if selecting {
-                            crate::i18n::label("Cancelar seleção", "Cancel selection")
-                        } else {
-                            crate::i18n::label("Parar compartilhamento", "Stop screen sharing")
-                        };
-                        if session_stop(ui, label, true).clicked() {
-                            self.send(if selecting {
-                                Command::CancelSelection
-                            } else {
-                                Command::Stop
-                            });
+                let ready = connected && can_publish && !selecting && self.pending_share.is_none();
+                let paused = self.layout.paused;
+                let playback =
+                    |ui: &mut egui::Ui| session_playback_actions(ui, paused, connected, resetting);
+                session_actions(ui, |ui, compact| {
+                    if selecting {
+                        if session_stop(
+                            ui,
+                            crate::i18n::label("Cancelar seleção", "Cancel selection"),
+                            true,
+                        )
+                        .clicked()
+                        {
+                            self.send(Command::CancelSelection);
+                        }
+                    } else if sharing {
+                        let (stop, gear, _) = active_share_actions(ui, compact, None);
+                        if stop.clicked() {
+                            self.send(Command::Stop);
+                        }
+                        if gear.clicked() && ready {
+                            self.open_share_editor(true);
                         }
                     } else if session_button(
                         ui,
@@ -566,8 +656,9 @@ impl App {
                     )
                     .clicked()
                     {
-                        share(self, Source::Portal);
+                        self.open_share_editor(false);
                     }
+                    let playback_in_first_row = (!compact).then(|| playback(ui));
                     let camera = if self.snapshot.camera_starting {
                         crate::i18n::label("Abrindo câmera…", "Opening camera…")
                     } else if self.snapshot.camera_active {
@@ -585,118 +676,58 @@ impl App {
                     {
                         self.send(Command::ToggleCamera);
                     }
-                    session_menu(ui, |ui| {
-                        ui.strong(crate::i18n::label("Compartilhamento", "Sharing"));
-                        if ui
-                            .button(crate::desktop_ui::stream_options_title())
-                            .clicked()
-                        {
-                            self.stream_options_open = true;
-                            self.debug = false;
-                            ui.close();
-                        }
-                        if sharing
-                            && ui
-                                .add_enabled(
-                                    ready,
-                                    egui::Button::new(crate::i18n::label(
-                                        "Trocar fonte",
-                                        "Change source",
-                                    )),
-                                )
-                                .clicked()
-                        {
-                            share(self, Source::Portal);
-                            ui.close();
-                        }
-                        if !sharing
-                            && std::env::var_os("WAYLAND_DISPLAY").is_none()
-                            && ui
-                                .add_enabled(
-                                    ready,
-                                    egui::Button::new(crate::i18n::label(
-                                        "Tela inteira (X11)",
-                                        "Entire screen (X11)",
-                                    )),
-                                )
-                                .clicked()
-                        {
-                            share(self, Source::X11);
-                            ui.close();
-                        }
-                        if ui
-                            .add_enabled(
-                                can_publish,
-                                egui::Checkbox::new(
-                                    &mut self.audio,
-                                    crate::i18n::label("Áudio do sistema", "System audio"),
-                                ),
-                            )
-                            .changed()
-                        {
-                            self.send(Command::Audio(self.audio));
-                        }
-                        ui.separator();
-                        ui.strong(crate::i18n::label("Recepção", "Playback"));
-                        let label = ui
-                            .label(crate::i18n::label("Volume recebido", "Incoming volume"))
-                            .id;
-                        if crate::desktop_ui::volume_slider(ui, &mut self.layout.volume)
-                            .labelled_by(label)
-                            .changed()
-                        {
-                            self.layout();
-                        }
-                        let pause = if self.layout.paused {
-                            crate::i18n::label("Retomar vídeo recebido", "Resume incoming video")
-                        } else {
-                            crate::i18n::label("Pausar vídeo recebido", "Pause incoming video")
-                        };
-                        if ui.button(pause).clicked() {
-                            self.layout.paused = !self.layout.paused;
-                            self.layout();
-                            ui.close();
-                        }
-                        if ui
-                            .add_enabled(
-                                connected && !resetting,
-                                egui::Button::new(crate::i18n::label(
-                                    "Reconectar vídeo recebido",
-                                    "Reconnect incoming video",
-                                )),
+                    let (pause, reconnect) = playback_in_first_row.unwrap_or_else(|| {
+                        ui.end_row();
+                        playback(ui)
+                    });
+                    if pause.clicked() {
+                        self.layout.paused = !self.layout.paused;
+                        self.layout();
+                    }
+                    if reconnect.clicked() {
+                        self.restart_reception();
+                    }
+                    session_room_actions(ui, compact, |ui| {
+                        let leave = session_leave(ui, self.engine.is_some());
+                        session_menu(ui, |ui| {
+                            ui.strong(crate::i18n::label("Sala e interface", "Room and interface"));
+                            if !self.room_title.is_empty() {
+                                crate::desktop_ui::copy_room_name(ui, &self.room_title);
+                            }
+                            if crate::desktop_ui::menu_action(
+                                ui,
+                                crate::i18n::label("Trocar de sala", "Switch room"),
+                                true,
                             )
                             .clicked()
-                        {
-                            self.restart_reception();
-                            ui.close();
-                        }
-                        ui.separator();
-                        ui.strong(crate::i18n::label("Sala e interface", "Room and interface"));
-                        if !self.room_title.is_empty() {
-                            crate::desktop_ui::copy_room_name(ui, &self.room_title);
-                        }
-                        crate::desktop_ui::display_scale(ui);
-                        if ui
-                            .button(crate::i18n::label("Diagnóstico", "Diagnostics"))
+                            {
+                                self.catalog.open(
+                                    self.address.clone(),
+                                    self.access.token(),
+                                    ctx.clone(),
+                                );
+                                ui.close();
+                            }
+                            crate::desktop_ui::display_scale(ui);
+                            if crate::desktop_ui::menu_action(
+                                ui,
+                                crate::i18n::label("Diagnóstico", "Diagnostics"),
+                                true,
+                            )
                             .clicked()
-                        {
-                            self.debug = true;
-                            ui.close();
+                            {
+                                self.debug = true;
+                                ui.close();
+                            }
+                        });
+                        if leave.clicked() {
+                            if sharing || self.snapshot.camera_active {
+                                self.confirm_leave = true;
+                            } else {
+                                self.leave_room(ctx, false);
+                            }
                         }
                     });
-                    if session_stop(
-                        ui,
-                        crate::i18n::label("Sair da sala", "Leave room"),
-                        self.engine.is_some(),
-                    )
-                    .clicked()
-                    {
-                        if sharing || self.snapshot.camera_active {
-                            self.confirm_leave = true;
-                        } else {
-                            self.leave_room(ctx, false);
-                        }
-                    }
                 });
             });
         }
@@ -715,13 +746,9 @@ impl App {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                crate::desktop_ui::brand_mark(ui, 22.0);
-                                ui.label(RichText::new("HyperCast").strong());
-                                if small(ui, crate::i18n::label("Atualizar", "Update")).clicked() {
-                                    self.updates = true;
-                                }
-                            });
+                            if crate::desktop_ui::sidebar_update(ui).clicked() {
+                                self.updates = true;
+                            }
                             crate::desktop_ui::server_indicator(ui, &self.server_status);
                             if reconnecting {
                                 ui.label(
@@ -733,16 +760,11 @@ impl App {
                                     .color(MUTED),
                                 );
                             }
-                            ui.add_space(12.0);
+                            crate::desktop_ui::participant_heading(
+                                ui,
+                                self.snapshot.participants.len() + 1,
+                            );
                             {
-                                ui.label(
-                                    RichText::new(crate::i18n::label(
-                                        "PARTICIPANTES",
-                                        "PARTICIPANTS",
-                                    ))
-                                    .size(11.0)
-                                    .color(MUTED),
-                                );
                                 ui.label(crate::i18n_format!(
                                     "{} (você) · {}",
                                     "{} (you) · {}",
@@ -787,20 +809,9 @@ impl App {
                                     );
                                     if response.clicked() {
                                         self.layout.focus = Some(id.clone());
-                                        if response.double_clicked() {
-                                            self.layout.mode = ViewMode::Spotlight;
-                                        }
+                                        self.layout.mode = ViewMode::Spotlight;
                                         self.layout();
                                     }
-                                }
-                                if small(ui, crate::i18n::label("Escolher sala", "Choose room"))
-                                    .clicked()
-                                {
-                                    self.catalog.open(
-                                        self.address.clone(),
-                                        self.access.token(),
-                                        ctx.clone(),
-                                    );
                                 }
                             }
                         });
@@ -961,16 +972,22 @@ impl App {
 
                         crate::desktop_ui::session_menu(ui, |ui| {
                             crate::desktop_ui::display_scale(ui);
-                            if ui
-                                .button(crate::i18n::label("Atualizar", "Update"))
-                                .clicked()
+                            if crate::desktop_ui::menu_action(
+                                ui,
+                                crate::i18n::label("Atualizar", "Update"),
+                                true,
+                            )
+                            .clicked()
                             {
                                 self.updates = true;
                                 ui.close();
                             }
-                            if ui
-                                .button(crate::i18n::label("Diagnóstico", "Diagnostics"))
-                                .clicked()
+                            if crate::desktop_ui::menu_action(
+                                ui,
+                                crate::i18n::label("Diagnóstico", "Diagnostics"),
+                                true,
+                            )
+                            .clicked()
                             {
                                 self.debug = true;
                                 ui.close();
@@ -985,24 +1002,14 @@ impl App {
                         if crate::desktop_ui::exit_fullscreen(ui).clicked() {
                             self.fullscreen(ctx, false);
                         }
-                        ui.menu_button(
-                            crate::i18n::label("Som recebido", "Received audio"),
-                            |ui| {
-                                let label = ui
-                                    .label(crate::i18n::label("Volume recebido", "Incoming volume"))
-                                    .id;
-                                if crate::desktop_ui::volume_slider(ui, &mut self.layout.volume)
-                                    .labelled_by(label)
-                                    .changed()
-                                {
-                                    self.layout();
-                                }
-                                if ui.button(crate::i18n::label("Silenciar", "Mute")).clicked() {
-                                    self.layout.volume = 0;
-                                    self.layout();
-                                }
-                            },
-                        );
+                        if crate::desktop_ui::playback_audio(
+                            ui,
+                            &mut self.volume,
+                            &mut self.sound_muted,
+                            true,
+                        ) {
+                            self.layout();
+                        }
                     });
                 } else {
                     let title = if self.room_title.is_empty() {
@@ -1010,30 +1017,45 @@ impl App {
                     } else {
                         self.room_title.clone()
                     };
-                    let status = if resetting {
+                    let detail = if resetting {
                         crate::i18n::label(
                             "Reconectando vídeo recebido…",
                             "Reconnecting incoming video…",
                         )
+                    } else if connected && !can_publish {
+                        crate::i18n::label(
+                            "Nesta sala, você pode assistir.",
+                            "You can watch in this room.",
+                        )
+                    } else if self.status.is_empty() {
+                        &state_status
                     } else {
-                        crate::desktop_ui::room_state(connected, reconnecting)
+                        &self.status
                     };
+                    let status = crate::desktop_ui::room_activity(
+                        sharing,
+                        self.snapshot.camera_active,
+                        detail,
+                        crate::desktop_ui::room_state(connected, reconnecting),
+                    );
                     let header = crate::desktop_ui::room_header(
                         ui,
                         &title,
-                        status,
+                        &status,
                         self.sidebar_open,
                         self.layout.mode,
                         !screens.is_empty(),
+                        (&mut self.volume, &mut self.sound_muted),
                     );
+                    if header.audio_changed {
+                        self.layout();
+                    }
                     if header.participants.clicked() {
                         self.sidebar_open = !self.sidebar_open;
                     }
-                    for (mode, response) in header.modes {
-                        if response.clicked() {
-                            self.layout.mode = mode;
-                            self.layout();
-                        }
+                    if header.grid.clicked() {
+                        self.layout.mode = ViewMode::Grid;
+                        self.layout();
                     }
                     if header.fullscreen.clicked() {
                         self.fullscreen(ctx, true);
@@ -1082,46 +1104,39 @@ impl App {
             }
         }
         if self.creator.open {
-            let mut open = true;
-            crate::desktop_ui::utility_window(
+            let modal = crate::desktop_ui::scrolling_dialog(
                 ctx,
                 crate::i18n::label("Criar sala", "Create room"),
                 "create_room_window",
                 360.0,
-            )
-            .open(&mut open)
-            .show(ctx, |ui| {
-                crate::desktop_ui::modal_header(
-                    ui,
-                    crate::i18n::label("Criar sala", "Create room"),
-                );
-                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-                input(
-                    ui,
-                    &mut self.creator.title,
-                    crate::i18n::label("Nome da sala", "Room name"),
-                    false,
-                    64,
-                );
-                ui.checkbox(
-                    &mut self.creator.persistent,
-                    crate::i18n::label("Manter sala indefinidamente", "Keep room indefinitely"),
-                );
-                if button(
-                    ui,
-                    crate::i18n::label("Criar sala", "Create room"),
-                    !self.creator.busy,
-                    true,
-                )
-                .clicked()
-                {
-                    self.creator
-                        .start(self.address.clone(), self.access.token(), ctx.clone());
-                }
-                ui.label(&self.creator.status);
-            });
-            self.creator.open = open;
-            if !open {
+                |ui| {
+                    input(
+                        ui,
+                        &mut self.creator.title,
+                        crate::i18n::label("Nome da sala", "Room name"),
+                        false,
+                        64,
+                    );
+                    ui.checkbox(
+                        &mut self.creator.persistent,
+                        crate::i18n::label("Manter sala indefinidamente", "Keep room indefinitely"),
+                    );
+                    if button(
+                        ui,
+                        crate::i18n::label("Criar sala", "Create room"),
+                        !self.creator.busy,
+                        true,
+                    )
+                    .clicked()
+                    {
+                        self.creator
+                            .start(self.address.clone(), self.access.token(), ctx.clone());
+                    }
+                    ui.label(&self.creator.status);
+                },
+            );
+            self.creator.open = !modal.should_close();
+            if !self.creator.open {
                 self.creator.cancel_automatic_join();
             }
         }
@@ -1143,56 +1158,223 @@ impl App {
                 self.leave_room(ctx, true);
             }
         }
-        if self.stream_options_open && !self.fullscreen && (connected || reconnecting) {
-            self.stream_options_open = crate::desktop_ui::show_stream_options(ctx, |ui| {
-                self.video_settings(ui, sharing || selecting);
-            });
+        if let Some(mut draft) = self.share_draft {
+            use crate::desktop_ui::{
+                ShareTab, dialog, dialog_body, share_confirmation, share_tabs,
+            };
+            let modal = dialog(
+                ctx,
+                if draft.editing {
+                    crate::i18n::label("Editar compartilhamento", "Edit screen share")
+                } else {
+                    crate::i18n::label("Escolher o que compartilhar", "Choose what to share")
+                },
+                "choose_source",
+                460.0,
+                |ui| {
+                    share_tabs(ui, &mut draft.tab);
+                    dialog_body(ui, 172.0, |ui| {
+                        if draft.tab == ShareTab::Quality {
+                            self.video_settings(ui);
+                        } else {
+                            if draft.editing {
+                                ui.radio_value(
+                                    &mut draft.source,
+                                    None,
+                                    crate::i18n::label("Manter fonte atual", "Keep current source"),
+                                );
+                            }
+                            ui.radio_value(
+                                &mut draft.source,
+                                Some(Source::Portal),
+                                crate::i18n::label(
+                                    "Escolher pelo sistema",
+                                    "Choose with the system picker",
+                                ),
+                            );
+                            if std::env::var_os("WAYLAND_DISPLAY").is_none() {
+                                ui.radio_value(
+                                    &mut draft.source,
+                                    Some(Source::X11),
+                                    crate::i18n::label("Tela inteira (X11)", "Entire screen (X11)"),
+                                );
+                            }
+                            crate::desktop_ui::share_audio(ui, &mut draft.audio, false);
+                        }
+                    });
+                    let quality_changed = draft.quality != self.share_quality();
+                    let replace_capture =
+                        !draft.editing || draft.source.is_some() || quality_changed;
+                    let use_portal = replace_capture
+                        && draft.source.unwrap_or(self.share_source) == Source::Portal;
+                    if use_portal {
+                        ui.small(crate::i18n::label(
+                            "Confirme a tela ou janela no seletor do sistema.",
+                            "Confirm the screen or window in the system picker.",
+                        ));
+                    }
+                    let available = !replace_capture
+                        || super::media::factory_available(self.codec, self.encoder)
+                            .unwrap_or(true);
+                    let label = if use_portal {
+                        crate::i18n::label("Continuar no seletor", "Continue in picker")
+                    } else if draft.editing {
+                        crate::i18n::label("Aplicar alterações", "Apply changes")
+                    } else {
+                        crate::i18n::label("Compartilhar", "Share")
+                    };
+                    share_confirmation(
+                        ui,
+                        label,
+                        connected
+                            && can_publish
+                            && sharing == draft.editing
+                            && !selecting
+                            && available,
+                    )
+                },
+            );
+            let (cancel, confirm) = modal.inner;
+            if confirm {
+                self.apply_share(draft);
+            }
+            if confirm || cancel || modal.should_close() || !connected || draft.editing != sharing {
+                if !confirm {
+                    self.restore_share_quality(draft.quality);
+                }
+                self.share_draft = None;
+            } else {
+                self.share_draft = Some(draft);
+            }
         }
         if self.debug {
             let mut reset_preferences = false;
-            crate::desktop_ui::utility_window(ctx, crate::i18n::label("Diagnóstico", "Diagnostics"), "debug_window", 360.0)
-                .open(&mut self.debug).show(ctx,|ui|{
-                crate::desktop_ui::modal_header(ui,crate::i18n::label("Diagnóstico","Diagnostics"));
-                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-                ui.label(format!("HyperCast {} · Linux",env!("CARGO_PKG_VERSION")));
-                ui.label(crate::i18n_format!("Decodificadores ativos: {}","Active decoders: {}",super::media::decoder_count()));
-                ui.label(crate::i18n_format!("Quadros enviados: {} · recebidos: {}","Frames sent: {} · received: {}",self.snapshot.sent,self.snapshot.received));
-                if connected || reconnecting {
-                    crate::desktop_ui::quality_strip(ui, &self.snapshot.quality, reconnecting, sharing, self.layout.paused);
-                }
-                crate::desktop_ui::network_summary(ui,&self.snapshot.quality);
-                let idle=self.engine.as_ref().is_none_or(|e|e.finished())&&self.joining.is_none()&&self.departure.is_none()&&!self.pending_join&&!self.creator.busy;
-                reset_preferences=crate::desktop_ui::preferences_controls(ui,&mut self.preferences,idle);
+            let modal = crate::desktop_ui::scrolling_dialog(
+                ctx,
+                crate::i18n::label("Diagnóstico", "Diagnostics"),
+                "debug_window",
+                360.0,
+                |ui| {
+                    ui.label(format!("HyperCast {} · Linux", env!("CARGO_PKG_VERSION")));
+                    ui.label(crate::i18n_format!(
+                        "Decodificadores ativos: {}",
+                        "Active decoders: {}",
+                        super::media::decoder_count()
+                    ));
+                    ui.label(crate::i18n_format!(
+                        "Quadros enviados: {} · recebidos: {}",
+                        "Frames sent: {} · received: {}",
+                        self.snapshot.sent,
+                        self.snapshot.received
+                    ));
+                    if connected || reconnecting {
+                        crate::desktop_ui::quality_strip(
+                            ui,
+                            &self.snapshot.quality,
+                            reconnecting,
+                            sharing,
+                            self.layout.paused,
+                        );
+                    }
+                    crate::desktop_ui::network_summary(ui, &self.snapshot.quality);
+                    let idle = self.engine.as_ref().is_none_or(|e| e.finished())
+                        && self.joining.is_none()
+                        && self.departure.is_none()
+                        && !self.pending_join
+                        && !self.creator.busy;
+                    reset_preferences =
+                        crate::desktop_ui::preferences_controls(ui, &mut self.preferences, idle);
 
-                if crate::desktop_ui::action(ui,if self.report_copied.is_some_and(|at|at.elapsed()<Duration::from_secs(2)){crate::i18n::label("Relatório copiado","Report copied")}else{crate::i18n::label("Copiar relatório técnico","Copy technical report")},true,false).clicked(){
-                    let s=&self.snapshot;ctx.copy_text(crate::video_metrics::technical_report(&s.quality,crate::video_metrics::ReportState{connected:s.connected,reconnecting:s.reconnecting,publishing:s.sharing,sent:s.sent,received:s.received,restarts:s.reception_restarts},self.stream_settings,self.upload));self.report_copied=Some(Instant::now());ctx.request_repaint_after(Duration::from_secs(2));
-                }
-                ui.label(crate::i18n::label("A chave de acesso fica somente na memória desta sessão.","The access key is kept only in memory for this session."));
-                ui.label(crate::i18n::label("Renderização portátil com transferência para RAM; desempenho QHD 120 FPS ainda requer validação.","Portable rendering with RAM transfer; QHD 120 FPS performance still requires validation."));
-            });
+                    if crate::desktop_ui::action(
+                        ui,
+                        if self
+                            .report_copied
+                            .is_some_and(|at| at.elapsed() < Duration::from_secs(2))
+                        {
+                            crate::i18n::label("Relatório copiado", "Report copied")
+                        } else {
+                            crate::i18n::label("Copiar relatório técnico", "Copy technical report")
+                        },
+                        true,
+                        false,
+                    )
+                    .clicked()
+                    {
+                        let s = &self.snapshot;
+                        ctx.copy_text(crate::video_metrics::technical_report(
+                            &s.quality,
+                            crate::video_metrics::ReportState {
+                                connected: s.connected,
+                                reconnecting: s.reconnecting,
+                                publishing: s.sharing,
+                                sent: s.sent,
+                                received: s.received,
+                                restarts: s.reception_restarts,
+                            },
+                            self.stream_settings,
+                            self.upload,
+                        ));
+                        self.report_copied = Some(Instant::now());
+                        ctx.request_repaint_after(Duration::from_secs(2));
+                    }
+                    ui.label(crate::i18n::label(
+                        "A chave de acesso fica somente na memória desta sessão.",
+                        "The access key is kept only in memory for this session.",
+                    ));
+                    ui.label(crate::i18n::label("Renderização portátil com transferência para RAM; desempenho QHD 120 FPS ainda requer validação.","Portable rendering with RAM transfer; QHD 120 FPS performance still requires validation."));
+                },
+            );
+            self.debug = !modal.should_close();
             if reset_preferences {
                 let p = crate::preferences::Settings::default();
                 self.stream_settings = p.stream;
                 self.upload = p.upload;
                 self.rate_mode = p.rate_mode;
                 self.sidebar_open = p.sidebar;
-                self.layout.volume = p.volume;
-                self.layout.mode = ViewMode::Spotlight;
+                self.volume = p.volume;
+                self.sound_muted = p.muted;
+                self.layout.mode = ViewMode::Grid;
                 self.layout.focus = None;
                 self.layout.paused = false;
                 self.codec = Codec::Hevc;
             }
         }
         if self.updates {
-            crate::desktop_ui::utility_window(ctx, crate::i18n::label("Atualização", "Update"), "update_window", 320.0)
-                .open(&mut self.updates).show(ctx,|ui|{
-                    crate::desktop_ui::modal_header(ui,crate::i18n::label("Atualização","Update"));
-                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-                    ui.label(crate::i18n_format!("Versão atual: {}","Current version: {}",env!("CARGO_PKG_VERSION")));
-                    ui.label(RichText::new(crate::i18n::label("Linux · AppImage portátil","Linux · portable AppImage")).size(11.0).color(MUTED));
+            let modal = crate::desktop_ui::scrolling_dialog(
+                ctx,
+                crate::i18n::label("Atualização", "Update"),
+                "update_window",
+                320.0,
+                |ui| {
+                    ui.label(crate::i18n_format!(
+                        "Versão atual: {}",
+                        "Current version: {}",
+                        env!("CARGO_PKG_VERSION")
+                    ));
+                    ui.label(
+                        RichText::new(crate::i18n::label(
+                            "Linux · AppImage portátil",
+                            "Linux · portable AppImage",
+                        ))
+                        .size(11.0)
+                        .color(MUTED),
+                    );
                     ui.label(crate::i18n::label("Confira a versão disponível na página de downloads. Para atualizar, substitua o AppImage.","Check the downloads page for the latest version. Replace the AppImage to update."));
-                    if crate::desktop_ui::action(ui,crate::i18n::label("Abrir página de downloads","Open downloads page"),true,true).clicked(){ctx.open_url(egui::OpenUrl::new_tab("https://github.com/LucasCamy/HyperCast/releases"));}
-                });
+                    if crate::desktop_ui::action(
+                        ui,
+                        crate::i18n::label("Abrir página de downloads", "Open downloads page"),
+                        true,
+                        true,
+                    )
+                    .clicked()
+                    {
+                        ctx.open_url(egui::OpenUrl::new_tab(
+                            "https://github.com/LucasCamy/HyperCast/releases",
+                        ));
+                    }
+                },
+            );
+            self.updates = !modal.should_close();
         }
         if let Ok(seconds) = std::env::var("HYPERCAST_SMOKE_SECONDS")
             .unwrap_or_default()
@@ -1356,9 +1538,11 @@ mod tests {
         until(&mut app, &ctx, &mut step, |a| a.departure.is_none());
         assert!(app.engine.is_none());
         assert!(!app.snapshot.connected);
-        println!(
-            "PASS: Linux UI switched rooms twice and left without retaining the previous engine"
+        assert!(
+            app.access.authenticated(),
+            "Leaving a room cleared server access"
         );
+        println!("PASS: Linux UI switched rooms twice and left while preserving server access");
     }
     #[test]
     fn occupied_media_state_does_not_block_the_ui() {

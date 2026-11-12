@@ -138,7 +138,7 @@ impl Default for Settings {
             muted: false,
             sidebar: true,
             self_preview: true,
-            grid: false,
+            grid: true,
         }
     }
 }

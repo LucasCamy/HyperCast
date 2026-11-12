@@ -13,6 +13,20 @@
 #include <memory>
 using Microsoft::WRL::ComPtr;
 static void hr(HRESULT result, const char* where) { if (FAILED(result)) throw std::runtime_error(std::string(where) + ": " + std::to_string(result)); }
+static LRESULT CALLBACK canvas_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    // DXGI paints the canvas. Clicks belong to the corresponding egui card.
+    if (message == WM_ERASEBKGND) return 1;
+    if (message == WM_NCHITTEST) return HTTRANSPARENT;
+    return DefWindowProcW(window, message, wparam, lparam);
+}
+static constexpr wchar_t canvas_class[] = L"HyperCastVideoCanvas";
+static ATOM register_canvas() {
+    WNDCLASSW cls{};
+    cls.lpfnWndProc = canvas_proc;
+    cls.hInstance = GetModuleHandleW(nullptr);
+    cls.lpszClassName = canvas_class;
+    return RegisterClassW(&cls);
+}
 struct Presenter {
     HWND window = nullptr;
     ComPtr<ID3D11Device> device;
@@ -29,7 +43,9 @@ struct Presenter {
     bool visible = false;
     RECT bounds{};
     explicit Presenter(HWND parent) {
-        window = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 1, 1, parent, nullptr, GetModuleHandleW(nullptr), nullptr);
+        static const ATOM registered = register_canvas();
+        if (!registered) throw std::runtime_error("Cannot register DirectX video canvas");
+        window = CreateWindowExW(0, canvas_class, L"", WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 1, 1, parent, nullptr, GetModuleHandleW(nullptr), nullptr);
         if (!window) throw std::runtime_error("Cannot create DirectX video canvas");
     }
     ~Presenter() { if (window) DestroyWindow(window); }
@@ -119,6 +135,8 @@ struct Presenter {
             if (GetTickCount64() - start > 1000) throw std::runtime_error("Presentation GPU timeout");
             Sleep(0);
         }
+        // Queue the rendered buffer before exposing a new or resized canvas.
+        hr(chain->Present(0, 0), "Present video");
         const RECT next_bounds{x, y, x + static_cast<LONG>(w), y + static_cast<LONG>(h)};
         if (!visible || !EqualRect(&bounds, &next_bounds)) {
             if (!SetWindowPos(window, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW)) {
@@ -127,7 +145,6 @@ struct Presenter {
             bounds = next_bounds;
             visible = true;
         }
-        hr(chain->Present(0, 0), "Present video");
     }
 };
 extern "C" {
@@ -138,15 +155,23 @@ int hc_presenter_frame(void* handle, void* texture, uint32_t slice, uint32_t fw,
     catch (...) { return -1; }
 }
 void hc_presenter_hide(void* handle) noexcept { if (handle) static_cast<Presenter*>(handle)->hide(); }
-int hc_presenter_cutout(void* handle, int width, int height, const int* rect) noexcept {
+int hc_presenter_cutouts(void* handle, int width, int height, const int* rects, size_t count) noexcept {
     HWND window = static_cast<Presenter*>(handle)->window;
-    if (!rect) return SetWindowRgn(window, nullptr, TRUE);
+    if (!count) return SetWindowRgn(window, nullptr, TRUE);
     HRGN visible = CreateRectRgn(0, 0, width, height);
-    HRGN cutout = CreateRectRgn(rect[0], rect[1], rect[2], rect[3]);
-    const bool combined = visible && cutout && CombineRgn(visible, visible, cutout, RGN_DIFF) != ERROR;
-    if (cutout) DeleteObject(cutout);
-    if (combined && SetWindowRgn(window, visible, TRUE)) return 1; // Windows owns the region now.
-    if (visible) DeleteObject(visible);
+    if (!visible) return 0;
+    for (size_t i = 0; i < count; ++i) {
+        const int* rect = rects + i * 4;
+        HRGN cutout = CreateRectRgn(rect[0], rect[1], rect[2], rect[3]);
+        const bool combined = cutout && CombineRgn(visible, visible, cutout, RGN_DIFF) != ERROR;
+        if (cutout) DeleteObject(cutout);
+        if (!combined) {
+            DeleteObject(visible);
+            return 0;
+        }
+    }
+    if (SetWindowRgn(window, visible, TRUE)) return 1; // Windows owns the region now.
+    DeleteObject(visible);
     return 0;
 }
 void hc_presenter_close(void* handle) noexcept { delete static_cast<Presenter*>(handle); }

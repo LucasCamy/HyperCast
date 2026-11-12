@@ -6,11 +6,11 @@ pub const MUTED: Color32 = Color32::from_rgb(154, 167, 161);
 pub const ACCENT: Color32 = Color32::from_rgb(191, 239, 121);
 pub const SURFACE: Color32 = Color32::from_rgb(28, 35, 36);
 pub const TEXT: Color32 = Color32::from_rgb(234, 239, 234);
-/// A 32px target around a small 10px X, closing its enclosing Window.
-pub fn modal_header(ui: &mut egui::Ui, title: &str) {
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(title).size(16.0).strong().color(TEXT));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+fn modal_header(ui: &mut egui::Ui, title: &str) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), 32.0),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
             let response = ui
                 .scope(|ui| {
                     ui.spacing_mut().button_padding = Vec2::ZERO;
@@ -54,17 +54,84 @@ pub fn modal_header(ui: &mut egui::Ui, title: &str) {
                 );
             }
             if response.clicked() {
-                ui.close_kind(egui::UiKind::Window);
+                ui.close_kind(egui::UiKind::Modal);
             }
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.add(
+                    egui::Label::new(RichText::new(title).size(18.0).strong().color(TEXT))
+                        .truncate(),
+                )
+                .on_hover_text(title);
+            });
+        },
+    );
+}
+
+fn popup_style(ui: &mut egui::Ui) {
+    let visuals = ui.visuals_mut();
+    visuals.window_fill = PANEL;
+    visuals.window_stroke = egui::Stroke::new(1.0, BORDER);
+    visuals.window_corner_radius = egui::CornerRadius::same(10);
+    for widget in [
+        &mut visuals.widgets.inactive,
+        &mut visuals.widgets.hovered,
+        &mut visuals.widgets.active,
+    ] {
+        widget.corner_radius = egui::CornerRadius::same(8);
+    }
+    visuals.widgets.inactive.bg_fill = SURFACE;
+    visuals.widgets.inactive.weak_bg_fill = SURFACE;
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, BORDER);
+}
+
+pub(crate) fn select_menu<R>(
+    ui: &mut egui::Ui,
+    id: &'static str,
+    selected: impl Into<egui::WidgetText>,
+    choices: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<Option<R>> {
+    #[cfg(windows)]
+    let mut popup_layer = None;
+    let response = ui
+        .scope(|ui| {
+            popup_style(ui);
+            ui.spacing_mut().interact_size.y = 36.0;
+            ui.spacing_mut().button_padding = egui::vec2(10.0, 5.0);
+            egui::ComboBox::from_id_salt(id)
+                .width(ui.available_width())
+                .height((ui.ctx().content_rect().height() * 0.45).clamp(64.0, 300.0))
+                .truncate()
+                .selected_text(selected)
+                .show_ui(ui, |ui| {
+                    #[cfg(windows)]
+                    {
+                        popup_layer = Some(ui.layer_id());
+                    }
+                    choices(ui)
+                })
+        })
+        .inner;
+    #[cfg(windows)]
+    if let Some(rect) =
+        popup_layer.and_then(|layer| ui.ctx().memory(|memory| memory.area_rect(layer.id)))
+    {
+        ui.ctx().data_mut(|data| {
+            data.get_temp_mut_or_default::<Vec<egui::Rect>>(egui::Id::new("video_popups"))
+                .push(rect);
         });
-    });
+    }
+    response
+}
+
+#[cfg(windows)]
+pub(crate) fn take_video_popups(ctx: &egui::Context) -> Vec<egui::Rect> {
+    ctx.data_mut(|data| std::mem::take(data.get_temp_mut_or_default(egui::Id::new("video_popups"))))
 }
 pub fn upload_selector(
     ui: &mut egui::Ui,
     profile: &mut crate::bandwidth::UploadProfile,
     enabled: bool,
-) -> bool {
-    let previous = *profile;
+) {
     ui.add_enabled_ui(enabled, |ui| {
         ui.label(
             RichText::new(crate::i18n::label(
@@ -74,14 +141,11 @@ pub fn upload_selector(
             .size(11.0)
             .color(MUTED),
         );
-        egui::ComboBox::from_id_salt("upload_profile")
-            .width(ui.available_width())
-            .selected_text(profile.label())
-            .show_ui(ui, |ui| {
-                for choice in crate::bandwidth::UploadProfile::ALL {
-                    ui.selectable_value(profile, choice, choice.label());
-                }
-            });
+        select_menu(ui, "upload_profile", profile.label(), |ui| {
+            for choice in crate::bandwidth::UploadProfile::ALL {
+                ui.selectable_value(profile, choice, choice.label());
+            }
+        });
         ui.label(
             RichText::new(if enabled {
                 crate::i18n::label(
@@ -98,7 +162,6 @@ pub fn upload_selector(
             .color(MUTED),
         );
     });
-    previous != *profile
 }
 /// Shared, explicit mode selection; publishing must stop before changing it.
 pub fn rate_mode_selector(
@@ -106,8 +169,7 @@ pub fn rate_mode_selector(
     mode: &mut crate::adaptive_upload::Mode,
     enabled: bool,
     allow_automatic: bool,
-) -> bool {
-    let previous = *mode;
+) {
     ui.add_enabled_ui(enabled, |ui| {
         ui.label(
             RichText::new(crate::i18n::label(
@@ -117,22 +179,19 @@ pub fn rate_mode_selector(
             .size(11.0)
             .color(MUTED),
         );
-        egui::ComboBox::from_id_salt("adaptive_upload_mode")
-            .width(ui.available_width())
-            .selected_text(mode.label())
-            .show_ui(ui, |ui| {
-                for choice in [
-                    crate::adaptive_upload::Mode::Manual,
-                    crate::adaptive_upload::Mode::Automatic,
-                ] {
-                    ui.add_enabled_ui(
-                        choice != crate::adaptive_upload::Mode::Automatic || allow_automatic,
-                        |ui| {
-                            ui.selectable_value(mode, choice, choice.label());
-                        },
-                    );
-                }
-            });
+        select_menu(ui, "adaptive_upload_mode", mode.label(), |ui| {
+            for choice in [
+                crate::adaptive_upload::Mode::Manual,
+                crate::adaptive_upload::Mode::Automatic,
+            ] {
+                ui.add_enabled_ui(
+                    choice != crate::adaptive_upload::Mode::Automatic || allow_automatic,
+                    |ui| {
+                        ui.selectable_value(mode, choice, choice.label());
+                    },
+                );
+            }
+        });
         ui.add(
             egui::Label::new(
                 RichText::new(if !enabled {
@@ -157,26 +216,69 @@ pub fn rate_mode_selector(
             .wrap(),
         );
     });
-    previous != *mode
 }
-pub fn volume_slider(ui: &mut egui::Ui, volume: &mut u32) -> egui::Response {
-    ui.scope(|ui| {
-        ui.spacing_mut().slider_width = ui.available_width();
-        ui.spacing_mut().slider_rail_height = 6.0;
-        ui.visuals_mut().widgets.inactive.bg_fill = Color32::from_rgb(65, 78, 73);
-        ui.visuals_mut().widgets.inactive.fg_stroke = egui::Stroke::new(1.5, ACCENT);
-        ui.visuals_mut().selection.bg_fill = ACCENT;
-        ui.add(
-            egui::Slider::new(volume, 0..=100)
-                .show_value(false)
-                .trailing_fill(true)
-                .handle_shape(egui::style::HandleShape::Circle),
-        )
-    })
+pub(crate) fn playback_audio(
+    ui: &mut egui::Ui,
+    volume: &mut u32,
+    muted: &mut bool,
+    compact: bool,
+) -> bool {
+    let (size, slider_width) = if compact { (24.0, 62.0) } else { (34.0, 88.0) };
+    let width = size + slider_width + ui.spacing().item_spacing.x;
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, size),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            let silent = *muted || *volume == 0;
+            let label = if silent {
+                crate::i18n::label("Reativar som recebido", "Unmute incoming audio")
+            } else {
+                crate::i18n::label("Silenciar som recebido", "Mute incoming audio")
+            };
+            let toggled =
+                room_icon_button_sized(ui, RoomIcon::Speaker(silent), label, true, false, size)
+                    .clicked();
+            if toggled {
+                *muted = !silent;
+                if silent && *volume == 0 {
+                    *volume = 80;
+                }
+            }
+            ui.spacing_mut().slider_width = slider_width;
+            ui.spacing_mut().interact_size.y = size;
+            ui.spacing_mut().slider_rail_height = 6.0;
+            ui.visuals_mut().widgets.inactive.bg_fill = Color32::from_rgb(65, 78, 73);
+            ui.visuals_mut().widgets.inactive.fg_stroke = egui::Stroke::new(1.5, ACCENT);
+            ui.visuals_mut().selection.bg_fill = if *muted { MUTED } else { ACCENT };
+            let slider = ui.add(
+                egui::Slider::new(volume, 0..=100)
+                    .show_value(false)
+                    .trailing_fill(true)
+                    .handle_shape(egui::style::HandleShape::Circle),
+            );
+            slider.widget_info(|| {
+                egui::WidgetInfo::slider(
+                    true,
+                    *volume as f64,
+                    crate::i18n::label("Volume recebido", "Incoming volume"),
+                )
+            });
+            let changed = slider.changed();
+            slider.on_hover_text(crate::i18n_format!(
+                "Volume recebido · {}%",
+                "Incoming volume · {}%",
+                *volume
+            ));
+            if changed {
+                *muted = false;
+            }
+            toggled || changed
+        },
+    )
     .inner
 }
 
-pub fn utility_frame(style: &egui::Style) -> egui::Frame {
+fn utility_frame(style: &egui::Style) -> egui::Frame {
     egui::Frame::window(style)
         .fill(PANEL)
         .inner_margin(12)
@@ -184,47 +286,184 @@ pub fn utility_frame(style: &egui::Style) -> egui::Frame {
         .stroke(egui::Stroke::new(1.0, BORDER))
 }
 
-pub(crate) fn utility_window(
+pub(crate) fn dialog<R>(
     ctx: &egui::Context,
-    title: &'static str,
+    title: &str,
     id: &'static str,
     width: f32,
-) -> egui::Window<'static> {
-    let area = ctx.content_rect();
-    let width = width.min((area.width() - 56.0).max(96.0));
-    egui::Window::new(title)
-        .id(egui::Id::new(id))
-        .title_bar(false)
+    content: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::ModalResponse<R> {
+    modal(
+        egui::Modal::new(egui::Id::new(id)),
+        ctx,
+        title,
+        width,
+        content,
+    )
+}
+
+#[cfg(windows)]
+pub(crate) fn sharing_dialog<R>(
+    ctx: &egui::Context,
+    title: &str,
+    width: f32,
+    content: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::ModalResponse<R> {
+    // The native video is composited above the parent window. Leave the backdrop
+    // transparent so the surrounding video and room have the same brightness.
+    modal(
+        egui::Modal::new(egui::Id::new("choose_source")).backdrop_color(Color32::TRANSPARENT),
+        ctx,
+        title,
+        width,
+        content,
+    )
+}
+
+fn modal<R>(
+    modal: egui::Modal,
+    ctx: &egui::Context,
+    title: &str,
+    width: f32,
+    content: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::ModalResponse<R> {
+    let width = width.min((ctx.content_rect().width() - 40.0).max(96.0));
+    modal
         .frame(utility_frame(&ctx.style_of(egui::Theme::Dark)))
-        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 12.0))
-        .default_width(width)
-        .max_width(width)
-        .max_height((area.height() - 54.0).max(64.0))
-        .resizable(false)
-        .collapsible(false)
-        .vscroll(true)
+        .show(ctx, |ui| {
+            ui.set_width(width);
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+            ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+            modal_header(ui, title);
+            ui.separator();
+            content(ui)
+        })
+}
+
+pub(crate) fn dialog_body<R>(
+    ui: &mut egui::Ui,
+    reserve_height: f32,
+    content: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    egui::ScrollArea::vertical()
+        .max_height((ui.ctx().content_rect().height() - reserve_height).max(40.0))
+        .show(ui, content)
+        .inner
+}
+
+pub(crate) fn scrolling_dialog<R>(
+    ctx: &egui::Context,
+    title: &str,
+    id: &'static str,
+    width: f32,
+    content: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::ModalResponse<R> {
+    dialog(ctx, title, id, width, |ui| dialog_body(ui, 80.0, content))
 }
 
 pub(crate) fn stream_options_title() -> &'static str {
-    crate::i18n::label("Qualidade do compartilhamento", "Sharing quality")
+    crate::i18n::label("Editar compartilhamento", "Edit screen share")
 }
 
-pub(crate) fn show_stream_options(
-    ctx: &egui::Context,
-    content: impl FnOnce(&mut egui::Ui),
-) -> bool {
-    let viewport = ctx.content_rect();
-    let modal = egui::Modal::new(egui::Id::new("stream_options")).show(ctx, |ui| {
-        ui.set_width((viewport.width() - 36.0).clamp(120.0, 420.0));
-        ui.heading(stream_options_title());
-        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-        egui::ScrollArea::vertical()
-            .max_height((viewport.height() - 128.0).max(48.0))
-            .show(ui, content);
-        session_button(ui, crate::i18n::label("Fechar", "Close"), true, false).clicked()
-    });
-    !modal.inner && !modal.should_close()
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum ShareTab {
+    #[default]
+    Source,
+    Quality,
 }
+
+pub(crate) fn share_tabs(ui: &mut egui::Ui, tab: &mut ShareTab) {
+    ui.columns(2, |columns| {
+        for (column, (value, label)) in columns.iter_mut().zip([
+            (ShareTab::Source, crate::i18n::label("Fonte", "Source")),
+            (
+                ShareTab::Quality,
+                crate::i18n::label("Qualidade", "Quality"),
+            ),
+        ]) {
+            if column
+                .add_sized(
+                    [column.available_width(), 34.0],
+                    room_button(label, *tab == value),
+                )
+                .clicked()
+            {
+                *tab = value;
+            }
+        }
+    });
+}
+
+pub(crate) fn share_confirmation(ui: &mut egui::Ui, label: &str, enabled: bool) -> (bool, bool) {
+    ui.separator();
+    ui.horizontal_wrapped(|ui| {
+        let cancel =
+            session_button(ui, crate::i18n::label("Cancelar", "Cancel"), true, false).clicked();
+        let confirm = session_button(ui, label, enabled, true).clicked();
+        (cancel, confirm)
+    })
+    .inner
+}
+
+pub(crate) fn share_audio(ui: &mut egui::Ui, enabled: &mut bool, app_audio: bool) -> bool {
+    let label = if app_audio {
+        crate::i18n::label("Incluir áudio do aplicativo", "Include app audio")
+    } else {
+        crate::i18n::label("Incluir áudio do sistema", "Include system audio")
+    };
+    ui.checkbox(enabled, label).changed()
+}
+
+pub(crate) fn active_share_actions(
+    ui: &mut egui::Ui,
+    compact: bool,
+    preview: Option<bool>,
+) -> (egui::Response, egui::Response, Option<egui::Response>) {
+    let label = crate::i18n::label("Parar compartilhamento", "Stop screen sharing");
+    ui.horizontal(|ui| {
+        let width = ui.spacing().interact_size.x;
+        let stop = ui
+            .scope(|ui| {
+                if compact {
+                    let icon_width = 34.0 + ui.spacing().item_spacing.x;
+                    ui.spacing_mut().interact_size.x =
+                        (width - icon_width * if preview.is_some() { 2.0 } else { 1.0 }).max(0.0);
+                }
+                session_stop(
+                    ui,
+                    if compact {
+                        crate::i18n::label("Parar", "Stop")
+                    } else {
+                        label
+                    },
+                    true,
+                )
+                .on_hover_text(label)
+            })
+            .inner;
+        let gear = ui
+            .scope(|ui| {
+                ui.spacing_mut().interact_size = egui::vec2(34.0, 34.0);
+                room_icon_button(ui, RoomIcon::Gear, stream_options_title(), true, false)
+            })
+            .inner;
+        let preview = preview.map(|visible| {
+            ui.scope(|ui| {
+                ui.spacing_mut().interact_size = Vec2::splat(34.0);
+                let label = if visible {
+                    crate::i18n::label("Ocultar minha prévia", "Hide my preview")
+                } else {
+                    crate::i18n::label("Mostrar minha prévia", "Show my preview")
+                };
+                room_icon_button(ui, RoomIcon::Preview(visible), label, true, false)
+            })
+            .inner
+        });
+        (stop, gear, preview)
+    })
+    .inner
+}
+
 pub fn action(ui: &mut egui::Ui, label: &str, enabled: bool, primary: bool) -> egui::Response {
     action_with_wrap(ui, label, enabled, primary, egui::TextWrapMode::Extend)
 }
@@ -402,6 +641,22 @@ pub fn compact(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response 
     })
     .inner
 }
+
+pub(crate) fn sidebar_update(ui: &mut egui::Ui) -> egui::Response {
+    let narrow = ui.available_width() < 160.0;
+    ui.horizontal_wrapped(|ui| {
+        brand_mark(ui, 22.0);
+        ui.label(RichText::new("HyperCast").strong());
+        if narrow {
+            ui.end_row();
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            compact(ui, crate::i18n::label("Atualizar", "Update"), true)
+        })
+        .inner
+    })
+    .inner
+}
 pub fn primary(ui: &mut egui::Ui, label: &str, enabled: bool, size: Vec2) -> egui::Response {
     ui.add_enabled_ui(enabled, |ui| {
         ui.spacing_mut().button_padding = Vec2::new(8.0, 6.0);
@@ -432,14 +687,9 @@ mod tests {
             let ctx = egui::Context::default();
             let mut open = true;
             let render = |ui: &mut egui::Ui, open: &mut bool| {
-                egui::Window::new("Teste")
-                    .title_bar(false)
-                    .open(open)
-                    .resizable(false)
-                    .collapsible(false)
-                    .fixed_pos(egui::pos2(40.0, 40.0))
-                    .fixed_size([260.0, 120.0])
-                    .show(ui.ctx(), |ui| modal_header(ui, "Teste"));
+                if *open {
+                    *open = !dialog(ui.ctx(), "Teste", "test_dialog", 260.0, |_| {}).should_close();
+                }
             };
             let mut center = None;
             for _ in 0..3 {
@@ -499,12 +749,26 @@ mod tests {
         let _ = ctx.run_ui(egui::RawInput { screen_rect: Some(area), ..Default::default() }, |root| {
             let mut actions = Vec::new();
             session_panel(area.width()).show(root, |ui| {
-                session_status(ui, true, true, "Compartilhando janela do aplicativo · 1920×1080");
-                session_actions(ui, |ui| {
-                    actions.push(session_stop(ui, "Parar compartilhamento", true).rect);
-                    actions.push(session_button(ui, "Desligar câmera", true, false).rect);
-                    actions.push(session_button(ui, "Mais opções", true, false).rect);
-                    actions.push(session_stop(ui, "Sair da sala", true).rect);
+                session_actions(ui, |ui, compact| {
+                    let (share, gear, preview) = active_share_actions(ui, compact, Some(false));
+                    let share = share.rect;
+                    let gear = gear.rect;
+                    let preview = preview.expect("Preview toggle while sharing").rect;
+                    let camera = session_button(ui, "Desligar câmera", true, false).rect;
+                    assert!(share.right() <= gear.left() && gear.right() <= preview.left() && preview.right() <= camera.left());
+                    assert!(gear.y_range().intersects(camera.y_range()));
+                    ui.end_row();
+                    let (pause, reconnect) = session_playback_actions(ui, false, true, false);
+                    session_room_actions(ui, compact, |ui| {
+                        let leave = session_leave(ui, true).rect;
+                        let menu = session_button(ui, "Mais opções", true, false).rect;
+                        assert!(pause.rect.right() <= reconnect.rect.left());
+                        assert!(reconnect.rect.right() <= menu.left());
+                        assert!(pause.rect.y_range().intersects(menu.y_range()));
+                        assert!(menu.right() <= leave.left());
+                        assert!(share.bottom().max(camera.bottom()) <= menu.top().min(leave.top()));
+                        actions.extend([share, gear, preview, camera, pause.rect, reconnect.rect, menu, leave]);
+                    });
                 });
             });
             egui::Panel::left("test_sidebar").exact_size(sidebar_width(area.width())).show(root, |_ui| {
@@ -518,9 +782,10 @@ mod tests {
             egui::CentralPanel::default()
                 .frame(egui::Frame::new().inner_margin(room_margin(area.width(), false)))
                 .show(root, |ui| {
-                    let header = room_header(ui, "Nome longo da sala de compartilhamento", "Conectado à sala", true, crate::subscription::ViewMode::Grid, true);
-                    let header_actions = [header.participants.rect, header.modes[1].1.rect, header.modes[0].1.rect, header.fullscreen.rect];
+                    let header = room_header(ui, "Nome longo da sala de compartilhamento", "Conectado à sala", true, crate::subscription::ViewMode::Grid, true, (&mut 80, &mut false));
+                    let header_actions = [header.participants.rect, header.grid.rect, header.fullscreen.rect];
                     assert!(header_actions.windows(2).all(|pair| pair[0].right() <= pair[1].left()), "{header_actions:?}");
+                    assert!(header_actions.windows(2).all(|pair| pair[0].center().y == pair[1].center().y), "{header_actions:?}");
                     actions.extend(header_actions);
                     let playback = ui.available_rect_before_wrap();
                     assert!(playback.height() >= 56.0, "{playback:?}");
@@ -547,11 +812,11 @@ pub fn stream_settings(
                     .size(11.0)
                     .color(MUTED),
             );
-            egui::ComboBox::from_id_salt("send_resolution")
-                .truncate()
-                .width(columns[0].available_width())
-                .selected_text(value.size.label())
-                .show_ui(&mut columns[0], |ui| {
+            select_menu(
+                &mut columns[0],
+                "send_resolution",
+                value.size.label(),
+                |ui| {
                     for size in [
                         crate::resolution::OutputSize::Native,
                         crate::resolution::OutputSize::FullHd,
@@ -559,21 +824,23 @@ pub fn stream_settings(
                     ] {
                         ui.selectable_value(&mut value.size, size, size.label());
                     }
-                });
+                },
+            );
             columns[1].label(
                 RichText::new(crate::i18n::label("FPS de envio", "Send FPS"))
                     .size(11.0)
                     .color(MUTED),
             );
-            egui::ComboBox::from_id_salt("send_fps")
-                .truncate()
-                .width(columns[1].available_width())
-                .selected_text(format!("{} FPS", value.fps))
-                .show_ui(&mut columns[1], |ui| {
+            select_menu(
+                &mut columns[1],
+                "send_fps",
+                format!("{} FPS", value.fps),
+                |ui| {
                     for fps in [30, 60, 120].into_iter().filter(|fps| *fps <= max_fps) {
                         ui.selectable_value(&mut value.fps, fps, format!("{fps} FPS"));
                     }
-                });
+                },
+            );
         });
     });
     ui.label(
@@ -780,14 +1047,44 @@ pub(crate) fn room_margin(width: f32, fullscreen: bool) -> i8 {
     }
 }
 
+pub(crate) fn participant_heading(ui: &mut egui::Ui, count: usize) {
+    use crate::i18n::label;
+    ui.add_space(5.0);
+    ui.separator();
+    ui.add_space(3.0);
+    let heading = RichText::new(label("PARTICIPANTES", "PARTICIPANTS"))
+        .size(11.0)
+        .strong()
+        .color(MUTED);
+    let count = RichText::new(crate::i18n_format!(
+        "{count} na sala",
+        "{count} in the room"
+    ))
+    .size(11.0)
+    .color(MUTED);
+    if ui.available_width() < 180.0 {
+        ui.label(heading);
+        ui.label(count);
+    } else {
+        ui.horizontal(|ui| {
+            ui.label(heading);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(count);
+            });
+        });
+    }
+    ui.add_space(4.0);
+}
+
 pub(crate) fn sidebar_width(width: f32) -> f32 {
     (width * 0.29).clamp(100.0, 272.0)
 }
 
 pub(crate) struct RoomHeader {
     pub participants: egui::Response,
-    pub modes: [(crate::subscription::ViewMode, egui::Response); 2],
+    pub grid: egui::Response,
     pub fullscreen: egui::Response,
+    pub audio_changed: bool,
 }
 
 pub(crate) fn room_header(
@@ -797,73 +1094,97 @@ pub(crate) fn room_header(
     sidebar_open: bool,
     mode: crate::subscription::ViewMode,
     has_video: bool,
+    audio: (&mut u32, &mut bool),
 ) -> RoomHeader {
     use crate::{i18n::label, subscription::ViewMode};
     let compact = ui.available_width() < 520.0;
-    let narrow = ui.available_width() < 300.0;
-    let show_status = ui.available_height() >= 180.0 || status != room_state(true, false);
+    let narrow = ui.available_width() < 340.0;
+    let show_status = compact || ui.available_height() >= 180.0;
+    let (volume, muted) = audio;
     ui.spacing_mut().item_spacing = Vec2::new(6.0, 5.0);
-    ui.add(
-        egui::Label::new(
-            RichText::new(title)
-                .size(if compact { 18.0 } else { 24.0 })
-                .strong(),
+    let mut controls = ui
+        .allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), 34.0),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                let fullscreen = room_icon_button(
+                    ui,
+                    RoomIcon::Fullscreen,
+                    label("Tela cheia (F11)", "Full screen (F11)"),
+                    has_video,
+                    false,
+                );
+                let grid = room_icon_button(
+                    ui,
+                    RoomIcon::Grid,
+                    label("Grade", "Grid"),
+                    true,
+                    mode == ViewMode::Grid,
+                );
+                let audio_changed = !compact && playback_audio(ui, volume, muted, false);
+                let participants = ui
+                    .with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        let toggle = if sidebar_open {
+                            label("Ocultar participantes", "Hide participants")
+                        } else {
+                            label("Mostrar participantes", "Show participants")
+                        };
+                        let participants = if narrow {
+                            room_icon_button(ui, RoomIcon::Panel, toggle, true, sidebar_open)
+                        } else {
+                            ui.add(room_button(
+                                label("Participantes", "Participants"),
+                                sidebar_open,
+                            ))
+                            .on_hover_text(toggle)
+                        };
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(title)
+                                    .size(if compact { 18.0 } else { 24.0 })
+                                    .strong(),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(if show_status {
+                            title.to_owned()
+                        } else {
+                            format!("{title}\n{status}")
+                        });
+                        participants
+                    })
+                    .inner;
+                RoomHeader {
+                    participants,
+                    grid,
+                    fullscreen,
+                    audio_changed,
+                }
+            },
         )
-        .truncate(),
-    )
-    .on_hover_text(title);
-    if show_status {
+        .inner;
+    if compact {
+        controls.audio_changed = ui
+            .allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), 24.0),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    let changed = playback_audio(ui, volume, muted, true);
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.add(
+                            egui::Label::new(RichText::new(status).size(13.0).color(MUTED))
+                                .truncate(),
+                        )
+                        .on_hover_text(status);
+                    });
+                    changed
+                },
+            )
+            .inner;
+    } else if show_status {
         ui.add(egui::Label::new(RichText::new(status).size(13.0).color(MUTED)).truncate())
             .on_hover_text(status);
     }
-    let controls = ui
-        .horizontal(|ui| {
-            ui.spacing_mut().button_padding = Vec2::new(if narrow { 2.0 } else { 8.0 }, 4.0);
-            if narrow {
-                ui.spacing_mut().item_spacing.x = 4.0;
-            }
-            let participants = header_button(
-                ui,
-                if narrow {
-                    label("Painel", "Panel")
-                } else {
-                    label("Participantes", "Participants")
-                },
-                true,
-                Some(sidebar_open),
-            )
-            .on_hover_text(if sidebar_open {
-                label("Ocultar participantes", "Hide participants")
-            } else {
-                label("Mostrar participantes", "Show participants")
-            });
-            let (modes, fullscreen) = ui
-                .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let fullscreen =
-                        header_button(ui, label("Tela cheia", "Full screen"), has_video, None)
-                            .on_hover_text("F11");
-                    let focus = if narrow {
-                        label("Foco", "Focus")
-                    } else {
-                        label("Destaque", "Focus")
-                    };
-                    let modes = [
-                        (ViewMode::Spotlight, focus),
-                        (ViewMode::Grid, label("Grade", "Grid")),
-                    ]
-                    .map(|(option, title)| {
-                        (option, header_button(ui, title, true, Some(option == mode)))
-                    });
-                    (modes, fullscreen)
-                })
-                .inner;
-            RoomHeader {
-                participants,
-                modes,
-                fullscreen,
-            }
-        })
-        .inner;
     ui.add_space(if compact { 4.0 } else { 8.0 });
     controls
 }
@@ -978,11 +1299,13 @@ fn spotlight_keeps_previews_in_bounds_and_prioritizes_the_main_stream() {
     }
 }
 
+const COMPACT_SESSION_WIDTH: f32 = 700.0;
+
 pub(crate) fn session_panel(width: f32) -> egui::Panel {
-    let compact = width < 626.0;
+    let compact = width < COMPACT_SESSION_WIDTH;
     egui::Panel::bottom("session_actions")
         .resizable(false)
-        .default_size(if compact { 106.0 } else { 88.0 })
+        .exact_size(if compact { 88.0 } else { 62.0 })
         .frame(
             egui::Frame::new()
                 .fill(PANEL)
@@ -990,7 +1313,7 @@ pub(crate) fn session_panel(width: f32) -> egui::Panel {
                 .inner_margin(if compact {
                     egui::Margin::symmetric(12, 6)
                 } else {
-                    egui::Margin::symmetric(16, 10)
+                    egui::Margin::symmetric(16, 8)
                 }),
         )
 }
@@ -1005,63 +1328,32 @@ pub(crate) fn room_state(connected: bool, reconnecting: bool) -> &'static str {
     }
 }
 
-pub(crate) fn session_status(ui: &mut egui::Ui, sharing: bool, camera_active: bool, status: &str) {
-    let status = (!status.is_empty() && status != crate::i18n::label("Conectado", "Connected"))
-        .then_some(status);
-    if !sharing && !camera_active && status.is_none() {
-        return;
+pub(crate) fn left_room_status(server_access: bool) -> &'static str {
+    if server_access {
+        crate::i18n::label(
+            "Você saiu da sala. Seu acesso ao servidor continua ativo.",
+            "You left the room. Your server access is still active.",
+        )
+    } else {
+        crate::i18n::label("Você saiu da sala", "You left the room")
     }
-    if ui.available_width() < 440.0 {
-        let sharing_label = crate::i18n::label("Compartilhando tela", "Sharing screen");
-        let camera_label = crate::i18n::label("Câmera ligada", "Camera on");
-        let summary = match (sharing, camera_active) {
-            (true, true) => format!("{sharing_label} · {camera_label}"),
-            (true, false) => sharing_label.to_owned(),
-            (false, true) => camera_label.to_owned(),
-            (false, false) => status.unwrap_or_default().to_owned(),
-        };
-        let detail = status.filter(|_| sharing || camera_active);
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::Label::new(RichText::new(&summary).strong().color(
-                    if sharing || camera_active {
-                        ACCENT
-                    } else {
-                        MUTED
-                    },
-                ))
-                .truncate(),
-            )
-            .on_hover_text(detail.unwrap_or(&summary));
-            if let Some(detail) = detail {
-                ui.add(egui::Label::new(RichText::new(detail).size(13.0).color(MUTED)).truncate())
-                    .on_hover_text(detail);
-            }
-        });
-        ui.add_space(2.0);
-        return;
+}
+
+pub(crate) fn room_activity(sharing: bool, camera: bool, status: &str, fallback: &str) -> String {
+    use crate::i18n::label;
+    let mut parts = Vec::new();
+    if !status.is_empty() && status != label("Conectado", "Connected") {
+        parts.push(status);
+    } else if sharing {
+        parts.push(label("Compartilhando tela", "Sharing screen"));
     }
-    ui.horizontal_wrapped(|ui| {
-        if sharing {
-            ui.label(
-                RichText::new(crate::i18n::label("Compartilhando tela", "Sharing screen"))
-                    .strong()
-                    .color(ACCENT),
-            );
-        }
-        if camera_active {
-            ui.label(
-                RichText::new(crate::i18n::label("Câmera ligada", "Camera on"))
-                    .strong()
-                    .color(ACCENT),
-            );
-        }
-        if let Some(status) = status {
-            ui.add(egui::Label::new(RichText::new(status).size(13.0).color(MUTED)).truncate())
-                .on_hover_text(status);
-        }
-    });
-    ui.add_space(2.0);
+    if camera {
+        parts.push(label("Câmera ligada", "Camera on"));
+    }
+    if parts.is_empty() {
+        parts.push(fallback);
+    }
+    parts.join(" · ")
 }
 
 /// A paused viewer can resume without searching the room controls.
@@ -1130,19 +1422,70 @@ pub(crate) fn playback_empty(
     resume
 }
 
-pub(crate) fn session_actions(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
+pub(crate) fn session_actions(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui, bool)) {
     let width = ui.available_width();
+    let compact = ui.ctx().content_rect().width() < COMPACT_SESSION_WIDTH;
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(6.0, 5.0);
-        if width < 600.0 {
+        if compact {
             ui.spacing_mut().button_padding = Vec2::new(6.0, 4.0);
             ui.spacing_mut().interact_size =
                 Vec2::new(((width - 7.0) / 2.0).floor().max(0.0), 32.0);
         } else {
             ui.spacing_mut().interact_size.y = 40.0;
         }
+        content(ui, compact);
+    });
+}
+
+pub(crate) fn session_room_actions(
+    ui: &mut egui::Ui,
+    compact: bool,
+    content: impl FnOnce(&mut egui::Ui),
+) {
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if compact {
+            ui.spacing_mut().interact_size.x =
+                ((ui.available_width() - ui.spacing().item_spacing.x) / 2.0).floor();
+        }
         content(ui);
     });
+}
+
+pub(crate) fn session_playback_actions(
+    ui: &mut egui::Ui,
+    paused: bool,
+    connected: bool,
+    resetting: bool,
+) -> (egui::Response, egui::Response) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().interact_size = Vec2::splat(34.0);
+        let pause = room_icon_button(
+            ui,
+            RoomIcon::Playback(paused),
+            if paused {
+                crate::i18n::label("Retomar recepção", "Resume playback")
+            } else {
+                crate::i18n::label("Pausar recepção", "Pause playback")
+            },
+            connected,
+            paused,
+        );
+        let reconnect = reconnect_button(ui, connected && !resetting, 34.0);
+        (pause, reconnect)
+    })
+    .inner
+}
+
+pub(crate) fn reconnect_button(ui: &mut egui::Ui, enabled: bool, size: f32) -> egui::Response {
+    room_icon_button_sized(
+        ui,
+        RoomIcon::Reconnect,
+        crate::i18n::label("Reconectar recepção", "Reconnect playback"),
+        enabled,
+        false,
+        size,
+    )
 }
 
 pub(crate) fn session_button(
@@ -1170,6 +1513,16 @@ pub(crate) fn session_stop(ui: &mut egui::Ui, label: &str, enabled: bool) -> egu
     )
 }
 
+pub(crate) fn session_leave(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
+    session_action(
+        ui,
+        crate::i18n::label("Sair da sala", "Leave room"),
+        enabled,
+        Color32::from_rgb(255, 178, 170),
+        SURFACE,
+    )
+}
+
 pub(crate) fn session_menu(
     ui: &mut egui::Ui,
     content: impl FnOnce(&mut egui::Ui),
@@ -1183,7 +1536,11 @@ pub(crate) fn session_menu(
     let area = ui.ctx().content_rect();
     egui::Popup::menu(&more)
         .width((area.width() - 28.0).clamp(96.0, 254.0))
+        .frame(
+            utility_frame(ui.style()).stroke(egui::Stroke::new(1.5, Color32::from_rgb(74, 86, 82))),
+        )
         .show(|ui| {
+            popup_style(ui);
             ui.spacing_mut().button_padding = Vec2::new(8.0, 4.0);
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
             egui::ScrollArea::vertical()
@@ -1191,6 +1548,24 @@ pub(crate) fn session_menu(
                 .show(ui, content);
         })
         .map(|popup| popup.response.rect)
+}
+
+pub(crate) fn menu_action(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding = egui::vec2(9.0, 5.0);
+        ui.visuals_mut().widgets.hovered.bg_stroke = egui::Stroke::NONE;
+        ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::NONE;
+        ui.add_enabled(
+            enabled,
+            egui::Button::new(label)
+                .right_text(egui::Atom::grow())
+                .frame_when_inactive(false)
+                .corner_radius(7)
+                .wrap_mode(egui::TextWrapMode::Wrap)
+                .min_size(egui::vec2(ui.available_width(), 32.0)),
+        )
+    })
+    .inner
 }
 
 pub(crate) fn display_scale(ui: &mut egui::Ui) {
@@ -1304,49 +1679,49 @@ pub(crate) fn home_panel(ui: &mut egui::Ui, status: &str, content: impl FnOnce(&
 }
 
 pub(crate) fn confirm_leave(ctx: &egui::Context) -> Option<bool> {
-    let modal = egui::Modal::new(egui::Id::new("confirm_leave")).show(ctx, |ui| {
-        ui.set_width((ctx.content_rect().width() - 36.0).clamp(120.0, 320.0));
-        ui.heading(crate::i18n::label("Sair da sala?", "Leave the room?"));
-        ui.label(crate::i18n::label(
-            "Seu compartilhamento será encerrado ao sair.",
-            "Your sharing will end when you leave.",
-        ));
-        ui.add_space(12.0);
-        ui.horizontal_wrapped(|ui| {
-            if session_button(
-                ui,
-                crate::i18n::label("Continuar na sala", "Stay in the room"),
-                true,
-                false,
-            )
-            .clicked()
-            {
-                return Some(false);
-            }
-            if session_stop(ui, crate::i18n::label("Sair da sala", "Leave room"), true).clicked() {
-                return Some(true);
-            }
-            None
-        })
-        .inner
-    });
+    let modal = dialog(
+        ctx,
+        crate::i18n::label("Sair da sala?", "Leave the room?"),
+        "confirm_leave",
+        360.0,
+        |ui| {
+            ui.label(crate::i18n::label(
+                "Seu compartilhamento será encerrado ao sair.",
+                "Your sharing will end when you leave.",
+            ));
+            ui.add_space(12.0);
+            ui.horizontal_wrapped(|ui| {
+                if session_button(
+                    ui,
+                    crate::i18n::label("Continuar na sala", "Stay in the room"),
+                    true,
+                    false,
+                )
+                .clicked()
+                {
+                    return Some(false);
+                }
+                if session_stop(ui, crate::i18n::label("Sair da sala", "Leave room"), true)
+                    .clicked()
+                {
+                    return Some(true);
+                }
+                None
+            })
+            .inner
+        },
+    );
     modal
         .inner
         .or_else(|| modal.should_close().then_some(false))
 }
 
-pub(crate) fn header_button(
-    ui: &mut egui::Ui,
-    label: &str,
-    enabled: bool,
-    selected: Option<bool>,
-) -> egui::Response {
-    let active = selected == Some(true);
-    let mut button = egui::Button::new(RichText::new(label).size(13.0).color(if active {
-        ACCENT
-    } else {
-        TEXT
-    }))
+fn room_button(label: &str, active: bool) -> egui::Button<'_> {
+    egui::Button::new(
+        RichText::new(label)
+            .size(13.0)
+            .color(if active { ACCENT } else { TEXT }),
+    )
     .fill(if active {
         Color32::from_rgb(40, 51, 40)
     } else {
@@ -1362,21 +1737,216 @@ pub(crate) fn header_button(
     ))
     .wrap_mode(egui::TextWrapMode::Extend)
     .min_size(Vec2::new(0.0, 34.0))
-    .corner_radius(8);
-    if let Some(selected) = selected {
-        button = button.selected(selected);
+    .corner_radius(8)
+    .selected(active)
+}
+
+enum RoomIcon {
+    Panel,
+    Grid,
+    Fullscreen,
+    Gear,
+    Preview(bool),
+    Speaker(bool),
+    Playback(bool),
+    Reconnect,
+}
+
+fn room_icon_button(
+    ui: &mut egui::Ui,
+    icon: RoomIcon,
+    label: &str,
+    enabled: bool,
+    selected: bool,
+) -> egui::Response {
+    room_icon_button_sized(ui, icon, label, enabled, selected, 34.0)
+}
+
+fn room_icon_button_sized(
+    ui: &mut egui::Ui,
+    icon: RoomIcon,
+    label: &str,
+    enabled: bool,
+    selected: bool,
+    size: f32,
+) -> egui::Response {
+    let response = ui.add_enabled(
+        enabled,
+        room_button("", selected).min_size(Vec2::splat(size)),
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, selected, label)
+    });
+    let center = response.rect.center();
+    let painter = ui.painter();
+    let stroke = egui::Stroke::new(
+        1.5,
+        if !response.enabled() {
+            MUTED
+        } else if selected {
+            ACCENT
+        } else {
+            TEXT
+        },
+    );
+    match icon {
+        RoomIcon::Panel => {
+            let bounds = egui::Rect::from_center_size(center, egui::vec2(17.0, 13.0));
+            painter.rect_stroke(bounds, 2.0, stroke, egui::StrokeKind::Inside);
+            let x = bounds.left() + 6.0;
+            painter.line_segment(
+                [egui::pos2(x, bounds.top()), egui::pos2(x, bounds.bottom())],
+                stroke,
+            );
+        }
+        RoomIcon::Grid => {
+            for x in [-4.5, 4.5] {
+                for y in [-4.5, 4.5] {
+                    let cell =
+                        egui::Rect::from_center_size(center + egui::vec2(x, y), Vec2::splat(7.0));
+                    painter.rect_stroke(cell, 1.5, stroke, egui::StrokeKind::Inside);
+                }
+            }
+        }
+        RoomIcon::Fullscreen => {
+            for x in [-1.0, 1.0] {
+                for y in [-1.0, 1.0] {
+                    let corner = center + egui::vec2(x * 8.0, y * 8.0);
+                    painter.line_segment([corner, corner - egui::vec2(x * 5.0, 0.0)], stroke);
+                    painter.line_segment([corner, corner - egui::vec2(0.0, y * 5.0)], stroke);
+                }
+            }
+        }
+        RoomIcon::Gear => {
+            let mut outline = Vec::with_capacity(32);
+            for tooth in 0..8 {
+                let angle = tooth as f32 * std::f32::consts::FRAC_PI_4;
+                for (offset, radius) in [(-0.32, 6.6), (-0.21, 8.5), (0.21, 8.5), (0.32, 6.6)] {
+                    let (sin, cos) = (angle + offset).sin_cos();
+                    outline.push(center + egui::vec2(cos, sin) * radius);
+                }
+            }
+            painter.add(egui::Shape::closed_line(outline, stroke));
+            painter.circle_stroke(center, 2.8, stroke);
+        }
+        RoomIcon::Preview(visible) => {
+            let eye = [
+                (-9.0, 0.0),
+                (-5.0, -4.0),
+                (0.0, -5.0),
+                (5.0, -4.0),
+                (9.0, 0.0),
+                (5.0, 4.0),
+                (0.0, 5.0),
+                (-5.0, 4.0),
+            ];
+            painter.add(egui::Shape::closed_line(
+                eye.into_iter()
+                    .map(|(x, y)| center + egui::vec2(x, y))
+                    .collect(),
+                stroke,
+            ));
+            if visible {
+                painter.circle_stroke(center, 2.2, stroke);
+            } else {
+                painter.line_segment(
+                    [
+                        center + egui::vec2(-7.0, 7.0),
+                        center + egui::vec2(7.0, -7.0),
+                    ],
+                    stroke,
+                );
+            }
+        }
+        RoomIcon::Speaker(muted) => {
+            let speaker = [
+                (-7.0, -3.0),
+                (-4.0, -3.0),
+                (0.0, -6.0),
+                (0.0, 6.0),
+                (-4.0, 3.0),
+                (-7.0, 3.0),
+            ];
+            painter.add(egui::Shape::closed_line(
+                speaker
+                    .into_iter()
+                    .map(|(x, y)| center + egui::vec2(x, y))
+                    .collect(),
+                stroke,
+            ));
+            if muted {
+                for direction in [-1.0, 1.0] {
+                    painter.line_segment(
+                        [
+                            center + egui::vec2(3.0, -3.0 * direction),
+                            center + egui::vec2(8.0, 3.0 * direction),
+                        ],
+                        stroke,
+                    );
+                }
+            } else {
+                painter.add(egui::Shape::line(
+                    [(3.0, -4.0), (6.0, -2.0), (6.0, 2.0), (3.0, 4.0)]
+                        .into_iter()
+                        .map(|(x, y)| center + egui::vec2(x, y))
+                        .collect(),
+                    stroke,
+                ));
+            }
+        }
+        RoomIcon::Playback(true) => {
+            painter.add(egui::Shape::closed_line(
+                vec![
+                    center + egui::vec2(-4.0, -7.0),
+                    center + egui::vec2(7.0, 0.0),
+                    center + egui::vec2(-4.0, 7.0),
+                ],
+                stroke,
+            ));
+        }
+        RoomIcon::Playback(false) => {
+            for x in [-3.5, 3.5] {
+                painter.line_segment(
+                    [center + egui::vec2(x, -7.0), center + egui::vec2(x, 7.0)],
+                    egui::Stroke::new(2.5, stroke.color),
+                );
+            }
+        }
+        RoomIcon::Reconnect => {
+            let arc: Vec<_> = (0..=16)
+                .map(|step| {
+                    let angle = (35.0 + step as f32 * (280.0 / 16.0)).to_radians();
+                    center + egui::vec2(angle.cos(), angle.sin()) * 7.0
+                })
+                .collect();
+            let tip = arc[arc.len() - 1];
+            painter.add(egui::Shape::line(arc, stroke));
+            painter.line_segment([tip, tip + egui::vec2(-5.0, 0.0)], stroke);
+            painter.line_segment([tip, tip + egui::vec2(0.0, -5.0)], stroke);
+        }
     }
-    ui.add_enabled(enabled, button)
+    if response.has_focus() {
+        painter.rect_stroke(
+            response.rect.shrink(2.0),
+            7.0,
+            stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
+    response.on_hover_text(label)
 }
 
 /// Share the visible room name so someone with access can find it in the catalog.
 pub(crate) fn copy_room_name(ui: &mut egui::Ui, name: &str) {
-    let response = ui
-        .button(crate::i18n::label("Copiar nome da sala", "Copy room name"))
-        .on_hover_text(crate::i18n::label(
-            "Quem tem acesso ao servidor pode procurar este nome na lista de salas.",
-            "People with server access can find this name in the room list.",
-        ));
+    let response = menu_action(
+        ui,
+        crate::i18n::label("Copiar nome da sala", "Copy room name"),
+        true,
+    )
+    .on_hover_text(crate::i18n::label(
+        "Quem tem acesso ao servidor pode procurar este nome na lista de salas.",
+        "People with server access can find this name in the room list.",
+    ));
     if response.clicked() {
         ui.ctx().copy_text(name.to_owned());
         let now = ui.input(|input| input.time);
