@@ -14,10 +14,12 @@ use std::{
 // adjusts its output SEGMENT by the same amount. Compare exact running-time
 // timestamps through each pad's declared segment; never infer an offset from
 // frame order or change the timestamps carried by the media pipeline.
-fn evidence_running_time(pad:&gst::Pad, buffer:&gst::BufferRef)->Option<u64>{
-    let event=pad.sticky_event::<gst::event::Segment>(0)?;
-    let segment=event.segment().downcast_ref::<gst::ClockTime>()?;
-    segment.to_running_time(buffer.pts()?).map(|time|time.nseconds())
+fn evidence_running_time(pad: &gst::Pad, buffer: &gst::BufferRef) -> Option<u64> {
+    let event = pad.sticky_event::<gst::event::Segment>(0)?;
+    let segment = event.segment().downcast_ref::<gst::ClockTime>()?;
+    segment
+        .to_running_time(buffer.pts()?)
+        .map(|time| time.nseconds())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -36,7 +38,7 @@ pub enum Source {
     X11,
     Test,
     #[cfg(test)]
-    Synthetic(u32,u32),
+    Synthetic(u32, u32),
 }
 
 fn enum_property(element: &gst::Element, name: &str, value: &str) -> bool {
@@ -81,29 +83,80 @@ pub struct Packet {
     pub height: u32,
 }
 /// Registry availability is not a claim of driver/session support.
-pub(crate) fn factory_available(codec:Codec,encoder:Encoder)->Option<bool>{
-    gst::INITIALIZED.load(std::sync::atomic::Ordering::SeqCst).then(||encoder_factory(codec,encoder).is_some())
+pub(crate) fn factory_available(codec: Codec, encoder: Encoder) -> Option<bool> {
+    gst::INITIALIZED
+        .load(std::sync::atomic::Ordering::SeqCst)
+        .then(|| encoder_factory(codec, encoder).is_some())
 }
-pub(crate) fn encoder_factory(codec:Codec,encoder:Encoder)->Option<&'static str> {
-    if !gst::INITIALIZED.load(std::sync::atomic::Ordering::SeqCst){return None;}
+pub(crate) fn encoder_factory(codec: Codec, encoder: Encoder) -> Option<&'static str> {
+    if !gst::INITIALIZED.load(std::sync::atomic::Ordering::SeqCst) {
+        return None;
+    }
 
-    if encoder==Encoder::Software{return (codec==Codec::Hevc&&gst::ElementFactory::find("x265enc").is_some()).then_some("x265enc");}
-    let candidates=if codec==Codec::Av1{["nvav1enc","nvcudaav1enc","vaav1enc"]}else{["nvcudah265enc","nvh265enc","vah265enc"]};
-    candidates.into_iter().find(|name|gst::ElementFactory::find(name).is_some())
+    if encoder == Encoder::Software {
+        return (codec == Codec::Hevc && gst::ElementFactory::find("x265enc").is_some())
+            .then_some("x265enc");
+    }
+    let candidates = if codec == Codec::Av1 {
+        ["nvav1enc", "nvcudaav1enc", "vaav1enc"]
+    } else {
+        ["nvcudah265enc", "nvh265enc", "vah265enc"]
+    };
+    candidates
+        .into_iter()
+        .find(|name| gst::ElementFactory::find(name).is_some())
 }
-fn advertised_caps(element:&gst::Element,supported:&gst::Caps)->crate::encode_caps::EncodeCaps {
-    let mut out=crate::encode_caps::EncodeCaps::default();
-    if supported.is_any()||supported.is_empty(){return out;}
-    out.support=1;
-    let mut incomplete=[false;2];
+fn advertised_caps(
+    element: &gst::Element,
+    supported: &gst::Caps,
+) -> crate::encode_caps::EncodeCaps {
+    let mut out = crate::encode_caps::EncodeCaps::default();
+    if supported.is_any() || supported.is_empty() {
+        return out;
+    }
+    out.support = 1;
+    let mut incomplete = [false; 2];
     for structure in supported.iter() {
-        for (index,(key,minimum,maximum)) in [("width",&mut out.min_width,&mut out.max_width),("height",&mut out.min_height,&mut out.max_height)].into_iter().enumerate() {
-            let range=structure.get::<gst::IntRange<i32>>(key).ok().map(|r|(r.min(),r.max())).or_else(||structure.get::<i32>(key).ok().map(|v|(v,v)));
-            if let Some((low,high))=range.filter(|(a,b)|*a>0&&*b>=*a){let(low,high)=(low as u32,high as u32);*minimum=if *minimum==0{low}else{(*minimum).min(low)};*maximum=(*maximum).max(high);}else{incomplete[index]=true;}
+        for (index, (key, minimum, maximum)) in [
+            ("width", &mut out.min_width, &mut out.max_width),
+            ("height", &mut out.min_height, &mut out.max_height),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let range = structure
+                .get::<gst::IntRange<i32>>(key)
+                .ok()
+                .map(|r| (r.min(), r.max()))
+                .or_else(|| structure.get::<i32>(key).ok().map(|v| (v, v)));
+            if let Some((low, high)) = range.filter(|(a, b)| *a > 0 && *b >= *a) {
+                let (low, high) = (low as u32, high as u32);
+                *minimum = if *minimum == 0 {
+                    low
+                } else {
+                    (*minimum).min(low)
+                };
+                *maximum = (*maximum).max(high);
+            } else {
+                incomplete[index] = true;
+            }
         }
     }
-    if incomplete[0]{out.min_width=0;out.max_width=0;}if incomplete[1]{out.min_height=0;out.max_height=0;}
-    if let Some(spec)=element.find_property("bitrate"){out.dynamic_bitrate=if spec.flags().contains(gst::PARAM_FLAG_MUTABLE_PLAYING){1}else{2};}
+    if incomplete[0] {
+        out.min_width = 0;
+        out.max_width = 0;
+    }
+    if incomplete[1] {
+        out.min_height = 0;
+        out.max_height = 0;
+    }
+    if let Some(spec) = element.find_property("bitrate") {
+        out.dynamic_bitrate = if spec.flags().contains(gst::PARAM_FLAG_MUTABLE_PLAYING) {
+            1
+        } else {
+            2
+        };
+    }
     out
 }
 pub struct Capture {
@@ -114,34 +167,60 @@ pub struct Capture {
     _fd: Option<OwnedFd>,
     pub backend: String,
     pub fps: u32,
-    pub bitrate_limit:u32,
-    pub capabilities:crate::encode_caps::EncodeCaps,
-    pub evidence:crate::evidence::Evidence,
+    pub bitrate_limit: u32,
+    pub capabilities: crate::encode_caps::EncodeCaps,
+    pub evidence: crate::evidence::Evidence,
     ready: Option<Packet>,
-    counters:std::sync::Arc<CaptureCounters>,
-    last_report:std::time::Instant,
-    last_counts:[u64;4],
+    counters: std::sync::Arc<CaptureCounters>,
+    last_report: std::time::Instant,
+    last_counts: [u64; 4],
 }
 #[derive(Default)]
 struct CaptureCounters {
-    source:std::sync::atomic::AtomicU64,
-    input:std::sync::atomic::AtomicU64,
-    encoded:std::sync::atomic::AtomicU64,
-    delivered:std::sync::atomic::AtomicU64,
+    source: std::sync::atomic::AtomicU64,
+    input: std::sync::atomic::AtomicU64,
+    encoded: std::sync::atomic::AtomicU64,
+    delivered: std::sync::atomic::AtomicU64,
 }
 impl Capture {
     pub async fn open(source: Source, codec: Codec, encoder: Encoder) -> Result<Self> {
-        Self::open_with_profile(source,codec,encoder,crate::bandwidth::UploadProfile::Maximum).await
+        Self::open_with_profile(
+            source,
+            codec,
+            encoder,
+            crate::bandwidth::UploadProfile::Maximum,
+        )
+        .await
     }
-    pub async fn open_with_profile(source:Source,codec:Codec,encoder:Encoder,upload:crate::bandwidth::UploadProfile)->Result<Self>{
-        Self::open_with_settings(source,codec,encoder,upload,Default::default()).await
+    pub async fn open_with_profile(
+        source: Source,
+        codec: Codec,
+        encoder: Encoder,
+        upload: crate::bandwidth::UploadProfile,
+    ) -> Result<Self> {
+        Self::open_with_settings(source, codec, encoder, upload, Default::default()).await
     }
-    pub async fn open_with_settings(source:Source,codec:Codec,encoder:Encoder,upload:crate::bandwidth::UploadProfile,settings:crate::resolution::StreamSettings)->Result<Self>{
-        Self::open_observed(source,codec,encoder,upload,settings,Default::default()).await
+    pub async fn open_with_settings(
+        source: Source,
+        codec: Codec,
+        encoder: Encoder,
+        upload: crate::bandwidth::UploadProfile,
+        settings: crate::resolution::StreamSettings,
+    ) -> Result<Self> {
+        Self::open_observed(source, codec, encoder, upload, settings, Default::default()).await
     }
-    pub async fn open_observed(source:Source,codec:Codec,encoder:Encoder,upload:crate::bandwidth::UploadProfile,settings:crate::resolution::StreamSettings,evidence:crate::evidence::Evidence)->Result<Self>{
-        ensure!(settings.valid(),"Unsupported frame rate");
-        eprintln!("Linux capture: stage=init source={source:?} codec={codec:?} encoder={encoder:?}");
+    pub async fn open_observed(
+        source: Source,
+        codec: Codec,
+        encoder: Encoder,
+        upload: crate::bandwidth::UploadProfile,
+        settings: crate::resolution::StreamSettings,
+        evidence: crate::evidence::Evidence,
+    ) -> Result<Self> {
+        ensure!(settings.valid(), "Unsupported frame rate");
+        eprintln!(
+            "Linux capture: stage=init source={source:?} codec={codec:?} encoder={encoder:?}"
+        );
         gst::init()?;
         let (description, lease, fd) = match source {
             Source::Portal => {
@@ -153,7 +232,10 @@ impl Capture {
                     let requested = (SourceType::Monitor | SourceType::Window) & sources;
                     ensure!(
                         !requested.is_empty(),
-                        crate::i18n::label("Este portal não oferece captura de tela/janela","This portal does not support screen/window capture")
+                        crate::i18n::label(
+                            "Este portal não oferece captura de tela/janela",
+                            "This portal does not support screen/window capture"
+                        )
                     );
                     let cursor = if portal
                         .available_cursor_modes()
@@ -183,7 +265,10 @@ impl Capture {
                     let node = response
                         .streams()
                         .first()
-                        .context(crate::i18n::label("Nenhuma origem selecionada","No source selected"))?
+                        .context(crate::i18n::label(
+                            "Nenhuma origem selecionada",
+                            "No source selected",
+                        ))?
                         .pipe_wire_node_id();
                     let fd = portal
                         .open_pipe_wire_remote(lease.0.as_ref().unwrap(), Default::default())
@@ -211,9 +296,15 @@ impl Capture {
             Source::X11 => {
                 ensure!(
                     std::env::var("WAYLAND_DISPLAY").is_err(),
-                    crate::i18n::label("No Wayland, escolha o seletor do sistema","On Wayland, use the system picker")
+                    crate::i18n::label(
+                        "No Wayland, escolha o seletor do sistema",
+                        "On Wayland, use the system picker"
+                    )
                 );
-                ensure!(std::env::var("DISPLAY").is_ok(), crate::i18n::label("Sessão X11 indisponível","X11 session unavailable"));
+                ensure!(
+                    std::env::var("DISPLAY").is_ok(),
+                    crate::i18n::label("Sessão X11 indisponível", "X11 session unavailable")
+                );
                 (
                     "ximagesrc use-damage=false show-pointer=true do-timestamp=true".into(),
                     None,
@@ -221,34 +312,88 @@ impl Capture {
                 )
             }
             Source::Test => {
-                let size=std::env::var("HYPERCAST_LINUX_TEST_SIZE").unwrap_or_else(|_|"640x360".into());
-                let (w,h)=size.split_once('x').context("Invalid synthetic size")?;
-                let (w,h)=(w.parse::<u32>()?,h.parse::<u32>()?);
-                ensure!(crate::resolution::valid(w,h),"Invalid synthetic size");
-                (format!("videotestsrc is-live=true pattern=ball ! video/x-raw,width={w},height={h}"),None,None)
-            },
+                let size =
+                    std::env::var("HYPERCAST_LINUX_TEST_SIZE").unwrap_or_else(|_| "640x360".into());
+                let (w, h) = size.split_once('x').context("Invalid synthetic size")?;
+                let (w, h) = (w.parse::<u32>()?, h.parse::<u32>()?);
+                ensure!(crate::resolution::valid(w, h), "Invalid synthetic size");
+                (
+                    format!(
+                        "videotestsrc is-live=true pattern=ball ! video/x-raw,width={w},height={h}"
+                    ),
+                    None,
+                    None,
+                )
+            }
             #[cfg(test)]
-            Source::Synthetic(w,h)=>{
-                ensure!(crate::resolution::valid(w,h),"Invalid synthetic size");
-                (format!("videotestsrc is-live=true pattern=ball ! video/x-raw,width={w},height={h}"),None,None)
-            },
+            Source::Synthetic(w, h) => {
+                ensure!(crate::resolution::valid(w, h), "Invalid synthetic size");
+                (
+                    format!(
+                        "videotestsrc is-live=true pattern=ball ! video/x-raw,width={w},height={h}"
+                    ),
+                    None,
+                    None,
+                )
+            }
         };
-        Self::open_pipeline_observed(description,lease,fd,codec,encoder,upload,settings,evidence).await
+        Self::open_pipeline_observed(
+            description,
+            lease,
+            fd,
+            codec,
+            encoder,
+            upload,
+            settings,
+            evidence,
+        )
+        .await
     }
     #[cfg(test)]
-    async fn open_pipeline_settings(description:String,lease:Option<PortalLease>,fd:Option<OwnedFd>,codec:Codec,encoder:Encoder,upload:crate::bandwidth::UploadProfile,settings:crate::resolution::StreamSettings)->Result<Self>{
-        Self::open_pipeline_observed(description,lease,fd,codec,encoder,upload,settings,Default::default()).await
+    async fn open_pipeline_settings(
+        description: String,
+        lease: Option<PortalLease>,
+        fd: Option<OwnedFd>,
+        codec: Codec,
+        encoder: Encoder,
+        upload: crate::bandwidth::UploadProfile,
+        settings: crate::resolution::StreamSettings,
+    ) -> Result<Self> {
+        Self::open_pipeline_observed(
+            description,
+            lease,
+            fd,
+            codec,
+            encoder,
+            upload,
+            settings,
+            Default::default(),
+        )
+        .await
     }
-    async fn open_pipeline_observed(description:String,lease:Option<PortalLease>,fd:Option<OwnedFd>,codec:Codec,encoder:Encoder,upload:crate::bandwidth::UploadProfile,settings:crate::resolution::StreamSettings,evidence:crate::evidence::Evidence)->Result<Self>{
-        ensure!(settings.valid(),"Unsupported frame rate");
-        let (max_w,max_h)=settings.size.limits();
+    async fn open_pipeline_observed(
+        description: String,
+        lease: Option<PortalLease>,
+        fd: Option<OwnedFd>,
+        codec: Codec,
+        encoder: Encoder,
+        upload: crate::bandwidth::UploadProfile,
+        settings: crate::resolution::StreamSettings,
+        evidence: crate::evidence::Evidence,
+    ) -> Result<Self> {
+        ensure!(settings.valid(), "Unsupported frame rate");
+        let (max_w, max_h) = settings.size.limits();
         let fps = if encoder == Encoder::Software {
             settings.fps.min(30)
         } else {
             settings.fps
         };
-        let bitrate_limit=if encoder==Encoder::Software{upload.bps().min(12_000_000)}else{upload.bps()};
-        let kbps=bitrate_limit/1000;
+        let bitrate_limit = if encoder == Encoder::Software {
+            upload.bps().min(12_000_000)
+        } else {
+            upload.bps()
+        };
+        let kbps = bitrate_limit / 1000;
         eprintln!("Linux capture: stage=encoder_discovery");
         let chain=match (encoder,codec) {
             (Encoder::Software,Codec::Hevc)=>"x265enc name=encoder tune=zerolatency speed-preset=ultrafast bitrate=12000 key-int-max=30 option-string=bframes=0:rc-lookahead=0:pools=1:frame-threads=1".to_string(),
@@ -260,16 +405,19 @@ impl Capture {
 
             }
         };
-        let raw_formats:&[&str] = if encoder == Encoder::Software {
+        let raw_formats: &[&str] = if encoder == Encoder::Software {
             &["I420"]
         } else if chain.starts_with("nv") {
             // NVENC accepts packed RGB directly. Avoid forcing a full-frame
             // BGRA->NV12 CPU conversion when the portal already supplies BGRA.
-            &["BGRA","BGRx","RGBA","RGBx","NV12"]
+            &["BGRA", "BGRx", "RGBA", "RGBx", "NV12"]
         } else {
             &["NV12"]
         };
-        let raw=gst::Caps::builder("video/x-raw").field("format",gst::List::new(raw_formats.iter().copied())).field("framerate",gst::Fraction::new(fps as i32,1)).build();
+        let raw = gst::Caps::builder("video/x-raw")
+            .field("format", gst::List::new(raw_formats.iter().copied()))
+            .field("framerate", gst::Fraction::new(fps as i32, 1))
+            .build();
         let parser = if codec == Codec::Av1 {
             "av1parse ! video/x-av1,stream-format=obu-stream,alignment=tu"
         } else {
@@ -280,28 +428,47 @@ impl Capture {
         // discards work safely. Dropping HEVC/AV1 deltas corrupts later frames.
         // Only encoded access units enter Rust RAM. The initial portable source
         // conversion can negotiate CPU buffers; DMA-BUF zero-copy is not guaranteed.
-        eprintln!("Linux capture: stage=pipeline_create backend={}",chain.split_whitespace().next().unwrap_or("encoder"));
+        eprintln!(
+            "Linux capture: stage=pipeline_create backend={}",
+            chain.split_whitespace().next().unwrap_or("encoder")
+        );
         let pipeline=gst::parse::launch(&format!("{description} ! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! identity name=source_bounds ! videorate drop-only=true max-rate={fps} ! videoconvertscale ! capsfilter name=scaled ! {raw} ! {chain} ! {parser} ! appsink name=encoded sync=false max-buffers=2 drop=false"))?
             .downcast::<gst::Pipeline>().map_err(|_|anyhow::anyhow!("Invalid capture pipeline"))?;
         eprintln!("Linux capture: stage=pipeline_created");
-        let counters=std::sync::Arc::new(CaptureCounters::default());
+        let counters = std::sync::Arc::new(CaptureCounters::default());
         // KWin screen casts offer only 2..4 buffers; pipewiresrc 1.0.5
         // defaults to a minimum of eight. Copy before downstream queues keep
         // references so a small compositor pool can recycle immediately.
-        let correlation=std::sync::Arc::new(std::sync::Mutex::new(crate::evidence::Correlation::default()));
+        let correlation = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::evidence::Correlation::default(),
+        ));
         for source in pipeline.iterate_sources().into_iter() {
-            let source=source.map_err(|_|anyhow::anyhow!("Capture source enumeration failed"))?;
-            if let Some(pad)=source.static_pad("src") {
-                let count=counters.clone();
-                let timing=correlation.clone();
-                pad.add_probe(gst::PadProbeType::BUFFER,move|pad,info|{count.source.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
-                    if let Some(gst::PadProbeData::Buffer(buffer))=&info.data{if let Some(pts)=evidence_running_time(pad,buffer){if let Ok(mut t)=timing.lock(){t.input(false,pts,std::time::Instant::now());}}}
-                    gst::PadProbeReturn::Ok});
+            let source =
+                source.map_err(|_| anyhow::anyhow!("Capture source enumeration failed"))?;
+            if let Some(pad) = source.static_pad("src") {
+                let count = counters.clone();
+                let timing = correlation.clone();
+                pad.add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
+                    count
+                        .source
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if let Some(gst::PadProbeData::Buffer(buffer)) = &info.data {
+                        if let Some(pts) = evidence_running_time(pad, buffer) {
+                            if let Ok(mut t) = timing.lock() {
+                                t.input(false, pts, std::time::Instant::now());
+                            }
+                        }
+                    }
+                    gst::PadProbeReturn::Ok
+                });
             }
-            if source.factory().is_some_and(|factory|factory.name()=="pipewiresrc") {
-                source.set_property("min-buffers",2_i32);
-                source.set_property("max-buffers",4_i32);
-                source.set_property("always-copy",true);
+            if source
+                .factory()
+                .is_some_and(|factory| factory.name() == "pipewiresrc")
+            {
+                source.set_property("min-buffers", 2_i32);
+                source.set_property("max-buffers", 4_i32);
+                source.set_property("always-copy", true);
                 eprintln!("Linux capture: stage=pipewire_buffers min=2 max=4 always_copy=true");
             }
         }
@@ -311,32 +478,66 @@ impl Capture {
             .downcast::<AppSink>()
             .unwrap();
         let encoder_element = pipeline.by_name("encoder").unwrap();
-        for (pad,is_input) in [(encoder_element.static_pad("sink"),true),(sink.static_pad("sink"),false)] {
-            if let Some(pad)=pad {
-                let count=counters.clone();
-                let timing=correlation.clone();let metrics=evidence.clone();
-                pad.add_probe(gst::PadProbeType::BUFFER,move|pad,info|{
-                    if is_input{count.input.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}else{count.encoded.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}
-                    if let Some(gst::PadProbeData::Buffer(buffer))=&info.data{if let Some(pts)=evidence_running_time(pad,buffer){if let Ok(mut t)=timing.lock(){if is_input{t.input(true,pts,std::time::Instant::now());}else{t.output(pts,std::time::Instant::now(),&metrics);}}}else if !is_input{metrics.missing_correlation();}}
+        for (pad, is_input) in [
+            (encoder_element.static_pad("sink"), true),
+            (sink.static_pad("sink"), false),
+        ] {
+            if let Some(pad) = pad {
+                let count = counters.clone();
+                let timing = correlation.clone();
+                let metrics = evidence.clone();
+                pad.add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
+                    if is_input {
+                        count
+                            .input
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    } else {
+                        count
+                            .encoded
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    if let Some(gst::PadProbeData::Buffer(buffer)) = &info.data {
+                        if let Some(pts) = evidence_running_time(pad, buffer) {
+                            if let Ok(mut t) = timing.lock() {
+                                if is_input {
+                                    t.input(true, pts, std::time::Instant::now());
+                                } else {
+                                    t.output(pts, std::time::Instant::now(), &metrics);
+                                }
+                            }
+                        } else if !is_input {
+                            metrics.missing_correlation();
+                        }
+                    }
                     gst::PadProbeReturn::Ok
                 });
             }
         }
-        let supported=encoder_element.static_pad("sink").context("Encoder input missing")?.query_caps(None);
-        let capabilities=advertised_caps(&encoder_element,&supported);
+        let supported = encoder_element
+            .static_pad("sink")
+            .context("Encoder input missing")?
+            .query_caps(None);
+        let capabilities = advertised_caps(&encoder_element, &supported);
         // Negotiate bounds before starting PipeWire. Changing capsfilter from a
         // downstream CAPS probe sends RECONFIGURE upstream and can reconnect or
         // deadlock the PipeWire stream while its state transition is in flight.
         // videoconvertscale fixates these ranges to the nearest supported size,
         // preserving aspect ratio through square pixels and even YUV dimensions.
-        let bounds=gst::Caps::builder("video/x-raw")
-            .field("format",gst::List::new(raw_formats.iter().copied()))
-            .field("width",gst::IntRange::<i32>::with_step(2,max_w as i32,2))
-            .field("height",gst::IntRange::<i32>::with_step(2,max_h as i32,2))
-            .field("pixel-aspect-ratio",gst::Fraction::new(1,1)).build();
-        let bounds=bounds.intersect(&supported);
-        ensure!(!bounds.is_empty(),"No compatible encoder resolution");
-        pipeline.by_name("scaled").unwrap().set_property("caps",bounds);
+        let bounds = gst::Caps::builder("video/x-raw")
+            .field("format", gst::List::new(raw_formats.iter().copied()))
+            .field("width", gst::IntRange::<i32>::with_step(2, max_w as i32, 2))
+            .field(
+                "height",
+                gst::IntRange::<i32>::with_step(2, max_h as i32, 2),
+            )
+            .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
+            .build();
+        let bounds = bounds.intersect(&supported);
+        ensure!(!bounds.is_empty(), "No compatible encoder resolution");
+        pipeline
+            .by_name("scaled")
+            .unwrap()
+            .set_property("caps", bounds);
         pipeline.by_name("source_bounds").unwrap().static_pad("src").unwrap().add_probe(gst::PadProbeType::EVENT_DOWNSTREAM,move |pad,info| {
             let Some(gst::PadProbeData::Event(event))=&info.data else{return gst::PadProbeReturn::Ok;};
             let gst::EventView::Caps(event)=event.view() else{return gst::PadProbeReturn::Ok;};
@@ -366,7 +567,10 @@ impl Capture {
         if chain.starts_with("nv") {
             ensure!(
                 enum_property(&encoder_element, "preset", "p1"),
-                crate::i18n::label("Encoder NVENC antigo; use a versão AppImage com o plugin moderno","Old NVENC encoder; use the AppImage with the modern plugin")
+                crate::i18n::label(
+                    "Encoder NVENC antigo; use a versão AppImage com o plugin moderno",
+                    "Old NVENC encoder; use the AppImage with the modern plugin"
+                )
             );
             enum_property(&encoder_element, "tune", "ultra-low-latency");
             for name in ["zerolatency", "zero-reorder-delay"] {
@@ -381,13 +585,39 @@ impl Capture {
                 encoder_element.set_property("rc-lookahead", 0_u32);
             }
         }
-        pipeline.by_name("source_bounds").unwrap().static_pad("src").unwrap().add_probe(gst::PadProbeType::EVENT_DOWNSTREAM,move|pad,info|{
-            if let Some(gst::PadProbeData::Event(event))=&info.data {if let gst::EventView::Caps(event)=event.view(){
-                if let Some((w,h))=event.caps().structure(0).and_then(|s|Some((s.get::<i32>("width").ok()?,s.get::<i32>("height").ok()?))) {
-                    if w>0&&h>0 {if let Some((out_w,out_h))=crate::resolution::fit(w as u32,h as u32,max_w,max_h){if let Some(reason)=capabilities.rejection(out_w,out_h,fps){if let Some(e)=pad.parent_element(){gst::element_error!(e,gst::StreamError::Format,["{}",reason.label()]);}return gst::PadProbeReturn::Drop;}}}
+        pipeline
+            .by_name("source_bounds")
+            .unwrap()
+            .static_pad("src")
+            .unwrap()
+            .add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |pad, info| {
+                if let Some(gst::PadProbeData::Event(event)) = &info.data {
+                    if let gst::EventView::Caps(event) = event.view() {
+                        if let Some((w, h)) = event.caps().structure(0).and_then(|s| {
+                            Some((s.get::<i32>("width").ok()?, s.get::<i32>("height").ok()?))
+                        }) {
+                            if w > 0 && h > 0 {
+                                if let Some((out_w, out_h)) =
+                                    crate::resolution::fit(w as u32, h as u32, max_w, max_h)
+                                {
+                                    if let Some(reason) = capabilities.rejection(out_w, out_h, fps)
+                                    {
+                                        if let Some(e) = pad.parent_element() {
+                                            gst::element_error!(
+                                                e,
+                                                gst::StreamError::Format,
+                                                ["{}", reason.label()]
+                                            );
+                                        }
+                                        return gst::PadProbeReturn::Drop;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-            }}gst::PadProbeReturn::Ok
-        });
+                gst::PadProbeReturn::Ok
+            });
         let mut result = Self {
             pipeline,
             sink,
@@ -396,18 +626,22 @@ impl Capture {
             _fd: fd,
             backend: chain.split_whitespace().next().unwrap_or("encoder").into(),
             fps,
-            bitrate_limit,capabilities,evidence,
+            bitrate_limit,
+            capabilities,
+            evidence,
             ready: None,
             counters,
-            last_report:std::time::Instant::now(),
-            last_counts:[0;4],
+            last_report: std::time::Instant::now(),
+            last_counts: [0; 4],
         };
         eprintln!("Linux capture: stage=pipeline_start");
         if let Err(e) = result.pipeline.set_state(gst::State::Playing) {
             eprintln!("Linux capture: stage=pipeline_state_failed error={e}");
             // Drain the capture bus before stopping so driver/format failures
             // aren't lost behind the generic state-change error.
-            if let Err(detail)=result.poll(){eprintln!("Linux capture: stage=pipeline_error error={detail:#}");}
+            if let Err(detail) = result.poll() {
+                eprintln!("Linux capture: stage=pipeline_error error={detail:#}");
+            }
             result.stop().await;
             return Err(e.into());
         }
@@ -416,13 +650,21 @@ impl Capture {
         let readiness = async {
             loop {
                 if let Some(packet) = result.poll()? {
-                    eprintln!("Linux capture: stage=first_packet width={} height={} bytes={}",packet.width,packet.height,packet.bytes.len());
+                    eprintln!(
+                        "Linux capture: stage=first_packet width={} height={} bytes={}",
+                        packet.width,
+                        packet.height,
+                        packet.bytes.len()
+                    );
                     result.ready = Some(packet);
                     return Ok::<_, anyhow::Error>(());
                 }
                 ensure!(
                     std::time::Instant::now() < deadline,
-                    crate::i18n::label("A origem/encoder não produziu vídeo; confira o driver e a seleção","The source/encoder did not produce video; check the driver and selection")
+                    crate::i18n::label(
+                        "A origem/encoder não produziu vídeo; confira o driver e a seleção",
+                        "The source/encoder did not produce video; check the driver and selection"
+                    )
                 );
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
@@ -435,15 +677,36 @@ impl Capture {
         }
         Ok(result)
     }
-    pub fn frame_counts(&self)->[u64;4]{let c=&self.counters;let o=std::sync::atomic::Ordering::Relaxed;[c.source.load(o),c.input.load(o),c.encoded.load(o),c.delivered.load(o)]}
+    pub fn frame_counts(&self) -> [u64; 4] {
+        let c = &self.counters;
+        let o = std::sync::atomic::Ordering::Relaxed;
+        [
+            c.source.load(o),
+            c.input.load(o),
+            c.encoded.load(o),
+            c.delivered.load(o),
+        ]
+    }
     pub fn poll(&mut self) -> Result<Option<Packet>> {
-        if self.last_report.elapsed()>=Duration::from_secs(5) {
-            let c=&self.counters;let order=std::sync::atomic::Ordering::Relaxed;
-            let counts=[c.source.load(order),c.input.load(order),c.encoded.load(order),c.delivered.load(order)];
-            let seconds=self.last_report.elapsed().as_secs_f64();
-            let rates=std::array::from_fn::<_,4,_>(|i|counts[i].saturating_sub(self.last_counts[i]) as f64/seconds);
-            eprintln!("Linux capture rates: backend={} source_fps={:.1} encoder_in_fps={:.1} encoded_fps={:.1} delivered_fps={:.1}",self.backend,rates[0],rates[1],rates[2],rates[3]);
-            self.last_report=std::time::Instant::now();self.last_counts=counts;
+        if self.last_report.elapsed() >= Duration::from_secs(5) {
+            let c = &self.counters;
+            let order = std::sync::atomic::Ordering::Relaxed;
+            let counts = [
+                c.source.load(order),
+                c.input.load(order),
+                c.encoded.load(order),
+                c.delivered.load(order),
+            ];
+            let seconds = self.last_report.elapsed().as_secs_f64();
+            let rates = std::array::from_fn::<_, 4, _>(|i| {
+                counts[i].saturating_sub(self.last_counts[i]) as f64 / seconds
+            });
+            eprintln!(
+                "Linux capture rates: backend={} source_fps={:.1} encoder_in_fps={:.1} encoded_fps={:.1} delivered_fps={:.1}",
+                self.backend, rates[0], rates[1], rates[2], rates[3]
+            );
+            self.last_report = std::time::Instant::now();
+            self.last_counts = counts;
         }
         if let Some(packet) = self.ready.take() {
             return Ok(Some(packet));
@@ -456,7 +719,10 @@ impl Capture {
         {
             match message.view() {
                 gst::MessageView::Error(e) => anyhow::bail!("Captura/encoder: {}", e.error()),
-                _ => anyhow::bail!(crate::i18n::label("A origem de captura foi encerrada","The capture source has closed")),
+                _ => anyhow::bail!(crate::i18n::label(
+                    "A origem de captura foi encerrada",
+                    "The capture source has closed"
+                )),
             }
         }
         let Some(sample) = self.sink.try_pull_sample(gst::ClockTime::ZERO) else {
@@ -468,12 +734,16 @@ impl Capture {
         let width = structure.get::<i32>("width")?;
         let height = structure.get::<i32>("height")?;
         ensure!(
-            (2..=8192).contains(&width) && (2..=8192).contains(&height) && i64::from(width)*i64::from(height)<=33_554_432,
+            (2..=8192).contains(&width)
+                && (2..=8192).contains(&height)
+                && i64::from(width) * i64::from(height) <= 33_554_432,
             "Origem excede 8192 pixels por eixo ou 32 megapixels"
         );
         let data = buffer.map_readable()?;
         ensure!(data.len() <= 16 * 1024 * 1024, "Encoded frame too large");
-        self.counters.delivered.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
+        self.counters
+            .delivered
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(Some(Packet {
             bytes: data.to_vec(),
             timestamp_us: buffer
@@ -486,26 +756,40 @@ impl Capture {
         }))
     }
     pub fn request_keyframe(&self) {
-        self.encoder.call_async(|encoder|{if let Some(pad)=encoder.static_pad("src"){let _ = pad.send_event(
-            gstreamer_video::UpstreamForceKeyUnitEvent::builder()
-                .all_headers(true)
-                .build(),
-        );}});
+        self.encoder.call_async(|encoder| {
+            if let Some(pad) = encoder.static_pad("src") {
+                let _ = pad.send_event(
+                    gstreamer_video::UpstreamForceKeyUnitEvent::builder()
+                        .all_headers(true)
+                        .build(),
+                );
+            }
+        });
     }
     /// Configuration readback, not measured throughput or a driver success guarantee.
-    pub fn bitrate(&self, bits: u32)->bool {
-        let requested=bits.min(self.bitrate_limit)/1000;
-        if requested<64{return false;}
-        let Some(spec)=self.encoder.find_property("bitrate") else{return false;};
-        if spec.value_type()!=u32::static_type(){return false;}
-        if self.encoder.property::<u32>("bitrate")==requested{return true;}
-        if !spec.flags().contains(gst::PARAM_FLAG_MUTABLE_PLAYING){return false;}
-        self.encoder.set_property("bitrate",requested);
-        self.encoder.property::<u32>("bitrate")==requested
+    pub fn bitrate(&self, bits: u32) -> bool {
+        let requested = bits.min(self.bitrate_limit) / 1000;
+        if requested < 64 {
+            return false;
+        }
+        let Some(spec) = self.encoder.find_property("bitrate") else {
+            return false;
+        };
+        if spec.value_type() != u32::static_type() {
+            return false;
+        }
+        if self.encoder.property::<u32>("bitrate") == requested {
+            return true;
+        }
+        if !spec.flags().contains(gst::PARAM_FLAG_MUTABLE_PLAYING) {
+            return false;
+        }
+        self.encoder.set_property("bitrate", requested);
+        self.encoder.property::<u32>("bitrate") == requested
     }
     pub async fn stop(&mut self) {
-        let pipeline=self.pipeline.clone();
-        let _=tokio::task::spawn_blocking(move||pipeline.set_state(gst::State::Null)).await;
+        let pipeline = self.pipeline.clone();
+        let _ = tokio::task::spawn_blocking(move || pipeline.set_state(gst::State::Null)).await;
         if let Some(lease) = &mut self.lease {
             lease.close().await;
         }
@@ -521,75 +805,199 @@ impl Drop for Capture {
 mod pipewire_tests {
     use super::*;
 
-    #[test]fn advertised_caps_envelope_preserves_unknown_and_runtime_flags(){
-        gst::init().unwrap();let element=gst::ElementFactory::make("identity").build().unwrap();
-        assert_eq!(advertised_caps(&element,&gst::Caps::new_any()),crate::encode_caps::EncodeCaps::default());
-        let caps:gstreamer::Caps="video/x-raw,width=(int)[16,4096],height=(int)[16,2160]".parse().unwrap();
-        let advertised=advertised_caps(&element,&caps);
-        assert_eq!((advertised.min_width,advertised.max_width,advertised.max_height),(16,4096,2160));assert_eq!(advertised.dynamic_bitrate,0);assert_eq!(advertised.max_fps,0);
-        assert_eq!(advertised.rejection(4588,1920,120),Some(crate::encode_caps::Rejection::Dimensions));
+    #[test]
+    fn advertised_caps_envelope_preserves_unknown_and_runtime_flags() {
+        gst::init().unwrap();
+        let element = gst::ElementFactory::make("identity").build().unwrap();
+        assert_eq!(
+            advertised_caps(&element, &gst::Caps::new_any()),
+            crate::encode_caps::EncodeCaps::default()
+        );
+        let caps: gstreamer::Caps = "video/x-raw,width=(int)[16,4096],height=(int)[16,2160]"
+            .parse()
+            .unwrap();
+        let advertised = advertised_caps(&element, &caps);
+        assert_eq!(
+            (
+                advertised.min_width,
+                advertised.max_width,
+                advertised.max_height
+            ),
+            (16, 4096, 2160)
+        );
+        assert_eq!(advertised.dynamic_bitrate, 0);
+        assert_eq!(advertised.max_fps, 0);
+        assert_eq!(
+            advertised.rejection(4588, 1920, 120),
+            Some(crate::encode_caps::Rejection::Dimensions)
+        );
         let union:gst::Caps="video/x-raw,width=(int)[16,4096],height=(int)[16,2160]; video/x-raw,format=(string)NV12".parse().unwrap();
-        let uncertain=advertised_caps(&element,&union);assert_eq!((uncertain.min_width,uncertain.max_width,uncertain.max_height),(0,0,0));
-        assert_eq!(uncertain.rejection(4588,1920,120),None);
+        let uncertain = advertised_caps(&element, &union);
+        assert_eq!(
+            (
+                uncertain.min_width,
+                uncertain.max_width,
+                uncertain.max_height
+            ),
+            (0, 0, 0)
+        );
+        assert_eq!(uncertain.rejection(4588, 1920, 120), None);
     }
     #[test]
-    #[ignore="Needs packaged GStreamer and NVENC GPU; synthetic frames only"]
-    fn adaptive_bitrate_reconfigures_gstreamer_encoders()->Result<()> {
-        gst::init()?;let runtime=tokio::runtime::Runtime::new()?;
+    #[ignore = "Needs packaged GStreamer and NVENC GPU; synthetic frames only"]
+    fn adaptive_bitrate_reconfigures_gstreamer_encoders() -> Result<()> {
+        gst::init()?;
+        let runtime = tokio::runtime::Runtime::new()?;
         runtime.block_on(async {
-            for (codec,encoder) in [(Codec::Hevc,Encoder::Auto),(Codec::Av1,Encoder::Auto),(Codec::Hevc,Encoder::Software)] {
-                let mut capture=Capture::open_with_settings(Source::Synthetic(640,360),codec,encoder,crate::bandwidth::UploadProfile::Balanced,crate::resolution::StreamSettings{size:crate::resolution::OutputSize::Native,fps:30}).await?;
-                let mut controller=crate::adaptive_upload::Controller::new(crate::adaptive_upload::Mode::Automatic,capture.bitrate_limit);
-                let start=std::time::Instant::now();let mut last=None;
+            for (codec, encoder) in [
+                (Codec::Hevc, Encoder::Auto),
+                (Codec::Av1, Encoder::Auto),
+                (Codec::Hevc, Encoder::Software),
+            ] {
+                let mut capture = Capture::open_with_settings(
+                    Source::Synthetic(640, 360),
+                    codec,
+                    encoder,
+                    crate::bandwidth::UploadProfile::Balanced,
+                    crate::resolution::StreamSettings {
+                        size: crate::resolution::OutputSize::Native,
+                        fps: 30,
+                    },
+                )
+                .await?;
+                let mut controller = crate::adaptive_upload::Controller::new(
+                    crate::adaptive_upload::Mode::Automatic,
+                    capture.bitrate_limit,
+                );
+                let start = std::time::Instant::now();
+                let mut last = None;
                 for second in 0..33 {
-                    let grant=match second{1..=4=>4_000_000,21=>0,_=>25_000_000};
-                    let rate=controller.sample(start+Duration::from_secs(second),grant);
-                    if rate==0{continue;}
-                    ensure!(capture.bitrate(rate),"GStreamer backend refused bitrate change: {}",capture.backend);
-                    ensure!(capture.encoder.property::<u32>("bitrate")==rate/1000,"Bitrate configuration readback failed");
-                    let until=std::time::Instant::now()+Duration::from_secs(4);
-                    loop {if let Some(packet)=capture.poll()?{if last.is_none_or(|at|packet.timestamp_us>at){last=Some(packet.timestamp_us);break;}}ensure!(std::time::Instant::now()<until,"No media after reconfiguration");tokio::time::sleep(Duration::from_millis(2)).await;}
+                    let grant = match second {
+                        1..=4 => 4_000_000,
+                        21 => 0,
+                        _ => 25_000_000,
+                    };
+                    let rate = controller.sample(start + Duration::from_secs(second), grant);
+                    if rate == 0 {
+                        continue;
+                    }
+                    ensure!(
+                        capture.bitrate(rate),
+                        "GStreamer backend refused bitrate change: {}",
+                        capture.backend
+                    );
+                    ensure!(
+                        capture.encoder.property::<u32>("bitrate") == rate / 1000,
+                        "Bitrate configuration readback failed"
+                    );
+                    let until = std::time::Instant::now() + Duration::from_secs(4);
+                    loop {
+                        if let Some(packet) = capture.poll()? {
+                            if last.is_none_or(|at| packet.timestamp_us > at) {
+                                last = Some(packet.timestamp_us);
+                                break;
+                            }
+                        }
+                        ensure!(
+                            std::time::Instant::now() < until,
+                            "No media after reconfiguration"
+                        );
+                        tokio::time::sleep(Duration::from_millis(2)).await;
+                    }
                 }
-                let report=capture.evidence.report();let samples=report["stages"]["gst_encoder_input_to_encoded_sink"]["samples"].as_u64().unwrap_or(0);
-                eprintln!("Evidence native: backend={} encoder_timing_samples={} correlation_misses={}",capture.backend,samples,report["correlation_misses"]);
-                if capture.backend.starts_with("nv"){ensure!(samples>0,"No exact-PTS encoder timing evidence on the synthetic NVENC pipeline");}
-                ensure!(controller.snapshot().increases>0,"No gradual recovery exercised");capture.stop().await;
-            }Ok(())
+                let report = capture.evidence.report();
+                let samples = report["stages"]["gst_encoder_input_to_encoded_sink"]["samples"]
+                    .as_u64()
+                    .unwrap_or(0);
+                eprintln!(
+                    "Evidence native: backend={} encoder_timing_samples={} correlation_misses={}",
+                    capture.backend, samples, report["correlation_misses"]
+                );
+                if capture.backend.starts_with("nv") {
+                    ensure!(
+                        samples > 0,
+                        "No exact-PTS encoder timing evidence on the synthetic NVENC pipeline"
+                    );
+                }
+                ensure!(
+                    controller.snapshot().increases > 0,
+                    "No gradual recovery exercised"
+                );
+                capture.stop().await;
+            }
+            Ok(())
         })
     }
     #[test]
-    #[ignore="Requires NVENC GPU and packaged GStreamer plugins; generated frames only"]
-    fn synthetic_output_limits_and_fps()->Result<()> {
-        gst::init()?;let runtime=tokio::runtime::Runtime::new()?;
+    #[ignore = "Requires NVENC GPU and packaged GStreamer plugins; generated frames only"]
+    fn synthetic_output_limits_and_fps() -> Result<()> {
+        gst::init()?;
+        let runtime = tokio::runtime::Runtime::new()?;
         runtime.block_on(async {
-            for codec in [Codec::Hevc,Codec::Av1] {for (size,fps,expected) in [
-                (crate::resolution::OutputSize::FullHd,30,(1920,804)),
-                (crate::resolution::OutputSize::QuadHd,60,(2560,1072)),
-                (crate::resolution::OutputSize::Native,120,(3440,1440))] {
-                let mut cap=Capture::open_with_settings(Source::Synthetic(3440,1440),codec,Encoder::Auto,crate::bandwidth::UploadProfile::Economic,crate::resolution::StreamSettings{size,fps}).await?;
-                assert_eq!(cap.fps,fps);let mut count=0;let mut first=None;let mut last=0;
-                let until=std::time::Instant::now()+Duration::from_secs(10);
-                while count<10 && std::time::Instant::now()<until {
-                    if let Some(packet)=cap.poll()?{assert_eq!((packet.width,packet.height),expected);if first.is_none(){first=Some(packet.timestamp_us);}last=packet.timestamp_us;count+=1;}
-                    tokio::time::sleep(Duration::from_millis(2)).await;
+            for codec in [Codec::Hevc, Codec::Av1] {
+                for (size, fps, expected) in [
+                    (crate::resolution::OutputSize::FullHd, 30, (1920, 804)),
+                    (crate::resolution::OutputSize::QuadHd, 60, (2560, 1072)),
+                    (crate::resolution::OutputSize::Native, 120, (3440, 1440)),
+                ] {
+                    let mut cap = Capture::open_with_settings(
+                        Source::Synthetic(3440, 1440),
+                        codec,
+                        Encoder::Auto,
+                        crate::bandwidth::UploadProfile::Economic,
+                        crate::resolution::StreamSettings { size, fps },
+                    )
+                    .await?;
+                    assert_eq!(cap.fps, fps);
+                    let mut count = 0;
+                    let mut first = None;
+                    let mut last = 0;
+                    let until = std::time::Instant::now() + Duration::from_secs(10);
+                    while count < 10 && std::time::Instant::now() < until {
+                        if let Some(packet) = cap.poll()? {
+                            assert_eq!((packet.width, packet.height), expected);
+                            if first.is_none() {
+                                first = Some(packet.timestamp_us);
+                            }
+                            last = packet.timestamp_us;
+                            count += 1;
+                        }
+                        tokio::time::sleep(Duration::from_millis(2)).await;
+                    }
+                    cap.stop().await;
+                    ensure!(count == 10, "No frames at selected output size");
+                    ensure!(
+                        last - first.unwrap() >= 8_000_000 / fps as i64,
+                        "Capture exceeded requested FPS"
+                    );
                 }
-                cap.stop().await;ensure!(count==10,"No frames at selected output size");
-                ensure!(last-first.unwrap()>=8_000_000/fps as i64,"Capture exceeded requested FPS");
-            }}Ok(())
+            }
+            Ok(())
         })
     }
     #[test]
     #[ignore = "requires the isolated synthetic PipeWire test daemon"]
     fn pipewire_first_encoded_frames() -> Result<()> {
         gst::init()?;
-        let socket=std::os::unix::net::UnixStream::connect(std::env::var("HYPERCAST_TEST_PIPEWIRE_SOCKET")?)?;
-        let fd:OwnedFd=socket.into();
-        let size=std::env::var("HYPERCAST_TEST_PIPEWIRE_SIZE").unwrap_or_else(|_|"3440x1440".into());
-        let (w,h)=size.split_once('x').context("Invalid test size")?;
-        let (w,h)=(w.parse::<u32>()?,h.parse::<u32>()?);
-        ensure!(crate::resolution::valid(w,h),"Invalid test size");
-        let encoder=if std::env::var("HYPERCAST_TEST_PIPEWIRE_ENCODER").as_deref()==Ok("GPU"){Encoder::Auto}else{Encoder::Software};
-        let codec=if std::env::var("HYPERCAST_TEST_PIPEWIRE_CODEC").as_deref()==Ok("av1"){Codec::Av1}else{Codec::Hevc};
+        let socket = std::os::unix::net::UnixStream::connect(std::env::var(
+            "HYPERCAST_TEST_PIPEWIRE_SOCKET",
+        )?)?;
+        let fd: OwnedFd = socket.into();
+        let size =
+            std::env::var("HYPERCAST_TEST_PIPEWIRE_SIZE").unwrap_or_else(|_| "3440x1440".into());
+        let (w, h) = size.split_once('x').context("Invalid test size")?;
+        let (w, h) = (w.parse::<u32>()?, h.parse::<u32>()?);
+        ensure!(crate::resolution::valid(w, h), "Invalid test size");
+        let encoder = if std::env::var("HYPERCAST_TEST_PIPEWIRE_ENCODER").as_deref() == Ok("GPU") {
+            Encoder::Auto
+        } else {
+            Encoder::Software
+        };
+        let codec = if std::env::var("HYPERCAST_TEST_PIPEWIRE_CODEC").as_deref() == Ok("av1") {
+            Codec::Av1
+        } else {
+            Codec::Hevc
+        };
         tokio::runtime::Runtime::new()?.block_on(async move {
             let description=format!("pipewiresrc fd={} target-object=HyperCastTest client-name=HyperCastProbe do-timestamp=true ! video/x-raw,width={w},height={h}",fd.as_raw_fd());
             let settings=if std::env::var("HYPERCAST_TEST_PIPEWIRE_FHD").as_deref()==Ok("1"){crate::resolution::StreamSettings{size:crate::resolution::OutputSize::FullHd,fps:60}}else{Default::default()};
@@ -694,7 +1102,11 @@ impl Playout {
             .pop_filtered(&[gst::MessageType::Error])
         {
             if let gst::MessageView::Error(e) = message.view() {
-                anyhow::bail!(crate::i18n_format!("Reprodução de áudio: {}","Audio playback: {}", e.error()));
+                anyhow::bail!(crate::i18n_format!(
+                    "Reprodução de áudio: {}",
+                    "Audio playback: {}",
+                    e.error()
+                ));
             }
         }
         if self.source.current_level_bytes() > 11520 {
@@ -760,7 +1172,10 @@ pub async fn media_self_test() -> Result<()> {
                 }
                 key |= packet.keyframe;
                 frames += 1;
-                ensure!(crate::resolution::valid(packet.width,packet.height),"Invalid capture dimensions");
+                ensure!(
+                    crate::resolution::valid(packet.width, packet.height),
+                    "Invalid capture dimensions"
+                );
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -797,13 +1212,17 @@ pub async fn publish_self_test(address: &str, seconds: u32) -> Result<()> {
     } else {
         Encoder::Software
     };
-    let upload=match std::env::var("HYPERCAST_LINUX_TEST_UPLOAD_MBPS"){
-        Ok(value)=>crate::bandwidth::UploadProfile::from_mbps(value.parse()?).context("Invalid synthetic video budget")?,
-        Err(_)=>crate::bandwidth::UploadProfile::Maximum,
+    let upload = match std::env::var("HYPERCAST_LINUX_TEST_UPLOAD_MBPS") {
+        Ok(value) => crate::bandwidth::UploadProfile::from_mbps(value.parse()?)
+            .context("Invalid synthetic video budget")?,
+        Err(_) => crate::bandwidth::UploadProfile::Maximum,
     };
-    let mut capture = Capture::open_with_profile(Source::Test, codec, encoder,upload).await?;
-    ensure!(capture.encoder.property::<u32>("bitrate")<=capture.bitrate_limit/1000,"Encoder ignored video budget");
-    println!("Linux video budget: {} bps",capture.bitrate_limit);
+    let mut capture = Capture::open_with_profile(Source::Test, codec, encoder, upload).await?;
+    ensure!(
+        capture.encoder.property::<u32>("bitrate") <= capture.bitrate_limit / 1000,
+        "Encoder ignored video budget"
+    );
+    println!("Linux video budget: {} bps", capture.bitrate_limit);
     let fps = capture.fps;
     let (room, mut events) =
         crate::network::connect(address, &crate::network::token_from_env()?).await?;
@@ -862,7 +1281,7 @@ pub async fn publish_self_test(address: &str, seconds: u32) -> Result<()> {
                             continue;
                         }
                     }
-                    publisher.set_resolution_if_changed(packet.width,packet.height);
+                    publisher.set_resolution_if_changed(packet.width, packet.height);
                     if publisher.push(&packet.bytes, packet.timestamp_us, packet.keyframe)? {
                         frames += 1;
                     }

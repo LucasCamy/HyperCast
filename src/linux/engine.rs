@@ -1,5 +1,5 @@
-use crate::resilience::StateMutex as Mutex;
 use super::media::{AudioCapture, Capture, Codec, Encoder, Playout, Source};
+use crate::resilience::StateMutex as Mutex;
 use crate::{
     network::{self, EncodedPublisher},
     subscription::{Demand, ViewMode, delivery_demand},
@@ -34,16 +34,16 @@ pub struct Screen {
     pub owner: String,
     pub name: String,
 }
-#[derive(Default,Clone)]
+#[derive(Default, Clone)]
 pub struct State {
     pub connected: bool,
     pub camera_active: bool,
     pub camera_starting: bool,
-    pub quality:crate::video_metrics::QualitySnapshot,
+    pub quality: crate::video_metrics::QualitySnapshot,
     pub reception_resetting: bool,
     pub reception_restarts: u64,
     /// Recovering streams; true means the automatic retry budget is exhausted.
-    pub recovering: HashMap<String,bool>,
+    pub recovering: HashMap<String, bool>,
     pub reconnecting: bool,
     pub sharing: bool,
     pub selecting: bool,
@@ -51,7 +51,7 @@ pub struct State {
     pub status: String,
     pub participants: Vec<(String, String)>,
     pub screens: Vec<Screen>,
-    pub frames: HashMap<String, (u64, Arc<BoxVideoFrame>,Instant)>,
+    pub frames: HashMap<String, (u64, Arc<BoxVideoFrame>, Instant)>,
     pub sent: u64,
     pub received: u64,
     pub audio_received: u64,
@@ -85,7 +85,7 @@ pub enum Command {
     RestartReception,
     StreamSettings(crate::resolution::StreamSettings),
     Layout(Layout),
-    Share(Source, Codec, Encoder,crate::bandwidth::UploadProfile),
+    Share(Source, Codec, Encoder, crate::bandwidth::UploadProfile),
     Stop,
     CancelSelection,
     Audio(bool),
@@ -95,41 +95,80 @@ pub struct Engine {
     pub state: Arc<Mutex<State>>,
     pub tx: tokio::sync::mpsc::UnboundedSender<Command>,
     thread: Option<std::thread::JoinHandle<()>>,
-    cancel:crate::room_transition::Cancellation,
+    cancel: crate::room_transition::Cancellation,
 }
 impl Engine {
     #[cfg(test)]
-    pub fn fixture(state:Arc<Mutex<State>>)->Self {let(tx,_rx)=tokio::sync::mpsc::unbounded_channel();Self{state,tx,thread:None,cancel:Default::default()}}
+    pub fn fixture(state: Arc<Mutex<State>>) -> Self {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        Self {
+            state,
+            tx,
+            thread: None,
+            cancel: Default::default(),
+        }
+    }
 
-    pub fn finished(&self)->bool{self.thread.as_ref().is_none_or(|t|t.is_finished())}
-    pub fn request_exit(&self){self.cancel.cancel();}
+    pub fn finished(&self) -> bool {
+        self.thread.as_ref().is_none_or(|t| t.is_finished())
+    }
+    pub fn request_exit(&self) {
+        self.cancel.cancel();
+    }
     pub fn start(address: String, token: String, ctx: egui::Context) -> Self {
         let state = Arc::new(Mutex::new(State {
-            status: crate::i18n::label("Conectando…","Connecting…").into(),
+            status: crate::i18n::label("Conectando…", "Connecting…").into(),
             ..Default::default()
         }));
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let shared = state.clone();
-        let cancel=crate::room_transition::Cancellation::default();let stopping=cancel.clone();
-        let failure_state=state.clone();let failure_ctx=ctx.clone();
+        let cancel = crate::room_transition::Cancellation::default();
+        let stopping = cancel.clone();
+        let failure_state = state.clone();
+        let failure_ctx = ctx.clone();
         let thread = std::thread::spawn(move || {
-            let healthy=crate::resilience::guard(|| {
-            let Ok(runtime)=tokio::runtime::Runtime::new() else {shared.lock().unwrap().status=crate::resilience::worker_failure().into();ctx.request_repaint();return;};
-            let result = runtime.block_on(session(address, token, rx, shared.clone(), ctx.clone(),stopping));
-            if let Err(error) = result {
-                let mut s = shared.lock().unwrap();s.quality.evidence.event(crate::evidence::EventKind::SessionFailed);
-                s.status = error.to_string();
-                s.connected = false;
-                s.sharing = false;s.selecting=false;s.reconnecting=false;s.reception_resetting=false;s.can_publish=false;
-            }
-            ctx.request_repaint();
-            runtime.shutdown_timeout(Duration::from_secs(2));
+            let healthy = crate::resilience::guard(|| {
+                let Ok(runtime) = tokio::runtime::Runtime::new() else {
+                    shared.lock().unwrap().status = crate::resilience::worker_failure().into();
+                    ctx.request_repaint();
+                    return;
+                };
+                let result = runtime.block_on(session(
+                    address,
+                    token,
+                    rx,
+                    shared.clone(),
+                    ctx.clone(),
+                    stopping,
+                ));
+                if let Err(error) = result {
+                    let mut s = shared.lock().unwrap();
+                    s.quality
+                        .evidence
+                        .event(crate::evidence::EventKind::SessionFailed);
+                    s.status = error.to_string();
+                    s.connected = false;
+                    s.sharing = false;
+                    s.selecting = false;
+                    s.reconnecting = false;
+                    s.reception_resetting = false;
+                    s.can_publish = false;
+                }
+                ctx.request_repaint();
+                runtime.shutdown_timeout(Duration::from_secs(2));
             });
-            if !healthy {let mut s=failure_state.lock().unwrap();*s=State::default();s.status=crate::resilience::worker_failure().into();drop(s);failure_ctx.request_repaint();}
+            if !healthy {
+                let mut s = failure_state.lock().unwrap();
+                *s = State::default();
+                s.status = crate::resilience::worker_failure().into();
+                drop(s);
+                failure_ctx.request_repaint();
+            }
         });
         Self {
             state,
-            tx, cancel,
+            tx,
+            cancel,
             thread: Some(thread),
         }
     }
@@ -143,37 +182,107 @@ impl Drop for Engine {
         }
     }
 }
-struct Sink(tokio::task::JoinHandle<()>, #[cfg(test)] Arc<std::sync::atomic::AtomicBool>);
+struct Sink(
+    tokio::task::JoinHandle<()>,
+    #[cfg(test)] Arc<std::sync::atomic::AtomicBool>,
+);
 impl Drop for Sink {
     fn drop(&mut self) {
         self.0.abort();
     }
 }
 
-fn attach_video(track:RemoteVideoTrack,sid:&str,shared:&Arc<Mutex<State>>,ctx:&egui::Context)->Sink {
-    let enabled_track=track.rtc_track();
-    let mut stream=NativeVideoStream::with_options(enabled_track.clone(),NativeVideoStreamOptions{queue_size_frames:Some(1)});
-    let state=shared.clone();let repaint=ctx.clone();let key=sid.to_owned();
+fn attach_video(
+    track: RemoteVideoTrack,
+    sid: &str,
+    shared: &Arc<Mutex<State>>,
+    ctx: &egui::Context,
+) -> Sink {
+    let enabled_track = track.rtc_track();
+    let mut stream = NativeVideoStream::with_options(
+        enabled_track.clone(),
+        NativeVideoStreamOptions {
+            queue_size_frames: Some(1),
+        },
+    );
+    let state = shared.clone();
+    let repaint = ctx.clone();
+    let key = sid.to_owned();
     #[cfg(test)]
-    let stall=Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stall = Arc::new(std::sync::atomic::AtomicBool::new(false));
     #[cfg(test)]
-    let reader_stall=stall.clone();
-    let task=tokio::spawn(async move{
-        while let Some(frame)=stream.next().await {if !enabled_track.enabled(){continue;}#[cfg(test)]
-            if reader_stall.load(Ordering::Relaxed){continue;}let w=frame.buffer.width();let h=frame.buffer.height();if !crate::resolution::valid(w,h){continue;}
-            let mut s=state.lock().unwrap();s.received+=1;let sequence=s.received;s.frames.insert(key.clone(),(sequence,Arc::new(frame),Instant::now()));drop(s);repaint.request_repaint();}
+    let reader_stall = stall.clone();
+    let task = tokio::spawn(async move {
+        while let Some(frame) = stream.next().await {
+            if !enabled_track.enabled() {
+                continue;
+            }
+            #[cfg(test)]
+            if reader_stall.load(Ordering::Relaxed) {
+                continue;
+            }
+            let w = frame.buffer.width();
+            let h = frame.buffer.height();
+            if !crate::resolution::valid(w, h) {
+                continue;
+            }
+            let mut s = state.lock().unwrap();
+            s.received += 1;
+            let sequence = s.received;
+            s.frames
+                .insert(key.clone(), (sequence, Arc::new(frame), Instant::now()));
+            drop(s);
+            repaint.request_repaint();
+        }
     });
-    Sink(task, #[cfg(test)] stall)
+    Sink(
+        task,
+        #[cfg(test)]
+        stall,
+    )
 }
-fn attach_audio(track:RemoteAudioTrack,volume:&Arc<AtomicU32>,shared:&Arc<Mutex<State>>)->Sink {
-    let gain=volume.clone();let state=shared.clone();
-    let mut stream=NativeAudioStream::with_options(track.rtc_track(),48000,2,NativeAudioStreamOptions{queue_size_frames:Some(3)});
-    Sink(tokio::spawn(async move {
-        let Ok(output)=Playout::open()else{return;};
-        while let Some(frame)=stream.next().await {if frame.sample_rate==48000&&frame.num_channels==2{let gain=if std::env::var("HYPERCAST_AUDIO_TEST_SILENT_OUTPUT").as_deref()==Ok("1"){0}else{gain.load(Ordering::Relaxed)};
-                let mut s=state.lock().unwrap();s.audio_received+=1;drop(s);
-                if let Err(e)=output.push(&frame.data,gain){state.lock().unwrap().status=e.to_string();break;}}}
-    }), #[cfg(test)] Arc::new(std::sync::atomic::AtomicBool::new(false)))
+fn attach_audio(
+    track: RemoteAudioTrack,
+    volume: &Arc<AtomicU32>,
+    shared: &Arc<Mutex<State>>,
+) -> Sink {
+    let gain = volume.clone();
+    let state = shared.clone();
+    let mut stream = NativeAudioStream::with_options(
+        track.rtc_track(),
+        48000,
+        2,
+        NativeAudioStreamOptions {
+            queue_size_frames: Some(3),
+        },
+    );
+    Sink(
+        tokio::spawn(async move {
+            let Ok(output) = Playout::open() else {
+                return;
+            };
+            while let Some(frame) = stream.next().await {
+                if frame.sample_rate == 48000 && frame.num_channels == 2 {
+                    let gain = if std::env::var("HYPERCAST_AUDIO_TEST_SILENT_OUTPUT").as_deref()
+                        == Ok("1")
+                    {
+                        0
+                    } else {
+                        gain.load(Ordering::Relaxed)
+                    };
+                    let mut s = state.lock().unwrap();
+                    s.audio_received += 1;
+                    drop(s);
+                    if let Err(e) = output.push(&frame.data, gain) {
+                        state.lock().unwrap().status = e.to_string();
+                        break;
+                    }
+                }
+            }
+        }),
+        #[cfg(test)]
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )
 }
 
 fn refresh(
@@ -197,11 +306,14 @@ fn refresh(
                         Screen {
                             sid: publication.sid().to_string(),
                             owner: owner.clone(),
-                            name: format!("{name} · {}", if publication.source() == TrackSource::Camera {
-                                crate::i18n::label("Câmera", "Camera")
-                            } else {
-                                crate::i18n::label("Tela", "Screen")
-                            }),
+                            name: format!(
+                                "{name} · {}",
+                                if publication.source() == TrackSource::Camera {
+                                    crate::i18n::label("Câmera", "Camera")
+                                } else {
+                                    crate::i18n::label("Tela", "Screen")
+                                }
+                            ),
                         },
                         publication,
                     )
@@ -209,7 +321,10 @@ fn refresh(
         })
         .collect();
     screens.sort_by_key(|(screen, publication)| {
-        (publication.source() == TrackSource::Camera, screen.owner.clone())
+        (
+            publication.source() == TrackSource::Camera,
+            screen.owner.clone(),
+        )
     });
     screens.truncate(6);
     let focus = layout
@@ -227,7 +342,7 @@ fn refresh(
             publication.simulcasted(),
         );
         let enabled = wanted != Demand::Paused;
-        crate::subscription::keep_receiver(publication,enabled && !recovery.held(&screen.sid));
+        crate::subscription::keep_receiver(publication, enabled && !recovery.held(&screen.sid));
         if enabled {
             active.insert(screen.sid.clone(), screen.owner.clone());
             if publication.simulcasted() {
@@ -249,10 +364,11 @@ fn refresh(
                 && !layout.paused
                 && layout.volume > 0
                 && screens.iter().any(|(screen, video)| {
-                    screen.owner == owner && video.source() == TrackSource::Screenshare
+                    screen.owner == owner
+                        && video.source() == TrackSource::Screenshare
                         && active.contains_key(&screen.sid)
                 });
-            crate::subscription::keep_receiver(&publication,enabled);
+            crate::subscription::keep_receiver(&publication, enabled);
         }
     }
     let mut state = shared.lock().unwrap();
@@ -358,12 +474,31 @@ async fn session(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<Command>,
     shared: Arc<Mutex<State>>,
     ctx: egui::Context,
-    stopping:crate::room_transition::Cancellation,
+    stopping: crate::room_transition::Cancellation,
 ) -> Result<()> {
-    let evidence=shared.lock().unwrap().quality.evidence.clone();evidence.event(crate::evidence::EventKind::Connecting);
+    let evidence = shared.lock().unwrap().quality.evidence.clone();
+    evidence.event(crate::evidence::EventKind::Connecting);
     gstreamer::init()?;
     livekit::webrtc::enable_zero_playout_delay()?;
-    let connection = match stopping.run(network::connect_desktop(&address,&token,std::env::var("HYPERCAST_RELAY_ONLY").as_deref()==Ok("1"),|attempt,_|{evidence.event(crate::evidence::EventKind::ConnectRetry);shared.lock().unwrap().status=crate::i18n_format!("Tentando conectar novamente… {attempt}/3","Retrying connection… {attempt}/3");ctx.request_repaint();})).await {Some(result)=>result?,None=>return Ok(())};
+    let connection = match stopping
+        .run(network::connect_desktop(
+            &address,
+            &token,
+            std::env::var("HYPERCAST_RELAY_ONLY").as_deref() == Ok("1"),
+            |attempt, _| {
+                evidence.event(crate::evidence::EventKind::ConnectRetry);
+                shared.lock().unwrap().status = crate::i18n_format!(
+                    "Tentando conectar novamente… {attempt}/3",
+                    "Retrying connection… {attempt}/3"
+                );
+                ctx.request_repaint();
+            },
+        ))
+        .await
+    {
+        Some(result) => result?,
+        None => return Ok(()),
+    };
     let (room, mut events) = connection;
     let mut room = Arc::new(room);
     {
@@ -373,7 +508,7 @@ async fn session(
             .local_participant()
             .permission()
             .is_some_and(|grant| grant.can_publish);
-        s.status = crate::i18n::label("Conectado","Connected").into();
+        s.status = crate::i18n::label("Conectado", "Connected").into();
     }
     let volume = Arc::new(AtomicU32::new(80));
     let mut layout = Layout::default();
@@ -387,15 +522,15 @@ async fn session(
     let mut wants_audio = false;
     let mut pending: Option<tokio::task::JoinHandle<Result<(Capture, Codec)>>> = None;
     let mut current_codec = Codec::Hevc;
-    let mut ever_published=false;
-    let mut settings=crate::resolution::StreamSettings::default();
-    let mut publication_format:Option<(Codec,u32,u32)>=None;
-    let mut last_video_bps:Option<u64>=None;
-    let mut rate_mode=crate::adaptive_upload::Mode::Manual;
-    let mut rate_control:Option<crate::adaptive_upload::Controller>=None;
-    let mut rate_rejected=false;
-    let mut retiring:Option<tokio::task::JoinHandle<()>>=None;
-    let mut transmit_paused=false;
+    let mut ever_published = false;
+    let mut settings = crate::resolution::StreamSettings::default();
+    let mut publication_format: Option<(Codec, u32, u32)> = None;
+    let mut last_video_bps: Option<u64> = None;
+    let mut rate_mode = crate::adaptive_upload::Mode::Manual;
+    let mut rate_control: Option<crate::adaptive_upload::Controller> = None;
+    let mut rate_rejected = false;
+    let mut retiring: Option<tokio::task::JoinHandle<()>> = None;
+    let mut transmit_paused = false;
     let started = Instant::now();
     let mut capture_ticks = tokio::time::interval(Duration::from_millis(8));
     let mut idle_ticks = tokio::time::interval(Duration::from_millis(80));
@@ -403,10 +538,13 @@ async fn session(
     idle_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut last_ui_refresh = Instant::now();
     let mut last_refresh = Instant::now() - Duration::from_secs(1);
-    let mut reception_restart:Option<Instant>=None;
-    let(mut send_meter,mut receive_meter)=(crate::video_metrics::TrafficMeter::default(),crate::video_metrics::TrafficMeter::default());
-    let mut sent_bytes=0u64;
-    let mut recovery=crate::reception_recovery::runtime::Monitor::default();
+    let mut reception_restart: Option<Instant> = None;
+    let (mut send_meter, mut receive_meter) = (
+        crate::video_metrics::TrafficMeter::default(),
+        crate::video_metrics::TrafficMeter::default(),
+    );
+    let mut sent_bytes = 0u64;
+    let mut recovery = crate::reception_recovery::runtime::Monitor::default();
     let outcome=async {
         loop {
             anyhow::ensure!(!shared.was_reset(),crate::resilience::worker_failure());
@@ -695,7 +833,9 @@ async fn session(
     if let Some(mut cap) = capture.take() {
         cap.stop().await;
     }
-    if let Some(task)=retiring.take(){let _=task.await;}
+    if let Some(task) = retiring.take() {
+        let _ = task.await;
+    }
     if let Some(a) = audio.take() {
         a.stop(&room).await;
     }
@@ -719,7 +859,8 @@ async fn session(
     drop(room);
     {
         let mut s = shared.lock().unwrap();
-        evidence.event(crate::evidence::EventKind::Disconnected);s.connected = false;
+        evidence.event(crate::evidence::EventKind::Disconnected);
+        s.connected = false;
         s.sharing = false;
         s.selecting = false;
         s.frames.clear();
@@ -734,95 +875,202 @@ async fn session(
 mod reception_tests {
     use super::*;
     #[test]
-    #[ignore="Needs two authorized tokens for one isolated room and an NVENC GPU"]
-    fn publisher_source_and_codec_switches()->Result<()> {
-        let address=std::env::var("HYPERCAST_URL")?;
-        let publisher=Engine::start(address.clone(),std::env::var("HYPERCAST_PUBLISH_TOKEN")?,egui::Context::default());
-        let viewer=Engine::start(address,std::env::var("HYPERCAST_ROOM_TOKEN")?,egui::Context::default());
-        let deadline=Instant::now()+Duration::from_secs(15);
-        while !publisher.state.lock().unwrap().connected || !viewer.state.lock().unwrap().connected {
-            anyhow::ensure!(Instant::now()<deadline,"Switch test clients did not connect");
+    #[ignore = "Needs two authorized tokens for one isolated room and an NVENC GPU"]
+    fn publisher_source_and_codec_switches() -> Result<()> {
+        let address = std::env::var("HYPERCAST_URL")?;
+        let publisher = Engine::start(
+            address.clone(),
+            std::env::var("HYPERCAST_PUBLISH_TOKEN")?,
+            egui::Context::default(),
+        );
+        let viewer = Engine::start(
+            address,
+            std::env::var("HYPERCAST_ROOM_TOKEN")?,
+            egui::Context::default(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !publisher.state.lock().unwrap().connected || !viewer.state.lock().unwrap().connected
+        {
+            anyhow::ensure!(
+                Instant::now() < deadline,
+                "Switch test clients did not connect"
+            );
             std::thread::sleep(Duration::from_millis(25));
         }
-        publisher.tx.send(Command::RateMode(crate::adaptive_upload::Mode::Automatic))?;
+        publisher
+            .tx
+            .send(Command::RateMode(crate::adaptive_upload::Mode::Automatic))?;
         publisher.tx.send(Command::FailCapture)?;
-        let until=Instant::now()+Duration::from_secs(5);
+        let until = Instant::now() + Duration::from_secs(5);
         loop {
-            let s=publisher.state.lock().unwrap();
-            if !s.selecting && s.status==crate::i18n::label("A captura falhou internamente. Selecione a origem para tentar novamente.","Capture failed internally. Select the source to try again."){anyhow::ensure!(s.connected,"Capture failure disconnected the room");break;}
-            anyhow::ensure!(Instant::now()<until,"Capture task failure did not become retryable");drop(s);std::thread::sleep(Duration::from_millis(10));
-        }
-        let mut previous_sid=None;
-        for (step,(w,h,codec,encoder)) in [
-            (640,360,Codec::Av1,Encoder::Auto),
-            (800,600,Codec::Av1,Encoder::Auto),
-            (640,360,Codec::Hevc,Encoder::Auto),
-            (800,600,Codec::Hevc,Encoder::Software),
-            (640,360,Codec::Hevc,Encoder::Auto),
-            (640,360,Codec::Av1,Encoder::Auto),
-        ].into_iter().enumerate() {
-            if step>=3 {
-                publisher.tx.send(Command::Stop)?;
-                let until=Instant::now()+Duration::from_secs(5);
-                while publisher.state.lock().unwrap().sharing{anyhow::ensure!(Instant::now()<until,"Stop did not finish");std::thread::sleep(Duration::from_millis(10));}
+            let s = publisher.state.lock().unwrap();
+            if !s.selecting
+                && s.status
+                    == crate::i18n::label(
+                        "A captura falhou internamente. Selecione a origem para tentar novamente.",
+                        "Capture failed internally. Select the source to try again.",
+                    )
+            {
+                anyhow::ensure!(s.connected, "Capture failure disconnected the room");
+                break;
             }
-            let before=viewer.state.lock().unwrap().received;
-            publisher.tx.send(Command::Share(Source::Synthetic(w,h),codec,encoder,crate::bandwidth::UploadProfile::Economic))?;
-            let deadline=Instant::now()+Duration::from_secs(15);
-            let sid=loop {
-                let ready={let s=publisher.state.lock().unwrap();s.sharing&&!s.selecting};
-                let fresh={let s=viewer.state.lock().unwrap();s.screens.iter().find_map(|screen|s.frames.get(&screen.sid).filter(|_|step<2 || previous_sid.as_ref()!=Some(&screen.sid)).filter(|(sequence,frame,_)|*sequence>before+3 && frame.buffer.width()==w && frame.buffer.height()==h).map(|_|screen.sid.clone()))};
-                if ready{if let Some(sid)=fresh{break sid;}}
-                if Instant::now()>=deadline {let p=publisher.state.lock().unwrap();let v=viewer.state.lock().unwrap();anyhow::bail!("Switch {step} did not deliver fresh {w}x{h} frames: publisher={}, sent={}, viewer={}, received={}, screens={}",p.status,p.sent,v.status,v.received,v.screens.len());}
+            anyhow::ensure!(
+                Instant::now() < until,
+                "Capture task failure did not become retryable"
+            );
+            drop(s);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut previous_sid = None;
+        for (step, (w, h, codec, encoder)) in [
+            (640, 360, Codec::Av1, Encoder::Auto),
+            (800, 600, Codec::Av1, Encoder::Auto),
+            (640, 360, Codec::Hevc, Encoder::Auto),
+            (800, 600, Codec::Hevc, Encoder::Software),
+            (640, 360, Codec::Hevc, Encoder::Auto),
+            (640, 360, Codec::Av1, Encoder::Auto),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if step >= 3 {
+                publisher.tx.send(Command::Stop)?;
+                let until = Instant::now() + Duration::from_secs(5);
+                while publisher.state.lock().unwrap().sharing {
+                    anyhow::ensure!(Instant::now() < until, "Stop did not finish");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            let before = viewer.state.lock().unwrap().received;
+            publisher.tx.send(Command::Share(
+                Source::Synthetic(w, h),
+                codec,
+                encoder,
+                crate::bandwidth::UploadProfile::Economic,
+            ))?;
+            let deadline = Instant::now() + Duration::from_secs(15);
+            let sid = loop {
+                let ready = {
+                    let s = publisher.state.lock().unwrap();
+                    s.sharing && !s.selecting
+                };
+                let fresh = {
+                    let s = viewer.state.lock().unwrap();
+                    s.screens.iter().find_map(|screen| {
+                        s.frames
+                            .get(&screen.sid)
+                            .filter(|_| step < 2 || previous_sid.as_ref() != Some(&screen.sid))
+                            .filter(|(sequence, frame, _)| {
+                                *sequence > before + 3
+                                    && frame.buffer.width() == w
+                                    && frame.buffer.height() == h
+                            })
+                            .map(|_| screen.sid.clone())
+                    })
+                };
+                if ready {
+                    if let Some(sid) = fresh {
+                        break sid;
+                    }
+                }
+                if Instant::now() >= deadline {
+                    let p = publisher.state.lock().unwrap();
+                    let v = viewer.state.lock().unwrap();
+                    anyhow::bail!(
+                        "Switch {step} did not deliver fresh {w}x{h} frames: publisher={}, sent={}, viewer={}, received={}, screens={}",
+                        p.status,
+                        p.sent,
+                        v.status,
+                        v.received,
+                        v.screens.len()
+                    );
+                }
                 std::thread::sleep(Duration::from_millis(25));
             };
-            if let Some(previous)=previous_sid {
-                if step==1{anyhow::ensure!(sid==previous,"Compatible source change replaced the publication");}
-                else{anyhow::ensure!(sid!=previous,"Codec/FPS change kept an incompatible publication");}
+            if let Some(previous) = previous_sid {
+                if step == 1 {
+                    anyhow::ensure!(
+                        sid == previous,
+                        "Compatible source change replaced the publication"
+                    );
+                } else {
+                    anyhow::ensure!(
+                        sid != previous,
+                        "Codec/FPS change kept an incompatible publication"
+                    );
+                }
             }
-            previous_sid=Some(sid);
+            previous_sid = Some(sid);
             eprintln!("PASS: switch {step}: {w}x{h} {codec:?} {encoder:?}");
         }
-        drop(publisher);drop(viewer);
-        anyhow::ensure!(super::super::media::decoder_count()==0,"Switch test retained decoders");
+        drop(publisher);
+        drop(viewer);
+        anyhow::ensure!(
+            super::super::media::decoder_count() == 0,
+            "Switch test retained decoders"
+        );
         Ok(())
     }
     #[test]
-    #[ignore="Needs an isolated authorized room with two synthetic publishers"]
-    fn receiver_switch_and_refresh_cycles()->Result<()> {
-        let address=std::env::var("HYPERCAST_URL")?;
-        let token=std::env::var("HYPERCAST_ROOM_TOKEN")?;
-        let engine=Engine::start(address,token,egui::Context::default());
-        let deadline=Instant::now()+Duration::from_secs(15);
-        while engine.state.lock().unwrap().screens.len()<2 {
-            anyhow::ensure!(Instant::now()<deadline,"Synthetic publishers did not become ready");
+    #[ignore = "Needs an isolated authorized room with two synthetic publishers"]
+    fn receiver_switch_and_refresh_cycles() -> Result<()> {
+        let address = std::env::var("HYPERCAST_URL")?;
+        let token = std::env::var("HYPERCAST_ROOM_TOKEN")?;
+        let engine = Engine::start(address, token, egui::Context::default());
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while engine.state.lock().unwrap().screens.len() < 2 {
+            anyhow::ensure!(
+                Instant::now() < deadline,
+                "Synthetic publishers did not become ready"
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
-        let mut layout=Layout::default();
+        let mut layout = Layout::default();
         for cycle in 0..3 {
             for step in 0..20 {
-                layout.focus=Some(format!("hc-screen-{}",step%2+1));
+                layout.focus = Some(format!("hc-screen-{}", step % 2 + 1));
                 engine.tx.send(Command::Layout(layout.clone()))?;
                 std::thread::sleep(Duration::from_millis(60));
             }
-            let owner=format!("hc-screen-{}",cycle%2+1);
-            layout.focus=Some(owner.clone());engine.tx.send(Command::Layout(layout.clone()))?;
+            let owner = format!("hc-screen-{}", cycle % 2 + 1);
+            layout.focus = Some(owner.clone());
+            engine.tx.send(Command::Layout(layout.clone()))?;
             std::thread::sleep(Duration::from_millis(300));
-            let sequence=|engine:&Engine|{
-                let state=engine.state.lock().unwrap();
-                state.screens.iter().find(|s|s.owner==owner).and_then(|s|state.frames.get(&s.sid)).map(|f|f.0).unwrap_or(0)
+            let sequence = |engine: &Engine| {
+                let state = engine.state.lock().unwrap();
+                state
+                    .screens
+                    .iter()
+                    .find(|s| s.owner == owner)
+                    .and_then(|s| state.frames.get(&s.sid))
+                    .map(|f| f.0)
+                    .unwrap_or(0)
             };
-            let before=sequence(&engine);engine.tx.send(Command::RestartReception)?;
-            let deadline=Instant::now()+Duration::from_secs(10);
+            let before = sequence(&engine);
+            engine.tx.send(Command::RestartReception)?;
+            let deadline = Instant::now() + Duration::from_secs(10);
             loop {
-                let ready={let state=engine.state.lock().unwrap();state.connected && !state.reception_resetting && state.reception_restarts==cycle+1};
-                if ready && sequence(&engine)>before {break;}
-                anyhow::ensure!(Instant::now()<deadline,"Receive refresh did not produce a fresh selected frame");
+                let ready = {
+                    let state = engine.state.lock().unwrap();
+                    state.connected
+                        && !state.reception_resetting
+                        && state.reception_restarts == cycle + 1
+                };
+                if ready && sequence(&engine) > before {
+                    break;
+                }
+                anyhow::ensure!(
+                    Instant::now() < deadline,
+                    "Receive refresh did not produce a fresh selected frame"
+                );
                 std::thread::sleep(Duration::from_millis(50));
             }
         }
         drop(engine);
-        anyhow::ensure!(super::super::media::decoder_count()==0,"Receive shutdown retained decoders");
+        anyhow::ensure!(
+            super::super::media::decoder_count() == 0,
+            "Receive shutdown retained decoders"
+        );
         Ok(())
     }
 }
