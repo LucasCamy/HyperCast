@@ -8,11 +8,15 @@ normalmente o aplicativo. Credenciais e convites não fazem parte desse arquivo.
 `HYPERCAST_NAME`, quando definido explicitamente, substitui o preenchimento sem
 alterar o cache do usuário. Um cache inválido é ignorado.
 
-**Recolher menu** esconde a lateral; **Abrir menu** a restaura. A largura liberada
-é usada pelos vídeos. Seletores de origem abertos são fechados ao recolher.
+**Participantes**, à esquerda, recolhe ou restaura o painel lateral. Em janelas
+estreitas, o botão aparece como **Painel**. A largura liberada é usada pelos vídeos.
+**Grade**, **Destaque** e **Tela cheia** ficam juntos à direita, acima dos vídeos.
 
-No Windows, desmarque **Mostrar minha prévia** para interromper a geração da
-textura de prévia e liberar seu apresentador DirectX. Captura, codificação e envio
+Use **Mais opções → Qualidade do compartilhamento** para ajustar resolução, FPS,
+codec e limite de upload. Os indicadores de vídeo ficam em **Diagnóstico**.
+
+No Windows, desmarque **Mais opções → Mostrar minha prévia** para interromper a
+geração da textura de prévia e liberar seu apresentador DirectX. Captura, codificação e envio
 continuam ativos. Reativar a opção produz novos quadros locais. A versão Linux
 já não oferece prévia do próprio envio, portanto não faz esse processamento.
 
@@ -23,7 +27,7 @@ quem está sendo acompanhado. Recepção pausada não marca alguém como assisti
 Duplo clique no cartão do participante ou no vídeo mostra só aquela transmissão.
 No Windows também oculta as miniaturas estáticas; o modo de destaque
 recebe RTP apenas do vídeo remoto escolhido; as demais faixas ficam pausadas. No Linux o destaque já usa uma única
-transmissão. **Grid** restaura a visualização de múltiplas telas. Clique simples
+transmissão. **Grade** restaura a visualização de múltiplas telas. Clique simples
 continua selecionando a tela em destaque. O limite do servidor permanece três
 publicadores ativos.
 
