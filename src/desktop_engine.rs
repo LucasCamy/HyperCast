@@ -100,6 +100,14 @@ pub struct Layout {
     pub paused: bool,
     pub volume: u32,
 }
+#[derive(Clone, Copy, PartialEq)]
+pub struct ShareQuality {
+    pub codec: Codec,
+    pub settings: crate::resolution::StreamSettings,
+    pub upload: crate::bandwidth::UploadProfile,
+    pub rate_mode: crate::adaptive_upload::Mode,
+    pub profile: AmdProfile,
+}
 pub enum Command {
     ToggleCamera,
     RateMode(crate::adaptive_upload::Mode),
@@ -120,7 +128,13 @@ pub enum Command {
         pid: u32,
         codec: Codec,
     },
-    ChangeSource(CaptureTarget),
+    ChangeSource(CaptureTarget, Option<bool>),
+    ReplaceShare {
+        target: CaptureTarget,
+        quality: ShareQuality,
+        audio: bool,
+        applied: tokio::sync::oneshot::Sender<()>,
+    },
     StopShare,
     SystemAudio(bool),
     AmdProfile(AmdProfile),
@@ -204,8 +218,40 @@ impl Cast {
         stopping: &crate::room_transition::Cancellation,
         evidence: &crate::evidence::Evidence,
     ) -> Result<Self> {
-        let mut capture = VideoCapture::prepare(target)?;
-        let device = capture.device().clone();
+        Self::prepare(
+            target,
+            ShareQuality {
+                codec,
+                settings,
+                upload,
+                rate_mode,
+                profile,
+            },
+            evidence,
+        )?
+        .publish(runtime, room, stopping)
+    }
+
+    fn prepare(
+        target: CaptureTarget,
+        quality: ShareQuality,
+        evidence: &crate::evidence::Evidence,
+    ) -> Result<Self> {
+        let capture = VideoCapture::prepare(target)?;
+        let encoder = Self::prepare_encoder(&capture, quality)?;
+        Ok(Self::from_capture(
+            target, quality, capture, encoder, evidence,
+        ))
+    }
+
+    fn prepare_encoder(capture: &VideoCapture, quality: ShareQuality) -> Result<HardwareEncoder> {
+        let ShareQuality {
+            codec,
+            settings,
+            upload,
+            rate_mode,
+            profile,
+        } = quality;
         let (width, height) = capture.dimensions();
         crate::diagnostics::write(
             "capture",
@@ -243,37 +289,26 @@ impl Cast {
             &format!("source={width}x{height} output={send_width}x{send_height}"),
             "",
         );
-        let publisher = runtime
-            .block_on(stopping.run(EncodedPublisher::in_room(
-                room.clone(),
-                send_width,
-                send_height,
-                settings.fps,
-                upload.bps(),
-                codec == Codec::Av1,
-            )))
-            .ok_or_else(|| {
-                anyhow::anyhow!(crate::i18n::label(
-                    "Publicação cancelada",
-                    "Publication cancelled"
-                ))
-            })??;
-        let started = if stopping.is_cancelled() {
-            Err(anyhow::anyhow!(crate::i18n::label(
-                "Publicação cancelada",
-                "Publication cancelled"
-            )))
-        } else {
-            capture.start()
-        };
-        if let Err(error) = started {
-            drop(capture);
-            if let Err(unpublish_error) = runtime.block_on(publisher.stop()) {
-                crate::diagnostics::write("unpublish_error", &format!("{unpublish_error:#}"), "");
-            }
-            return Err(error);
-        }
-        Ok(Self {
+        Ok(encoder)
+    }
+
+    fn from_capture(
+        target: CaptureTarget,
+        quality: ShareQuality,
+        capture: VideoCapture,
+        encoder: HardwareEncoder,
+        evidence: &crate::evidence::Evidence,
+    ) -> Self {
+        let ShareQuality {
+            codec,
+            settings,
+            upload,
+            rate_mode,
+            profile,
+        } = quality;
+        let device = capture.device().clone();
+        let dimensions = capture.dimensions();
+        Self {
             audio: None,
             profile,
             upload,
@@ -283,19 +318,59 @@ impl Cast {
             sent_bytes: 0,
             rate_blocked: false,
             selection: (target, codec),
-            dimensions: (width, height),
+            dimensions,
             device,
             has_frame: false,
             evidence: evidence.clone(),
             capture,
             encoder: Some(encoder),
-            publisher: Some(publisher),
+            publisher: None,
             start: Instant::now(),
             count: 0,
             paused: false,
             fps: settings.fps,
             settings,
-        })
+        }
+    }
+    fn publish(
+        mut self,
+        runtime: &tokio::runtime::Runtime,
+        room: &Arc<Room>,
+        stopping: &crate::room_transition::Cancellation,
+    ) -> Result<Self> {
+        let (width, height) = self.encoder.as_ref().unwrap().dimensions();
+        let cancelled = || {
+            anyhow::anyhow!(crate::i18n::label(
+                "Publicação cancelada",
+                "Publication cancelled"
+            ))
+        };
+        let publisher = runtime
+            .block_on(stopping.run(EncodedPublisher::in_room(
+                room.clone(),
+                width,
+                height,
+                self.settings.fps,
+                self.upload.bps(),
+                self.selection.1 == Codec::Av1,
+            )))
+            .ok_or_else(cancelled)??;
+        // Start the window capture session only after the SFU accepts the track.
+        let started = if stopping.is_cancelled() {
+            Err(cancelled())
+        } else {
+            self.capture.start()
+        };
+        if let Err(error) = started {
+            drop(self);
+            if let Err(unpublish_error) = runtime.block_on(publisher.stop()) {
+                crate::diagnostics::write("unpublish_error", &format!("{unpublish_error:#}"), "");
+            }
+            return Err(error);
+        }
+        self.publisher = Some(publisher);
+        self.start = Instant::now();
+        Ok(self)
     }
     fn tick(&mut self, _runtime: &tokio::runtime::Runtime, _room: &Arc<Room>) -> Result<()> {
         if _room.connection_state() != ConnectionState::Connected {
@@ -1310,8 +1385,12 @@ impl Engine {
                                         }
                                     }
                                 }
-                                Command::ChangeSource(target) => {
+                                Command::ChangeSource(target, audio) => {
                                     if let Some(c) = &mut cast {
+                                        if audio == Some(false) {
+                                            audio_requested = false;
+                                            let _ = c.set_audio(false, &runtime, &room);
+                                        }
                                         let result = c.change_source(
                                             target,
                                             &runtime,
@@ -1319,9 +1398,28 @@ impl Engine {
                                             audio_requested,
                                             &stopping,
                                         );
+                                        let audio_error = if result.is_ok() && audio == Some(true) {
+                                            audio_requested = true;
+                                            c.set_audio(true, &runtime, &room).err()
+                                        } else {
+                                            None
+                                        };
                                         let mut s = state.lock().unwrap();
                                         s.active_target = Some(c.selection.0);
-                                        s.audio_status = c.audio_status();
+                                        s.audio_status = audio_error.map_or_else(
+                                            || c.audio_status(),
+                                            |error| {
+                                                crate::diagnostics::write(
+                                                    "audio_error",
+                                                    &format!("{error:#}"),
+                                                    &token,
+                                                );
+                                                crate::i18n_format!(
+                                                    "Áudio: {error}",
+                                                    "Audio: {error}"
+                                                )
+                                            },
+                                        );
                                         s.frames.remove(
                                             &room.local_participant().identity().to_string(),
                                         );
@@ -1342,6 +1440,86 @@ impl Engine {
                                                 .replace(&token, "[token]")
                                             })
                                             .unwrap_or_default();
+                                    }
+                                }
+                                Command::ReplaceShare {
+                                    target,
+                                    quality,
+                                    audio,
+                                    applied,
+                                } => {
+                                    if let Some(previous) = &cast {
+                                        let previous_selection = previous.selection;
+                                        // Desktop Duplication cannot open a second session for the
+                                        // same output while this process still owns the first one.
+                                        let prepared = if target == previous_selection.0
+                                            && matches!(target, CaptureTarget::Monitor { .. })
+                                        {
+                                            Cast::prepare_encoder(&previous.capture, quality)
+                                                .map(|_| None)
+                                        } else {
+                                            Cast::prepare(target, quality, &evidence).map(Some)
+                                        };
+                                        let result = prepared.and_then(|next| {
+                                            cast.take().unwrap().stop(&runtime);
+                                            state.lock().unwrap().frames.remove(
+                                                &room.local_participant().identity().to_string(),
+                                            );
+                                            match next {
+                                                Some(next) => Ok(next),
+                                                None => Cast::prepare(target, quality, &evidence),
+                                            }?
+                                            .publish(&runtime, &room, &stopping)
+                                        });
+                                        match result {
+                                            Ok(mut next) => {
+                                                settings = quality.settings;
+                                                upload = quality.upload;
+                                                rate_mode = quality.rate_mode;
+                                                amd_profile = quality.profile;
+                                                audio_requested = audio;
+                                                let audio_status =
+                                                    match next.set_audio(audio, &runtime, &room) {
+                                                        Ok(()) => next.audio_status(),
+                                                        Err(error) => {
+                                                            crate::diagnostics::write(
+                                                                "audio_error",
+                                                                &format!("{error:#}"),
+                                                                &token,
+                                                            );
+                                                            crate::i18n_format!(
+                                                                "Áudio: {error}",
+                                                                "Audio: {error}"
+                                                            )
+                                                        }
+                                                    };
+                                                cast = Some(next);
+                                                let mut shared = state.lock().unwrap();
+                                                shared.active_target = Some(target);
+                                                shared.audio_status = audio_status;
+                                                shared.source_error.clear();
+                                                let _ = applied.send(());
+                                            }
+                                            Err(error) => {
+                                                crate::diagnostics::write(
+                                                    "publication_error",
+                                                    &format!("{error:#}"),
+                                                    &token,
+                                                );
+                                                let mut shared = state.lock().unwrap();
+                                                if cast.is_none() {
+                                                    recovery_attempts = 0;
+                                                    recovery =
+                                                        Some((previous_selection, Instant::now()));
+                                                    shared.publishing = false;
+                                                }
+                                                shared.source_error = crate::i18n_format!(
+                                                    "Alterar compartilhamento: {error}",
+                                                    "Change screen share: {error}"
+                                                )
+                                                .replace(&token, "[token]");
+                                            }
+                                        }
                                     }
                                 }
                                 Command::StopShare => {

@@ -85,11 +85,23 @@ pub enum Command {
     RestartReception,
     StreamSettings(crate::resolution::StreamSettings),
     Layout(Layout),
-    Share(Source, Codec, Encoder, crate::bandwidth::UploadProfile),
+    Share(
+        Source,
+        Codec,
+        Encoder,
+        crate::bandwidth::UploadProfile,
+        Option<ShareOptions>,
+    ),
     Stop,
     CancelSelection,
     Audio(bool),
     Disconnect,
+}
+pub struct ShareOptions {
+    pub settings: crate::resolution::StreamSettings,
+    pub rate_mode: crate::adaptive_upload::Mode,
+    pub audio: bool,
+    pub applied: tokio::sync::oneshot::Sender<()>,
 }
 pub struct Engine {
     pub state: Arc<Mutex<State>>,
@@ -520,7 +532,9 @@ async fn session(
     let mut publisher: Option<EncodedPublisher> = None;
     let mut audio: Option<AudioCast> = None;
     let mut wants_audio = false;
-    let mut pending: Option<tokio::task::JoinHandle<Result<(Capture, Codec)>>> = None;
+    let mut pending: Option<
+        tokio::task::JoinHandle<Result<(Capture, Codec, Option<ShareOptions>)>>,
+    > = None;
     let mut current_codec = Codec::Hevc;
     let mut ever_published = false;
     let mut settings = crate::resolution::StreamSettings::default();
@@ -588,10 +602,11 @@ async fn session(
                         }
                     },
                     Command::Layout(value)=>{layout=value;volume.store(layout.volume,Ordering::Relaxed);last_refresh=Instant::now()-Duration::from_secs(1);},
-                    Command::Share(source,codec,encoder,upload)=>{
+                    Command::Share(source,codec,encoder,upload,options)=>{
                         if pending.is_none() && retiring.is_none() && room.local_participant().permission().is_some_and(|grant|grant.can_publish){
                             let capture_evidence=evidence.clone();
-                            pending=Some(tokio::spawn(async move{let cap=Capture::open_observed(source,codec,encoder,upload,settings,capture_evidence).await?;Ok((cap,codec))}));
+                            let requested_settings = options.as_ref().map_or(settings, |options| options.settings);
+                            pending=Some(tokio::spawn(async move{let cap=Capture::open_observed(source,codec,encoder,upload,requested_settings,capture_evidence).await?;Ok((cap,codec,options))}));
                             let mut s=shared.lock().unwrap();s.selecting=true;s.status=crate::i18n::label("Selecione a tela ou janela no diálogo do sistema","Select a screen or window in the system dialog").into();
                         }
                     },
@@ -668,8 +683,9 @@ async fn session(
                         let result=pending.take().unwrap().await.unwrap_or_else(|_|Err(anyhow::anyhow!(crate::i18n::label("A captura falhou internamente. Selecione a origem para tentar novamente.","Capture failed internally. Select the source to try again."))));
                         shared.lock().unwrap().selecting=false;
                         match result {
-                            Ok((mut cap,codec))=>{
-                                if rate_mode==crate::adaptive_upload::Mode::Automatic{if let Some(reason)=cap.capabilities.automatic_rejection(){cap.stop().await;shared.lock().unwrap().status=reason.label().into();continue;}}
+                            Ok((mut cap,codec,options))=>{
+                                let next_rate_mode = options.as_ref().map_or(rate_mode, |options| options.rate_mode);
+                                if next_rate_mode==crate::adaptive_upload::Mode::Automatic{if let Some(reason)=cap.capabilities.automatic_rejection(){cap.stop().await;shared.lock().unwrap().status=reason.label().into();continue;}}
 
                                 let next_format=(codec,cap.fps,cap.bitrate_limit);
                                 if (ever_published && current_codec!=codec) || publication_format.is_some_and(|previous|previous!=next_format) {
@@ -689,7 +705,13 @@ async fn session(
                                     {let mut s=shared.lock().unwrap();s.reconnecting=false;s.reception_resetting=false;}
                                     publication_format=None;last_video_bps=None;transmit_paused=false;rate_control=None;rate_rejected=false;
                                 }
-                                if rate_control.as_ref().is_none_or(|c|c.snapshot().ceiling!=cap.bitrate_limit){rate_control=Some(crate::adaptive_upload::Controller::new(rate_mode,cap.bitrate_limit));}
+                                if next_rate_mode != rate_mode || rate_control.as_ref().is_none_or(|c|c.snapshot().ceiling!=cap.bitrate_limit){rate_control=Some(crate::adaptive_upload::Controller::new(next_rate_mode,cap.bitrate_limit));}
+                                rate_mode = next_rate_mode;
+                                if let Some(options) = &options {
+                                    settings = options.settings;
+                                    wants_audio = options.audio;
+                                    if !wants_audio && let Some(a) = audio.take() { a.stop(&room).await; }
+                                }
                                 if let Some(bps)=last_video_bps.filter(|bps|*bps>0){rate_rejected=!cap.bitrate(bps.min(cap.bitrate_limit as u64) as u32);transmit_paused=rate_rejected;}
                                 current_codec=codec;
                                 {let mut s=shared.lock().unwrap();s.sharing=true;s.status=crate::i18n_format!("Captura Linux · {} · até {} FPS","Linux capture · {} · up to {} FPS",cap.backend,cap.fps);s.quality.send=None;}
@@ -706,6 +728,7 @@ async fn session(
                                 evidence.event(crate::evidence::EventKind::SourceChanged);
                                 eprintln!("Linux capture: stage=source_switched codec={codec:?}");
                                 if let Some(p)=&mut publisher{p.restart_keyframe();}
+                                if let Some(options) = options { let _ = options.applied.send(()); }
                             },
                             Err(error)=>{evidence.event(crate::evidence::EventKind::PublicationFailed);shared.lock().unwrap().status=error.to_string();},
                         }
@@ -947,6 +970,7 @@ mod reception_tests {
                 codec,
                 encoder,
                 crate::bandwidth::UploadProfile::Economic,
+                None,
             ))?;
             let deadline = Instant::now() + Duration::from_secs(15);
             let sid = loop {

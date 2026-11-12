@@ -1,6 +1,6 @@
 # Recuperar a recepção · 0.7.3
 
-Use o botão **↻ Reconectar recepção**, ao lado de **Pausar vídeo** e **Sair**, ou
+Use o ícone **↻ Reconectar recepção**, junto ao ícone **Pausar recepção**, ou
 pressione **F5**. Com a lateral recolhida a ação aparece no cabeçalho; em tela
 cheia fica junto dos controles de volume e saída. No Linux aparece no cabeçalho.
 

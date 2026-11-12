@@ -21,14 +21,21 @@ unsafe extern "C" {
         cap: usize,
     ) -> i32;
     fn hc_presenter_hide(handle: *mut c_void);
-    fn hc_presenter_cutout(handle: *mut c_void, width: i32, height: i32, rect: *const i32) -> i32;
+    fn hc_presenter_cutouts(
+        handle: *mut c_void,
+        width: i32,
+        height: i32,
+        rects: *const [i32; 4],
+        count: usize,
+    ) -> i32;
     fn hc_presenter_close(handle: *mut c_void);
 }
 pub struct Presenter {
     handle: NonNull<c_void>,
     _ui_thread: PhantomData<Rc<()>>,
     visible: bool,
-    cutout: Option<([i32; 2], [i32; 4])>,
+    region_size: [i32; 2],
+    cutouts: Vec<[i32; 4]>,
 }
 impl Presenter {
     /// Parent is the live app window. Constructor and all calls stay on its UI thread.
@@ -39,7 +46,8 @@ impl Presenter {
             handle,
             _ui_thread: PhantomData,
             visible: false,
-            cutout: None,
+            region_size: [0; 2],
+            cutouts: Vec::new(),
         })
     }
     /// Borrowed texture must stay alive through the GPU fence inside this call.
@@ -74,21 +82,33 @@ impl Presenter {
         Ok(())
     }
     pub fn hide(&mut self) {
+        if !self.visible {
+            return;
+        }
         self.visible = false;
         unsafe {
             hc_presenter_hide(self.handle.as_ptr());
         }
     }
-    pub fn set_cutout(&mut self, size: [i32; 2], rect: Option<[i32; 4]>) -> bool {
-        let cutout = rect.map(|rect| (size, rect));
-        if self.cutout == cutout {
+    pub fn set_cutouts(&mut self, size: [i32; 2], rects: &[[i32; 4]]) -> bool {
+        if self.cutouts == rects && (rects.is_empty() || self.region_size == size) {
             return true;
         }
-        let rect_ptr = rect.as_ref().map_or(std::ptr::null(), |rect| rect.as_ptr());
-        if unsafe { hc_presenter_cutout(self.handle.as_ptr(), size[0], size[1], rect_ptr) } == 0 {
+        if unsafe {
+            hc_presenter_cutouts(
+                self.handle.as_ptr(),
+                size[0],
+                size[1],
+                rects.as_ptr(),
+                rects.len(),
+            )
+        } == 0
+        {
             return false;
         }
-        self.cutout = cutout;
+        self.region_size = size;
+        self.cutouts.clear();
+        self.cutouts.extend_from_slice(rects);
         true
     }
     pub fn visible(&self) -> bool {
