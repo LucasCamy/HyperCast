@@ -1488,6 +1488,16 @@ pub(crate) fn reconnect_button(ui: &mut egui::Ui, enabled: bool, size: f32) -> e
     )
 }
 
+pub(crate) fn refresh_rooms_button(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
+    room_icon_button(
+        ui,
+        RoomIcon::Reconnect,
+        crate::i18n::label("Atualizar lista", "Refresh list"),
+        enabled,
+        false,
+    )
+}
+
 pub(crate) fn session_button(
     ui: &mut egui::Ui,
     label: &str,
