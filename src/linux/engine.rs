@@ -676,7 +676,11 @@ async fn session(
                 if let Some(sample)=receive_meter.sample(now,state.received,0){state.quality.receive=Some(sample);}
                 state.quality.observe(state.connected,state.reconnecting,state.sharing);
             }
-            if !media_tick || last_ui_refresh.elapsed() >= Duration::from_millis(200) {
+            // The desktop already polls an idle room. Only media and reception
+            // transitions need the faster refresh for status and metrics.
+            let media_active = capture_work || !video_sinks.is_empty() || !audio_sinks.is_empty()
+                || reception_restart.is_some();
+            if !media_tick || (media_active && last_ui_refresh.elapsed() >= Duration::from_millis(200)) {
                 ctx.request_repaint();
                 last_ui_refresh = Instant::now();
             }

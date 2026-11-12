@@ -84,24 +84,26 @@ fn choice_card(ui: &mut egui::Ui, title: &str, subtitle: &str, selected: bool, e
         .fill(if selected { Color32::from_rgb(40, 51, 40) } else { SURFACE })
         .stroke(egui::Stroke::new(1.0, if selected { ACCENT.gamma_multiply(0.65) } else { BORDER })));
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, format!("{title}: {subtitle}")));
-    let center = response.rect.left_center() + Vec2::new(30.0, 0.0);
+    let compact_avatar = avatar.is_some() && response.rect.width() < 180.0;
+    let center = response.rect.left_center() + Vec2::new(if compact_avatar { 20.0 } else { 30.0 }, 0.0);
     let tint = if selected { ACCENT } else { MUTED };
     if let Some(initial) = avatar {
-        ui.painter().circle_filled(center, 18.0, tint.gamma_multiply(0.14));
-        ui.painter().text(center, egui::Align2::CENTER_CENTER, initial.to_uppercase().collect::<String>(), egui::FontId::proportional(17.0), tint);
+        ui.painter().circle_filled(center, if compact_avatar { 12.0 } else { 18.0 }, tint.gamma_multiply(0.14));
+        ui.painter().text(center, egui::Align2::CENTER_CENTER, initial.to_uppercase().collect::<String>(), egui::FontId::proportional(if compact_avatar { 13.0 } else { 17.0 }), tint);
         if subtitle.contains("compartilhando") || subtitle.contains(crate::i18n::label("Compartilhando","Sharing")) || subtitle.contains(crate::i18n::label("Transmitindo","Sharing")) || subtitle.contains("transmitindo") {
-            let dot=center+Vec2::new(13.0,13.0);
+            let dot = center + Vec2::splat(if compact_avatar { 9.0 } else { 13.0 });
             ui.painter().circle_filled(dot,5.0,PANEL);
             ui.painter().circle_filled(dot,3.5,ACCENT);
         }
     } else { monitor_symbol(ui.painter(), center, tint, 38.0); }
     let painter = ui.painter().with_clip_rect(response.rect.shrink(8.0));
-    painter.text(response.rect.left_top() + Vec2::new(60.0, 15.0), egui::Align2::LEFT_TOP,
-        title, egui::FontId::proportional(14.0), TEXT);
-    painter.text(response.rect.left_top() + Vec2::new(60.0, 37.0), egui::Align2::LEFT_TOP,
-        subtitle, egui::FontId::proportional(11.0), if selected { ACCENT } else { MUTED });
+    let left = response.rect.left() + if compact_avatar { 38.0 } else { 60.0 };
+    let right = response.rect.right() - 8.0;
+    let top = response.rect.top();
+    crate::desktop_ui::paint_video_label(ui, egui::Rect::from_min_max(egui::pos2(left, top + 12.0), egui::pos2(right, top + 34.0)), title, 14.0, TEXT);
+    crate::desktop_ui::paint_video_label(ui, egui::Rect::from_min_max(egui::pos2(left, top + 34.0), egui::pos2(right, top + 56.0)), subtitle, 11.0, if selected { ACCENT } else { MUTED });
     if response.has_focus() { painter.rect_stroke(response.rect.shrink(2.0), 8.0, egui::Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside); }
-    response
+    response.on_hover_text(format!("{title}\n{subtitle}"))
 }
 
 fn compact_window_title(title:&str)->String {
@@ -111,6 +113,11 @@ fn compact_window_title(title:&str)->String {
 }
 
 fn section_title(ui: &mut egui::Ui, label: &str, detail: &str) {
+    if ui.available_width() < 180.0 {
+        ui.label(RichText::new(label).size(11.0).strong().color(MUTED));
+        ui.label(RichText::new(detail).size(11.0).color(MUTED));
+        return;
+    }
     ui.horizontal(|ui| {
         ui.label(RichText::new(label).size(11.0).strong().color(MUTED));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { ui.label(RichText::new(detail).size(11.0).color(MUTED)); });
@@ -829,9 +836,11 @@ impl eframe::App for App {
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                         ui.spacing_mut().item_spacing=Vec2::new(8.0,8.0);
                         ui.spacing_mut().button_padding=Vec2::new(12.0,6.0);
+                        let narrow = ui.available_width() < 180.0;
                         ui.horizontal_wrapped(|ui| {
                             crate::desktop_ui::brand_mark(ui, 22.0);
                             ui.label(RichText::new("HyperCast").strong());
+                            if narrow { ui.end_row(); }
                             if compact_action(ui, crate::i18n::label("Atualizar", "Update"), true).clicked() {
                                 self.window_picker_open = false;
                                 egui::Popup::close_all(&ctx);

@@ -77,10 +77,17 @@ pub(crate) fn utility_window(ctx: &egui::Context, title: &'static str, id: &'sta
         .vscroll(true)
 }
 pub fn action(ui:&mut egui::Ui,label:&str,enabled:bool,primary:bool)->egui::Response {
+    action_with_wrap(ui, label, enabled, primary, egui::TextWrapMode::Extend)
+}
+#[cfg(target_os = "linux")]
+pub(crate) fn participant_action(ui: &mut egui::Ui, label: &str, enabled: bool, focused: bool) -> egui::Response {
+    action_with_wrap(ui, label, enabled, focused, egui::TextWrapMode::Truncate).on_hover_text(label)
+}
+fn action_with_wrap(ui: &mut egui::Ui, label: &str, enabled: bool, primary: bool, wrap_mode: egui::TextWrapMode) -> egui::Response {
     let width=ui.available_width();
     ui.add_enabled_ui(enabled,|ui|ui.add_sized([width,40.0],
         egui::Button::new(RichText::new(label).size(13.0).color(if primary{ACCENT}else{TEXT}))
-            .wrap_mode(egui::TextWrapMode::Extend).corner_radius(8)
+            .wrap_mode(wrap_mode).corner_radius(8)
             .fill(if primary{ACCENT.gamma_multiply(0.16)}else{SURFACE})
             .stroke(egui::Stroke::new(1.0,if primary{ACCENT.gamma_multiply(0.45)}else{BORDER})))).inner
 }
@@ -194,7 +201,7 @@ mod tests {
         let _ = ctx.run_ui(egui::RawInput { screen_rect: Some(area), ..Default::default() }, |root| {
             let mut actions = Vec::new();
             session_panel(area.width()).show(root, |ui| {
-                session_status(ui, true, true, "Conectado");
+                session_status(ui, true, true, "Compartilhando janela do aplicativo · 1920×1080");
                 session_actions(ui, |ui| {
                     actions.push(session_stop(ui, "Parar compartilhamento", true).rect);
                     actions.push(session_button(ui, "Desligar câmera", true, false).rect);
@@ -202,7 +209,14 @@ mod tests {
                     actions.push(session_stop(ui, "Sair da sala", true).rect);
                 });
             });
-            egui::Panel::left("test_sidebar").exact_size(sidebar_width(area.width())).show(root, |_| {});
+            egui::Panel::left("test_sidebar").exact_size(sidebar_width(area.width())).show(root, |_ui| {
+                #[cfg(target_os = "linux")]
+                {
+                    let bounds = _ui.available_rect_before_wrap();
+                    let participant = participant_action(_ui, "Participante com nome longo · Em destaque · transmitindo", true, true);
+                    assert!(bounds.contains_rect(participant.rect), "participant {:?}, sidebar {bounds:?}", participant.rect);
+                }
+            });
             egui::CentralPanel::default()
                 .frame(egui::Frame::new().inner_margin(room_margin(area.width(), false)))
                 .show(root, |ui| {
@@ -349,7 +363,7 @@ pub(crate) fn room_view_controls(
     mode: crate::subscription::ViewMode,
 ) -> (egui::Response, [(crate::subscription::ViewMode, egui::Response); 2]) {
     use crate::{i18n::label, subscription::ViewMode};
-    let narrow = ui.available_width() < 260.0;
+    let narrow = ui.available_width() < 300.0;
     let panel_label = if sidebar_open { label("Ocultar painel", "Hide panel") } else { label("Pessoas e opções", "People and settings") };
     let panel = if narrow {
         header_button(ui, label("Painel", "Panel"), true, Some(sidebar_open)).on_hover_text(panel_label)
@@ -453,6 +467,27 @@ pub(crate) fn room_state(connected: bool, reconnecting: bool) -> &'static str {
 pub(crate) fn session_status(ui: &mut egui::Ui, sharing: bool, camera_active: bool, status: &str) {
     let status = (!status.is_empty() && status != crate::i18n::label("Conectado", "Connected")).then_some(status);
     if !sharing && !camera_active && status.is_none() {
+        return;
+    }
+    if ui.available_width() < 440.0 {
+        let sharing_label = crate::i18n::label("Compartilhando tela", "Sharing screen");
+        let camera_label = crate::i18n::label("Câmera ligada", "Camera on");
+        let summary = match (sharing, camera_active) {
+            (true, true) => format!("{sharing_label} · {camera_label}"),
+            (true, false) => sharing_label.to_owned(),
+            (false, true) => camera_label.to_owned(),
+            (false, false) => status.unwrap_or_default().to_owned(),
+        };
+        let detail = status.filter(|_| sharing || camera_active);
+        ui.horizontal(|ui| {
+            ui.add(egui::Label::new(RichText::new(&summary).strong().color(if sharing || camera_active { ACCENT } else { MUTED })).truncate())
+                .on_hover_text(detail.unwrap_or(&summary));
+            if let Some(detail) = detail {
+                ui.add(egui::Label::new(RichText::new(detail).size(13.0).color(MUTED)).truncate())
+                    .on_hover_text(detail);
+            }
+        });
+        ui.add_space(2.0);
         return;
     }
     ui.horizontal_wrapped(|ui| {

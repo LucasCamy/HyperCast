@@ -369,7 +369,14 @@ impl App {
                         for (id, name) in &self.snapshot.participants {
                             let live=screens.iter().any(|s| &s.owner==id);let title=if name.is_empty(){id}else{name};
                             let focused=!self.layout.paused && self.layout.mode==ViewMode::Spotlight && (self.layout.focus.as_ref().is_some_and(|focus| focus == id || screens.iter().any(|s| &s.sid == focus && &s.owner == id)) || (self.layout.focus.is_none() && screens.first().is_some_and(|s|&s.owner==id)));
-                            let response=button(ui,&format!("{title} · {}",if live {if focused {crate::i18n::label("Em destaque · transmitindo","Focused · sharing")}else{crate::i18n::label("Transmitindo","Sharing")}}else{crate::i18n::label("Assistindo","Watching")}),live,focused);
+                            let status = if live && focused {
+                                crate::i18n::label("Em destaque · transmitindo", "Focused · sharing")
+                            } else if live {
+                                crate::i18n::label("Transmitindo", "Sharing")
+                            } else {
+                                crate::i18n::label("Assistindo", "Watching")
+                            };
+                            let response = crate::desktop_ui::participant_action(ui, &format!("{title} · {status}"), live, focused);
                             if response.clicked(){self.layout.focus=Some(id.clone());if response.double_clicked(){self.layout.mode=ViewMode::Spotlight;}self.layout();}
                         }
                         if small(ui,crate::i18n::label("Escolher sala","Choose room")).clicked(){self.catalog.open(self.address.clone(),self.access.token(),ctx.clone());}
