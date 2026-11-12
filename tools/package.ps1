@@ -1,12 +1,14 @@
 param([switch]$SkipBuild)
 $ErrorActionPreference = 'Stop'
 $hcRoot = Split-Path -Parent $PSScriptRoot
+$hcVersion = (Select-String -LiteralPath "$hcRoot/Cargo.toml" -Pattern '^version = "([0-9]+\.[0-9]+\.[0-9]+)"$' | Select-Object -First 1).Matches.Groups[1].Value
+if (-not $hcVersion) { throw 'Stable package version not found' }
 if (-not $SkipBuild) { & "$PSScriptRoot/cargo-native.ps1" build --release --locked --features desktop }
 & "$PSScriptRoot/cargo-native.ps1" metadata --locked --features desktop --filter-platform x86_64-pc-windows-msvc --format-version 1 | Set-Content -Encoding utf8 "$hcRoot/.tools/package-metadata.json"
 python "$PSScriptRoot/collect_licenses.py"
 if ($LASTEXITCODE -ne 0) { throw 'Dependency notice collection failed' }
 $hcDist = "$hcRoot/dist"
-$hcStage = "$hcDist/HyperCast-0.9.3-windows-x64"
+$hcStage = "$hcDist/HyperCast-$hcVersion-windows-x64"
 # No recursive cleanup: stage a fixed allowlist and refuse stale unexpected files.
 New-Item -ItemType Directory -Force "$hcStage/licenses","$hcStage/support" | Out-Null
 Copy-Item -LiteralPath "$hcRoot/tools/latency-reference.html","$hcRoot/docs/latency-validation.md","$hcRoot/docs/technical-report.md" -Destination "$hcStage/support"
@@ -23,7 +25,8 @@ if (-not (Test-Path -LiteralPath $hcLgpl)) {
 }
 Copy-Item -LiteralPath $hcLgpl -Destination "$hcStage/licenses/FFmpeg-LGPL-3.0.txt"
 Copy-Item -LiteralPath "$hcRoot/vendor/webrtc-sys/NOTICE.md" -Destination "$hcStage/licenses/LiveKit-NOTICE.md"
-$hcWebRtcLicense = & rg --files "$hcRoot/target/release/build" -g LICENSE.md | Where-Object { $_ -match 'livekit_webrtc' } | Select-Object -First 1
+$hcWebRtcLicense = Get-ChildItem -LiteralPath "$hcRoot/target/release/build" -Filter LICENSE.md -File -Recurse |
+    Where-Object FullName -Match 'livekit_webrtc' | Select-Object -First 1 -ExpandProperty FullName
 if (-not $hcWebRtcLicense) { throw 'Prebuilt WebRTC third-party license is missing' }
 Copy-Item -LiteralPath $hcWebRtcLicense -Destination "$hcStage/licenses/WebRTC-LICENSE.md"
 Copy-Item -LiteralPath "$hcRoot/native/vendor/amf/LICENSE.txt" -Destination "$hcStage/licenses/AMF-LICENSE.txt"
@@ -36,7 +39,7 @@ foreach ($hcLicense in @('COPYING.GPLv3','COPYING.LGPLv3')) {
     if (-not (Test-Path -LiteralPath $hcFile)) { Invoke-WebRequest "https://raw.githubusercontent.com/FFmpeg/FFmpeg/7e93014c5b/$hcLicense" -OutFile $hcFile }
     Copy-Item -LiteralPath $hcFile -Destination "$hcStage/licenses/$hcLicense.txt"
 }
-$hcZip = "$hcDist/HyperCast-0.9.3-windows-x64-portable.zip"
+$hcZip = "$hcDist/HyperCast-$hcVersion-windows-x64-portable.zip"
 $hcAllowed = @('support/latency-reference.html','support/latency-validation.md','support/technical-report.md','hypercast.exe','Test-Streaming.ps1','Test-Publisher.cmd','Test-Viewer.cmd','avcodec-63.dll','avutil-61.dll','swresample-7.dll',
     'licenses/LICENSE','licenses/THIRD_PARTY.md','licenses/portable.md','licenses/updates.md','licenses/room-creation.md','licenses/amd.md','licenses/video-quality.md',
     'licenses/FFmpeg-LGPL-3.0.txt','licenses/LiveKit-NOTICE.md','licenses/WebRTC-LICENSE.md',
@@ -49,8 +52,9 @@ foreach ($hcFile in Get-ChildItem -LiteralPath $hcStage -File -Recurse) {
 Compress-Archive -LiteralPath $hcStage -DestinationPath $hcZip -Force
 $hcIsccCandidates = @("$env:LOCALAPPDATA/Programs/Inno Setup 6/ISCC.exe",'C:/Program Files (x86)/Inno Setup 6/ISCC.exe')
 $hcIscc = $hcIsccCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if (-not $hcIscc) { $hcIscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source }
 if (-not $hcIscc) { throw 'Install Inno Setup: winget install --id JRSoftware.InnoSetup --exact' }
-& $hcIscc "/DStageDir=$hcStage" "/DOutDir=$hcDist" "$hcRoot/installer/HyperCast.iss"
+& $hcIscc "/DStageDir=$hcStage" "/DOutDir=$hcDist" "/DAppVersion=$hcVersion" "$hcRoot/installer/HyperCast.iss"
 if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed' }
-Get-FileHash -Algorithm SHA256 -LiteralPath $hcZip,"$hcDist/HyperCast-0.9.3-windows-x64-setup.exe" | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path -Leaf $_.Path)" } | Set-Content -Encoding ascii "$hcDist/SHA256SUMS.txt"
+Get-FileHash -Algorithm SHA256 -LiteralPath $hcZip,"$hcDist/HyperCast-$hcVersion-windows-x64-setup.exe" | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path -Leaf $_.Path)" } | Set-Content -Encoding ascii "$hcDist/SHA256SUMS.txt"
 Write-Output "Portable archive and per-user installer generated in $hcDist"

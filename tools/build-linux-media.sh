@@ -5,11 +5,18 @@ media_prefix=${1:?Supply an absolute installation prefix}
 case "$media_prefix" in /*) ;; *) echo 'Prefix must be absolute' >&2; exit 1;; esac
 media_source=${2:?Supply an absolute source/build directory}
 case "$media_source" in /*) ;; *) echo 'Source directory must be absolute' >&2; exit 1;; esac
+media_archive=${3:-}
+case "$media_archive" in ''|/*) ;; *) echo 'Archive path must be absolute' >&2; exit 1;; esac
+project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 mkdir -p "$media_source"
 cd "$media_source"
 for project in gstreamer gst-plugins-base gst-plugins-bad; do
     archive="$project-1.26.10.tar.xz"
-    if [ ! -f "$archive" ]; then curl --proto '=https' --tlsv1.2 -fsSL "https://gstreamer.freedesktop.org/src/$project/$archive" -o "$archive"; fi
+    if [ ! -f "$archive" ]; then
+        curl --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 20 --max-time 120 -fsSL \
+            "https://gstreamer.freedesktop.org/src/$project/$archive" -o "$archive.part"
+        mv "$archive.part" "$archive"
+    fi
     case "$project" in
         gstreamer) expected=d7f20bec75edeb8677662926c33e987da64a42616c24fc3353b9ad44ed750cd6;;
         gst-plugins-base) expected=1c1531dd8f2d480c89c57b08a930545a3375077391789762e40e490cdbbf03fd;;
@@ -29,3 +36,7 @@ ninja -C base-build install
 meson setup bad-build gst-plugins-bad-1.26.10 --prefix="$media_prefix" --libdir=lib --buildtype=release -Dauto_features=disabled -Dtests=disabled -Dexamples=disabled -Dintrospection=disabled -Dnvcodec=enabled
 ninja -C bad-build -j4
 ninja -C bad-build install
+if [ -n "$media_archive" ]; then
+    tar -czf "$media_archive" gstreamer-1.26.10.tar.xz gst-plugins-base-1.26.10.tar.xz \
+        gst-plugins-bad-1.26.10.tar.xz -C "$project_root" tools/build-linux-media.sh
+fi
