@@ -110,9 +110,8 @@ jobs:
         run: |
           sed 's/^Types: deb$/Types: deb-src/' /etc/apt/sources.list.d/ubuntu.sources |
             sudo tee /etc/apt/sources.list.d/hypercast-source.sources >/dev/null
-          sh tools/ci-linux-deps.sh ninja-build python3-venv flex bison gettext liborc-0.4-dev libx265-dev libpipewire-0.3-dev gstreamer1.0-x
-          # Align preinstalled libraries with the versions still offered by deb-src.
-          sudo apt-get -o APT::Get::Always-Include-Phased-Updates=true upgrade -y --with-new-pkgs
+          HYPERCAST_REFRESH_LINUX_DEPS=1 sh tools/ci-linux-deps.sh \
+            ninja-build python3-venv flex bison gettext liborc-0.4-dev libx265-dev libpipewire-0.3-dev gstreamer1.0-x
           python3 -m venv "$RUNNER_TEMP/meson"
           "$RUNNER_TEMP/meson/bin/pip" install meson==1.8.5
           rustup toolchain install 1.92.0 --profile minimal
