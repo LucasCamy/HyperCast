@@ -39,6 +39,7 @@ struct App {
     sidebar_open: bool,
     invite: String,
     confirm_leave: bool,
+    stream_options_open: bool,
     saved_room: Option<String>,
     device: String,
     access: ServerAccess,
@@ -88,6 +89,7 @@ impl App {
             name: crate::preferences::load_name(),
             sidebar_open: prefs.sidebar,
             confirm_leave: false,
+            stream_options_open: false,
             invite: std::env::var("HYPERCAST_INVITE").unwrap_or_default(),
             saved_room: None,
             device: crate::invitation::client_id(),
@@ -186,6 +188,7 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(enabled));
     }
     fn leave_room(&mut self, ctx: &egui::Context, join_next: bool) {
+        self.stream_options_open = false;
         if let Some(engine) = &self.engine {
             engine.request_exit();
         }
@@ -366,6 +369,67 @@ impl Drop for App {
     }
 }
 impl App {
+    fn video_settings(&mut self, ui: &mut egui::Ui, sharing: bool) {
+        let before = self.stream_settings;
+        let software = self.encoder == Encoder::Software;
+        if software {
+            self.stream_settings.fps = 30;
+        }
+        crate::desktop_ui::stream_settings(
+            ui,
+            &mut self.stream_settings,
+            !sharing,
+            if software { 30 } else { 120 },
+        );
+        crate::desktop_ui::upload_selector(ui, &mut self.upload, !sharing);
+        if crate::desktop_ui::rate_mode_selector(ui, &mut self.rate_mode, !sharing, true) {
+            self.send(Command::RateMode(self.rate_mode));
+        }
+        ui.add_enabled_ui(!sharing, |ui| {
+            ui.columns(2, |columns| {
+                for (column, (codec, label)) in columns
+                    .iter_mut()
+                    .zip([(Codec::Hevc, "HEVC / H.265"), (Codec::Av1, "AV1")])
+                {
+                    let available =
+                        super::media::factory_available(codec, self.encoder).unwrap_or(true);
+                    if crate::desktop_ui::action(column, label, available, self.codec == codec)
+                        .clicked()
+                    {
+                        self.codec = codec;
+                    }
+                }
+            });
+            let hardware_label = "GPU · NVENC / VA-API";
+            let software_label =
+                crate::i18n::label("Compatível · HEVC 30 FPS", "Compatible · HEVC 30 FPS");
+            egui::ComboBox::from_id_salt("encoder")
+                .width(ui.available_width())
+                .selected_text(if software {
+                    software_label
+                } else {
+                    hardware_label
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.encoder, Encoder::Auto, hardware_label);
+                    ui.selectable_value(&mut self.encoder, Encoder::Software, software_label);
+                });
+        });
+        if self.encoder == Encoder::Software {
+            self.codec = Codec::Hevc;
+            self.stream_settings.fps = 30;
+        }
+        if before != self.stream_settings {
+            self.send(Command::StreamSettings(self.stream_settings));
+        }
+        if super::media::factory_available(self.codec, self.encoder) == Some(false) {
+            ui.label(RichText::new(crate::i18n::label(
+                "Nenhum encoder disponível para este formato. Escolha outro formato ou instale o plugin/driver.",
+                "No encoder is available for this format. Choose another format or install the plugin/driver.",
+            )).color(MUTED).size(11.0));
+        }
+    }
+
     fn render(&mut self, root: &mut egui::Ui) {
         self.save_preferences();
         let context = root.ctx().clone();
@@ -447,6 +511,7 @@ impl App {
             self.restart_reception();
         }
         if !self.confirm_leave
+            && !self.stream_options_open
             && (self.fullscreen || connected && !screens.is_empty())
             && ctx.input(|i| i.key_pressed(egui::Key::F11))
         {
@@ -521,6 +586,15 @@ impl App {
                         self.send(Command::ToggleCamera);
                     }
                     session_menu(ui, |ui| {
+                        ui.strong(crate::i18n::label("Compartilhamento", "Sharing"));
+                        if ui
+                            .button(crate::desktop_ui::stream_options_title())
+                            .clicked()
+                        {
+                            self.stream_options_open = true;
+                            self.debug = false;
+                            ui.close();
+                        }
                         if sharing
                             && ui
                                 .add_enabled(
@@ -563,6 +637,7 @@ impl App {
                             self.send(Command::Audio(self.audio));
                         }
                         ui.separator();
+                        ui.strong(crate::i18n::label("Recepção", "Playback"));
                         let label = ui
                             .label(crate::i18n::label("Volume recebido", "Incoming volume"))
                             .id;
@@ -595,26 +670,10 @@ impl App {
                             self.restart_reception();
                             ui.close();
                         }
-                        if crate::desktop_ui::compact_room_header(
-                            ctx.content_rect().width(),
-                            connected && self.sidebar_open,
-                        ) {
-                            if !self.room_title.is_empty() {
-                                crate::desktop_ui::copy_room_name(ui, &self.room_title);
-                            }
-                            if ui
-                                .add_enabled(
-                                    !screens.is_empty(),
-                                    egui::Button::new(crate::i18n::label(
-                                        "Tela cheia",
-                                        "Full screen",
-                                    )),
-                                )
-                                .clicked()
-                            {
-                                self.fullscreen(ctx, true);
-                                ui.close();
-                            }
+                        ui.separator();
+                        ui.strong(crate::i18n::label("Sala e interface", "Room and interface"));
+                        if !self.room_title.is_empty() {
+                            crate::desktop_ui::copy_room_name(ui, &self.room_title);
                         }
                         crate::desktop_ui::display_scale(ui);
                         if ui
@@ -643,60 +702,109 @@ impl App {
         }
         if connected && !self.fullscreen && self.sidebar_open {
             let width = ctx.content_rect().width();
-            egui::Panel::left("sidebar").exact_size(crate::desktop_ui::sidebar_width(width))
-                .resizable(false).frame(egui::Frame::new().fill(PANEL).inner_margin(crate::desktop_ui::room_margin(width, false))).show(root,|ui|{
-                ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
-                egui::ScrollArea::vertical().auto_shrink([false,false]).show(ui,|ui|{
-                    ui.horizontal_wrapped(|ui|{crate::desktop_ui::brand_mark(ui,22.0);ui.label(RichText::new("HyperCast").strong());
-                        if small(ui,crate::i18n::label("Atualizar","Update")).clicked(){self.updates=true;}
-                    });
-                    crate::desktop_ui::server_indicator(ui, &self.server_status);
-                    if reconnecting {ui.label(RichText::new(crate::i18n::label("Sala: reconectando…","Room: reconnecting…")).size(11.0).color(MUTED));}
-                    ui.add_space(12.0);
-                    {
-                        ui.label(RichText::new(crate::i18n::label("PARTICIPANTES","PARTICIPANTS")).size(11.0).color(MUTED));
-                        ui.label(crate::i18n_format!("{} (você) · {}","{} (you) · {}",if self.name.is_empty(){"Linux"}else{&self.name},if sharing{crate::i18n::label("Transmitindo","Sharing")}else{crate::i18n::label("Assistindo","Watching")}));
-                        for (id, name) in &self.snapshot.participants {
-                            let live=screens.iter().any(|s| &s.owner==id);let title=if name.is_empty(){id}else{name};
-                            let focused=!self.layout.paused && self.layout.mode==ViewMode::Spotlight && (self.layout.focus.as_ref().is_some_and(|focus| focus == id || screens.iter().any(|s| &s.sid == focus && &s.owner == id)) || (self.layout.focus.is_none() && screens.first().is_some_and(|s|&s.owner==id)));
-                            let status = if live && focused {
-                                crate::i18n::label("Em destaque · transmitindo", "Focused · sharing")
-                            } else if live {
-                                crate::i18n::label("Transmitindo", "Sharing")
-                            } else {
-                                crate::i18n::label("Assistindo", "Watching")
-                            };
-                            let response = crate::desktop_ui::participant_action(ui, &format!("{title} · {status}"), live, focused);
-                            if response.clicked(){self.layout.focus=Some(id.clone());if response.double_clicked(){self.layout.mode=ViewMode::Spotlight;}self.layout();}
-                        }
-                        if small(ui,crate::i18n::label("Escolher sala","Choose room")).clicked(){self.catalog.open(self.address.clone(),self.access.token(),ctx.clone());}
-                    }
-                    ui.separator();ui.label(RichText::new(crate::i18n::label("COMPARTILHAR","SHARE")).size(11.0).color(MUTED));
-                    egui::CollapsingHeader::new(crate::i18n::label("Qualidade do vídeo","Video quality")).id_salt("linux_video_format").show(ui,|ui|{
-                    if self.encoder==Encoder::Software{self.stream_settings.fps=30;}
-                    let before=self.stream_settings;
-                    crate::desktop_ui::stream_settings(ui,&mut self.stream_settings,!sharing&&!selecting,if self.encoder==Encoder::Software{30}else{120});
-                    if before!=self.stream_settings{self.send(Command::StreamSettings(self.stream_settings));}
-                    crate::desktop_ui::upload_selector(ui,&mut self.upload,!sharing&&!selecting);
-                    if crate::desktop_ui::rate_mode_selector(ui,&mut self.rate_mode,!sharing&&!selecting,true){self.send(Command::RateMode(self.rate_mode));}
-                    ui.add_enabled_ui(!sharing&&!selecting,|ui|{
-                        ui.columns(2,|columns|{
-                            if crate::desktop_ui::action(&mut columns[0],"HEVC / H.265",super::media::factory_available(Codec::Hevc,self.encoder).unwrap_or(true),self.codec==Codec::Hevc).clicked(){self.codec=Codec::Hevc;}
-                            if crate::desktop_ui::action(&mut columns[1],"AV1",super::media::factory_available(Codec::Av1,self.encoder).unwrap_or(true),self.codec==Codec::Av1).clicked(){self.codec=Codec::Av1;}
+            egui::Panel::left("sidebar")
+                .exact_size(crate::desktop_ui::sidebar_width(width))
+                .resizable(false)
+                .frame(
+                    egui::Frame::new()
+                        .fill(PANEL)
+                        .inner_margin(crate::desktop_ui::room_margin(width, false)),
+                )
+                .show(root, |ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                crate::desktop_ui::brand_mark(ui, 22.0);
+                                ui.label(RichText::new("HyperCast").strong());
+                                if small(ui, crate::i18n::label("Atualizar", "Update")).clicked() {
+                                    self.updates = true;
+                                }
+                            });
+                            crate::desktop_ui::server_indicator(ui, &self.server_status);
+                            if reconnecting {
+                                ui.label(
+                                    RichText::new(crate::i18n::label(
+                                        "Sala: reconectando…",
+                                        "Room: reconnecting…",
+                                    ))
+                                    .size(11.0)
+                                    .color(MUTED),
+                                );
+                            }
+                            ui.add_space(12.0);
+                            {
+                                ui.label(
+                                    RichText::new(crate::i18n::label(
+                                        "PARTICIPANTES",
+                                        "PARTICIPANTS",
+                                    ))
+                                    .size(11.0)
+                                    .color(MUTED),
+                                );
+                                ui.label(crate::i18n_format!(
+                                    "{} (você) · {}",
+                                    "{} (you) · {}",
+                                    if self.name.is_empty() {
+                                        "Linux"
+                                    } else {
+                                        &self.name
+                                    },
+                                    if sharing {
+                                        crate::i18n::label("Transmitindo", "Sharing")
+                                    } else {
+                                        crate::i18n::label("Assistindo", "Watching")
+                                    }
+                                ));
+                                for (id, name) in &self.snapshot.participants {
+                                    let live = screens.iter().any(|s| &s.owner == id);
+                                    let title = if name.is_empty() { id } else { name };
+                                    let focused = !self.layout.paused
+                                        && self.layout.mode == ViewMode::Spotlight
+                                        && (self.layout.focus.as_ref().is_some_and(|focus| {
+                                            focus == id
+                                                || screens
+                                                    .iter()
+                                                    .any(|s| &s.sid == focus && &s.owner == id)
+                                        }) || (self.layout.focus.is_none()
+                                            && screens.first().is_some_and(|s| &s.owner == id)));
+                                    let status = if live && focused {
+                                        crate::i18n::label(
+                                            "Em destaque · transmitindo",
+                                            "Focused · sharing",
+                                        )
+                                    } else if live {
+                                        crate::i18n::label("Transmitindo", "Sharing")
+                                    } else {
+                                        crate::i18n::label("Assistindo", "Watching")
+                                    };
+                                    let response = crate::desktop_ui::participant_action(
+                                        ui,
+                                        &format!("{title} · {status}"),
+                                        live,
+                                        focused,
+                                    );
+                                    if response.clicked() {
+                                        self.layout.focus = Some(id.clone());
+                                        if response.double_clicked() {
+                                            self.layout.mode = ViewMode::Spotlight;
+                                        }
+                                        self.layout();
+                                    }
+                                }
+                                if small(ui, crate::i18n::label("Escolher sala", "Choose room"))
+                                    .clicked()
+                                {
+                                    self.catalog.open(
+                                        self.address.clone(),
+                                        self.access.token(),
+                                        ctx.clone(),
+                                    );
+                                }
+                            }
                         });
-                        egui::ComboBox::from_id_salt("encoder").width(ui.available_width()).selected_text(if self.encoder==Encoder::Auto{"GPU · NVENC / VA-API"}else{crate::i18n::label("Compatível · HEVC 30 FPS","Compatible · HEVC 30 FPS")}).show_ui(ui,|ui|{
-                            ui.selectable_value(&mut self.encoder,Encoder::Auto,"GPU · NVENC / VA-API");ui.selectable_value(&mut self.encoder,Encoder::Software,crate::i18n::label("Compatível · HEVC 30 FPS","Compatible · HEVC 30 FPS"));
-                        });
-                        if self.encoder==Encoder::Software{self.codec=Codec::Hevc;}
-                        if super::media::factory_available(self.codec,self.encoder)==Some(false){ui.add(egui::Label::new(RichText::new(crate::i18n::label("Nenhum encoder disponível para este formato. Escolha outro formato ou instale o plugin/driver.","No encoder is available for this format. Choose another format or install the plugin/driver.")).color(MUTED).size(11.0)).wrap());}
-                    });
-                    });
-                    ui.collapsing(crate::i18n::label("Indicadores de vídeo", "Video statistics"), |ui| {
-                        crate::desktop_ui::quality_strip(ui, &self.snapshot.quality, reconnecting, sharing, self.layout.paused);
-                    });
-                    if super::media::factory_available(self.codec,self.encoder)==Some(false){ui.add(egui::Label::new(RichText::new(crate::i18n::label("Encoder indisponível: escolha outro formato em Formato de vídeo.","Encoder unavailable: choose another format in Video format.")).color(MUTED).size(11.0)).wrap());}
                 });
-            });
         }
         egui::CentralPanel::default()
             .frame(
@@ -910,37 +1018,26 @@ impl App {
                     } else {
                         crate::desktop_ui::room_state(connected, reconnecting)
                     };
-                    crate::desktop_ui::room_header(ui, &title, status, |ui, compact| {
-                        let (panel, modes) = crate::desktop_ui::room_view_controls(
-                            ui,
-                            self.sidebar_open,
-                            self.layout.mode,
-                        );
-                        if panel.clicked() {
-                            self.sidebar_open = !self.sidebar_open;
+                    let header = crate::desktop_ui::room_header(
+                        ui,
+                        &title,
+                        status,
+                        self.sidebar_open,
+                        self.layout.mode,
+                        !screens.is_empty(),
+                    );
+                    if header.participants.clicked() {
+                        self.sidebar_open = !self.sidebar_open;
+                    }
+                    for (mode, response) in header.modes {
+                        if response.clicked() {
+                            self.layout.mode = mode;
+                            self.layout();
                         }
-                        for (mode, response) in modes {
-                            if response.clicked() {
-                                self.layout.mode = mode;
-                                self.layout();
-                            }
-                        }
-                        if !compact && !self.room_title.is_empty() {
-                            crate::desktop_ui::copy_room_name(ui, &title);
-                        }
-                        if !compact
-                            && crate::desktop_ui::header_button(
-                                ui,
-                                crate::i18n::label("Tela cheia", "Full screen"),
-                                !screens.is_empty(),
-                                None,
-                            )
-                            .on_hover_text("F11")
-                            .clicked()
-                        {
-                            self.fullscreen(ctx, true);
-                        }
-                    });
+                    }
+                    if header.fullscreen.clicked() {
+                        self.fullscreen(ctx, true);
+                    }
                 }
                 if self.layout.paused || screens.is_empty() {
                     let area = ui.allocate_space(ui.available_size()).1;
@@ -1046,6 +1143,11 @@ impl App {
                 self.leave_room(ctx, true);
             }
         }
+        if self.stream_options_open && !self.fullscreen && (connected || reconnecting) {
+            self.stream_options_open = crate::desktop_ui::show_stream_options(ctx, |ui| {
+                self.video_settings(ui, sharing || selecting);
+            });
+        }
         if self.debug {
             let mut reset_preferences = false;
             crate::desktop_ui::utility_window(ctx, crate::i18n::label("Diagnóstico", "Diagnostics"), "debug_window", 360.0)
@@ -1055,6 +1157,9 @@ impl App {
                 ui.label(format!("HyperCast {} · Linux",env!("CARGO_PKG_VERSION")));
                 ui.label(crate::i18n_format!("Decodificadores ativos: {}","Active decoders: {}",super::media::decoder_count()));
                 ui.label(crate::i18n_format!("Quadros enviados: {} · recebidos: {}","Frames sent: {} · received: {}",self.snapshot.sent,self.snapshot.received));
+                if connected || reconnecting {
+                    crate::desktop_ui::quality_strip(ui, &self.snapshot.quality, reconnecting, sharing, self.layout.paused);
+                }
                 crate::desktop_ui::network_summary(ui,&self.snapshot.quality);
                 let idle=self.engine.as_ref().is_none_or(|e|e.finished())&&self.joining.is_none()&&self.departure.is_none()&&!self.pending_join&&!self.creator.busy;
                 reset_preferences=crate::desktop_ui::preferences_controls(ui,&mut self.preferences,idle);

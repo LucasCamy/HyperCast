@@ -204,6 +204,27 @@ pub(crate) fn utility_window(
         .collapsible(false)
         .vscroll(true)
 }
+
+pub(crate) fn stream_options_title() -> &'static str {
+    crate::i18n::label("Qualidade do compartilhamento", "Sharing quality")
+}
+
+pub(crate) fn show_stream_options(
+    ctx: &egui::Context,
+    content: impl FnOnce(&mut egui::Ui),
+) -> bool {
+    let viewport = ctx.content_rect();
+    let modal = egui::Modal::new(egui::Id::new("stream_options")).show(ctx, |ui| {
+        ui.set_width((viewport.width() - 36.0).clamp(120.0, 420.0));
+        ui.heading(stream_options_title());
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+        egui::ScrollArea::vertical()
+            .max_height((viewport.height() - 128.0).max(48.0))
+            .show(ui, content);
+        session_button(ui, crate::i18n::label("Fechar", "Close"), true, false).clicked()
+    });
+    !modal.inner && !modal.should_close()
+}
 pub fn action(ui: &mut egui::Ui, label: &str, enabled: bool, primary: bool) -> egui::Response {
     action_with_wrap(ui, label, enabled, primary, egui::TextWrapMode::Extend)
 }
@@ -497,12 +518,10 @@ mod tests {
             egui::CentralPanel::default()
                 .frame(egui::Frame::new().inner_margin(room_margin(area.width(), false)))
                 .show(root, |ui| {
-                    room_header(ui, "Nome longo da sala de compartilhamento", "Conectado à sala", |ui, compact| {
-                        assert!(compact);
-                        let (panel, modes) = room_view_controls(ui, true, crate::subscription::ViewMode::Grid);
-                        actions.push(panel.rect);
-                        actions.extend(modes.into_iter().map(|(_, response)| response.rect));
-                    });
+                    let header = room_header(ui, "Nome longo da sala de compartilhamento", "Conectado à sala", true, crate::subscription::ViewMode::Grid, true);
+                    let header_actions = [header.participants.rect, header.modes[1].1.rect, header.modes[0].1.rect, header.fullscreen.rect];
+                    assert!(header_actions.windows(2).all(|pair| pair[0].right() <= pair[1].left()), "{header_actions:?}");
+                    actions.extend(header_actions);
                     let playback = ui.available_rect_before_wrap();
                     assert!(playback.height() >= 56.0, "{playback:?}");
                     assert!(area.contains_rect(playback));
@@ -765,13 +784,23 @@ pub(crate) fn sidebar_width(width: f32) -> f32 {
     (width * 0.29).clamp(100.0, 272.0)
 }
 
+pub(crate) struct RoomHeader {
+    pub participants: egui::Response,
+    pub modes: [(crate::subscription::ViewMode, egui::Response); 2],
+    pub fullscreen: egui::Response,
+}
+
 pub(crate) fn room_header(
     ui: &mut egui::Ui,
     title: &str,
     status: &str,
-    content: impl FnOnce(&mut egui::Ui, bool),
-) {
+    sidebar_open: bool,
+    mode: crate::subscription::ViewMode,
+    has_video: bool,
+) -> RoomHeader {
+    use crate::{i18n::label, subscription::ViewMode};
     let compact = ui.available_width() < 520.0;
+    let narrow = ui.available_width() < 300.0;
     let show_status = ui.available_height() >= 180.0 || status != room_state(true, false);
     ui.spacing_mut().item_spacing = Vec2::new(6.0, 5.0);
     ui.add(
@@ -787,63 +816,56 @@ pub(crate) fn room_header(
         ui.add(egui::Label::new(RichText::new(status).size(13.0).color(MUTED)).truncate())
             .on_hover_text(status);
     }
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().button_padding = Vec2::new(8.0, 4.0);
-        content(ui, compact);
-    });
+    let controls = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().button_padding = Vec2::new(if narrow { 2.0 } else { 8.0 }, 4.0);
+            if narrow {
+                ui.spacing_mut().item_spacing.x = 4.0;
+            }
+            let participants = header_button(
+                ui,
+                if narrow {
+                    label("Painel", "Panel")
+                } else {
+                    label("Participantes", "Participants")
+                },
+                true,
+                Some(sidebar_open),
+            )
+            .on_hover_text(if sidebar_open {
+                label("Ocultar participantes", "Hide participants")
+            } else {
+                label("Mostrar participantes", "Show participants")
+            });
+            let (modes, fullscreen) = ui
+                .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let fullscreen =
+                        header_button(ui, label("Tela cheia", "Full screen"), has_video, None)
+                            .on_hover_text("F11");
+                    let focus = if narrow {
+                        label("Foco", "Focus")
+                    } else {
+                        label("Destaque", "Focus")
+                    };
+                    let modes = [
+                        (ViewMode::Spotlight, focus),
+                        (ViewMode::Grid, label("Grade", "Grid")),
+                    ]
+                    .map(|(option, title)| {
+                        (option, header_button(ui, title, true, Some(option == mode)))
+                    });
+                    (modes, fullscreen)
+                })
+                .inner;
+            RoomHeader {
+                participants,
+                modes,
+                fullscreen,
+            }
+        })
+        .inner;
     ui.add_space(if compact { 4.0 } else { 8.0 });
-}
-
-pub(crate) fn compact_room_header(viewport_width: f32, sidebar_open: bool) -> bool {
-    let sidebar = if sidebar_open {
-        sidebar_width(viewport_width)
-    } else {
-        0.0
-    };
-    viewport_width - sidebar - 2.0 * f32::from(room_margin(viewport_width, false)) < 520.0
-}
-
-pub(crate) fn room_view_controls(
-    ui: &mut egui::Ui,
-    sidebar_open: bool,
-    mode: crate::subscription::ViewMode,
-) -> (
-    egui::Response,
-    [(crate::subscription::ViewMode, egui::Response); 2],
-) {
-    use crate::{i18n::label, subscription::ViewMode};
-    let narrow = ui.available_width() < 300.0;
-    let panel_label = if sidebar_open {
-        label("Ocultar painel", "Hide panel")
-    } else {
-        label("Pessoas e opções", "People and settings")
-    };
-    let panel = if narrow {
-        header_button(ui, label("Painel", "Panel"), true, Some(sidebar_open))
-            .on_hover_text(panel_label)
-    } else {
-        header_button(ui, panel_label, true, None)
-    };
-    let modes = [
-        (
-            ViewMode::Grid,
-            if narrow {
-                label("Grade", "Grid")
-            } else {
-                label("Em grade", "Grid")
-            },
-        ),
-        (
-            ViewMode::Spotlight,
-            if narrow {
-                label("Foco", "Focus")
-            } else {
-                label("Em destaque", "Focus")
-            },
-        ),
-    ]
-    .map(|(option, title)| (option, header_button(ui, title, true, Some(option == mode))));
-    (panel, modes)
+    controls
 }
 
 pub(crate) fn paint_video_label(
@@ -1349,16 +1371,12 @@ pub(crate) fn header_button(
 
 /// Share the visible room name so someone with access can find it in the catalog.
 pub(crate) fn copy_room_name(ui: &mut egui::Ui, name: &str) {
-    let response = header_button(
-        ui,
-        crate::i18n::label("Copiar nome da sala", "Copy room name"),
-        true,
-        None,
-    )
-    .on_hover_text(crate::i18n::label(
-        "Quem tem acesso ao servidor pode procurar este nome na lista de salas.",
-        "People with server access can find this name in the room list.",
-    ));
+    let response = ui
+        .button(crate::i18n::label("Copiar nome da sala", "Copy room name"))
+        .on_hover_text(crate::i18n::label(
+            "Quem tem acesso ao servidor pode procurar este nome na lista de salas.",
+            "People with server access can find this name in the room list.",
+        ));
     if response.clicked() {
         ui.ctx().copy_text(name.to_owned());
         let now = ui.input(|input| input.time);

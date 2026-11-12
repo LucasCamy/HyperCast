@@ -292,6 +292,7 @@ struct App {
     source_draft: Option<(bool, usize, Option<usize>)>,
     source_opener: Option<egui::Id>,
     confirm_leave: bool,
+    stream_options_open: bool,
     left_room: bool,
     cap_probe: crate::encoder::CapabilityProbe,
     window_mode: bool,
@@ -406,6 +407,7 @@ impl App {
             source_draft: None,
             source_opener: None,
             confirm_leave: false,
+            stream_options_open: false,
             left_room: false,
             cap_probe: Default::default(),
             window_mode: false,
@@ -769,175 +771,164 @@ impl App {
     }
 
     fn video_settings(&mut self, ui: &mut egui::Ui, publishing: bool) {
-        egui::CollapsingHeader::new(crate::i18n::label("Qualidade do vídeo", "Video quality"))
-            .id_salt("video_format")
-            .show(ui, |ui| {
-                if !publishing {
-                    self.poll_capture_capabilities(ui);
-                }
-                let before = self.stream_settings;
-                crate::desktop_ui::stream_settings(ui, &mut self.stream_settings, !publishing, 120);
-                if before != self.stream_settings {
-                    if let Some(engine) = &self.engine {
-                        let _ = engine
-                            .commands
-                            .send(Command::StreamSettings(self.stream_settings));
-                    }
-                }
-                if crate::desktop_ui::upload_selector(ui, &mut self.upload, !publishing) {
-                    if let Some(engine) = &self.engine {
-                        let _ = engine.commands.send(Command::UploadProfile(self.upload));
-                    }
-                }
-                let allow_automatic = self.selected_encode_caps(self.codec).dynamic_bitrate != 2;
-                if crate::desktop_ui::rate_mode_selector(
-                    ui,
-                    &mut self.rate_mode,
-                    !publishing,
-                    allow_automatic,
-                ) {
-                    if let Some(engine) = &self.engine {
-                        let _ = engine.commands.send(Command::RateMode(self.rate_mode));
-                    }
-                }
-                ui.horizontal(|ui| {
-                    let width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
-                    for (codec, title) in [
-                        (crate::encoder::Codec::H265, "HEVC / H.265"),
-                        (crate::encoder::Codec::Av1, "AV1"),
-                    ] {
-                        let selected = self.codec == codec;
-                        if ui
-                            .add_enabled(
-                                !publishing && self.selected_encode_caps(codec).support != 2,
-                                egui::Button::new(title)
-                                    .selected(selected)
-                                    .min_size(Vec2::new(width, 38.0)),
-                            )
-                            .clicked()
-                        {
-                            self.codec = codec;
-                        }
-                    }
-                });
-                if self.codec == crate::encoder::Codec::H265
-                    && self
-                        .selected_encode_caps(crate::encoder::Codec::Av1)
-                        .support
-                        == 2
-                {
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(crate::i18n::label(
-                                "AV1 indisponível no encoder desta GPU; use HEVC.",
-                                "AV1 is unavailable on this GPU encoder; use HEVC.",
-                            ))
-                            .size(11.0)
-                            .color(MUTED),
-                        )
-                        .wrap(),
-                    );
-                }
-                let caps = self.selected_encode_caps(self.codec);
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(
-                            self.capture_rejection()
-                                .map_or_else(|| caps.hint(), |r| r.label()),
-                        )
-                        .size(11.0)
-                        .color(MUTED),
+        if !publishing {
+            self.poll_capture_capabilities(ui);
+        }
+        let before = self.stream_settings;
+        crate::desktop_ui::stream_settings(ui, &mut self.stream_settings, !publishing, 120);
+        if before != self.stream_settings {
+            if let Some(engine) = &self.engine {
+                let _ = engine
+                    .commands
+                    .send(Command::StreamSettings(self.stream_settings));
+            }
+        }
+        if crate::desktop_ui::upload_selector(ui, &mut self.upload, !publishing) {
+            if let Some(engine) = &self.engine {
+                let _ = engine.commands.send(Command::UploadProfile(self.upload));
+            }
+        }
+        let allow_automatic = self.selected_encode_caps(self.codec).dynamic_bitrate != 2;
+        if crate::desktop_ui::rate_mode_selector(
+            ui,
+            &mut self.rate_mode,
+            !publishing,
+            allow_automatic,
+        ) {
+            if let Some(engine) = &self.engine {
+                let _ = engine.commands.send(Command::RateMode(self.rate_mode));
+            }
+        }
+        ui.horizontal(|ui| {
+            let width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
+            for (codec, title) in [
+                (crate::encoder::Codec::H265, "HEVC / H.265"),
+                (crate::encoder::Codec::Av1, "AV1"),
+            ] {
+                let selected = self.codec == codec;
+                if ui
+                    .add_enabled(
+                        !publishing && self.selected_encode_caps(codec).support != 2,
+                        egui::Button::new(title)
+                            .selected(selected)
+                            .min_size(Vec2::new(width, 38.0)),
                     )
-                    .wrap(),
-                );
-                let vendor = self
-                    .displays
-                    .get(self.selected_display)
-                    .map(|d| d.vendor_id);
-                let amd_hevc = vendor == Some(0x1002) && self.codec == crate::encoder::Codec::H265;
-                ui.add_enabled_ui(!publishing && amd_hevc, |ui| {
-                    let previous = self.amd_profile;
-                    ui.label(
-                        RichText::new(crate::i18n::label(
-                            "Perfil AMD · HEVC",
-                            "AMD profile · HEVC",
-                        ))
-                        .size(11.0)
-                        .color(MUTED),
-                    );
-                    let selected = if amd_hevc {
-                        self.amd_profile.label()
-                    } else if vendor == Some(0x10de) {
-                        crate::i18n::label(
-                            "NVIDIA · preset automático",
-                            "NVIDIA · automatic preset",
-                        )
-                    } else if vendor == Some(0x1002) {
-                        crate::i18n::label("AV1 · perfil automático", "AV1 · automatic profile")
-                    } else {
-                        crate::i18n::label(
-                            "AMF indisponível nesta origem",
-                            "AMF is unavailable for this source",
-                        )
-                    };
-                    egui::ComboBox::from_id_salt("amd_profile")
-                        .width(ui.available_width())
-                        .selected_text(selected)
-                        .show_ui(ui, |ui| {
-                            for profile in [
-                                crate::encoder::AmdProfile::Fast,
-                                crate::encoder::AmdProfile::Text,
-                                crate::encoder::AmdProfile::Compatibility,
-                            ] {
-                                ui.selectable_value(
-                                    &mut self.amd_profile,
-                                    profile,
-                                    profile.label(),
-                                );
-                            }
-                        });
-                    if previous != self.amd_profile {
-                        if let Some(engine) = &self.engine {
-                            let _ = engine.commands.send(Command::AmdProfile(self.amd_profile));
-                        }
+                    .clicked()
+                {
+                    self.codec = codec;
+                }
+            }
+        });
+        if self.codec == crate::encoder::Codec::H265
+            && self
+                .selected_encode_caps(crate::encoder::Codec::Av1)
+                .support
+                == 2
+        {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(crate::i18n::label(
+                        "AV1 indisponível no encoder desta GPU; use HEVC.",
+                        "AV1 is unavailable on this GPU encoder; use HEVC.",
+                    ))
+                    .size(11.0)
+                    .color(MUTED),
+                )
+                .wrap(),
+            );
+        }
+        let caps = self.selected_encode_caps(self.codec);
+        ui.add(
+            egui::Label::new(
+                RichText::new(
+                    self.capture_rejection()
+                        .map_or_else(|| caps.hint(), |r| r.label()),
+                )
+                .size(11.0)
+                .color(MUTED),
+            )
+            .wrap(),
+        );
+        let vendor = self
+            .displays
+            .get(self.selected_display)
+            .map(|d| d.vendor_id);
+        let amd_hevc = vendor == Some(0x1002) && self.codec == crate::encoder::Codec::H265;
+        ui.add_enabled_ui(!publishing && amd_hevc, |ui| {
+            let previous = self.amd_profile;
+            ui.label(
+                RichText::new(crate::i18n::label(
+                    "Perfil AMD · HEVC",
+                    "AMD profile · HEVC",
+                ))
+                .size(11.0)
+                .color(MUTED),
+            );
+            let selected = if amd_hevc {
+                self.amd_profile.label()
+            } else if vendor == Some(0x10de) {
+                crate::i18n::label("NVIDIA · preset automático", "NVIDIA · automatic preset")
+            } else if vendor == Some(0x1002) {
+                crate::i18n::label("AV1 · perfil automático", "AV1 · automatic profile")
+            } else {
+                crate::i18n::label(
+                    "AMF indisponível nesta origem",
+                    "AMF is unavailable for this source",
+                )
+            };
+            egui::ComboBox::from_id_salt("amd_profile")
+                .width(ui.available_width())
+                .selected_text(selected)
+                .show_ui(ui, |ui| {
+                    for profile in [
+                        crate::encoder::AmdProfile::Fast,
+                        crate::encoder::AmdProfile::Text,
+                        crate::encoder::AmdProfile::Compatibility,
+                    ] {
+                        ui.selectable_value(&mut self.amd_profile, profile, profile.label());
                     }
                 });
-                ui.label(
-                    RichText::new(if amd_hevc {
-                        crate::i18n::label(
-                            "Texto é experimental; aplicado ao envio HEVC pela AMD.",
-                            "Text is experimental; applies to AMD HEVC publishing.",
-                        )
-                    } else {
-                        crate::i18n::label(
-                            "Perfis AMD disponíveis apenas para uma origem AMD em HEVC.",
-                            "AMD profiles require an AMD capture source using HEVC.",
-                        )
-                    })
-                    .size(11.0)
-                    .color(MUTED),
-                );
-                ui.label(
-                    RichText::new(if publishing {
-                        crate::i18n::label(
-                            "Pare o envio para trocar o formato",
-                            "Stop sharing to change the format",
-                        )
-                    } else if self.codec == crate::encoder::Codec::Av1 {
-                        crate::i18n::label(
-                            "Envio e recepção exigem GPU compatível com AV1",
-                            "Publishing and playback require AV1-compatible GPUs",
-                        )
-                    } else {
-                        crate::i18n::label(
-                            "NVIDIA e AMD com suporte HEVC por hardware",
-                            "NVIDIA and AMD with hardware HEVC support",
-                        )
-                    })
-                    .size(11.0)
-                    .color(MUTED),
-                );
-            });
+            if previous != self.amd_profile {
+                if let Some(engine) = &self.engine {
+                    let _ = engine.commands.send(Command::AmdProfile(self.amd_profile));
+                }
+            }
+        });
+        ui.label(
+            RichText::new(if amd_hevc {
+                crate::i18n::label(
+                    "Texto é experimental; aplicado ao envio HEVC pela AMD.",
+                    "Text is experimental; applies to AMD HEVC publishing.",
+                )
+            } else {
+                crate::i18n::label(
+                    "Perfis AMD disponíveis apenas para uma origem AMD em HEVC.",
+                    "AMD profiles require an AMD capture source using HEVC.",
+                )
+            })
+            .size(11.0)
+            .color(MUTED),
+        );
+        ui.label(
+            RichText::new(if publishing {
+                crate::i18n::label(
+                    "Pare o envio para trocar o formato",
+                    "Stop sharing to change the format",
+                )
+            } else if self.codec == crate::encoder::Codec::Av1 {
+                crate::i18n::label(
+                    "Envio e recepção exigem GPU compatível com AV1",
+                    "Publishing and playback require AV1-compatible GPUs",
+                )
+            } else {
+                crate::i18n::label(
+                    "NVIDIA e AMD com suporte HEVC por hardware",
+                    "NVIDIA and AMD with hardware HEVC support",
+                )
+            })
+            .size(11.0)
+            .color(MUTED),
+        );
     }
 
     fn choose_source(&mut self, opener: egui::Id) {
@@ -988,7 +979,6 @@ impl App {
         publishing: bool,
         active: Option<crate::video_capture::CaptureTarget>,
         status: &str,
-        has_video: bool,
     ) -> Option<egui::Rect> {
         ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
         let (camera_active, camera_starting) =
@@ -1051,6 +1041,15 @@ impl App {
                 }
             }
             menu_rect = session_menu(ui, |ui| {
+                ui.strong(crate::i18n::label("Compartilhamento", "Sharing"));
+                if ui
+                    .button(crate::desktop_ui::stream_options_title())
+                    .clicked()
+                {
+                    self.stream_options_open = true;
+                    self.debug_open = false;
+                    ui.close();
+                }
                 if publishing {
                     let change = ui.add_enabled(
                         connected && can_publish,
@@ -1085,6 +1084,23 @@ impl App {
                     }
                 }
                 ui.separator();
+                ui.strong(crate::i18n::label("Recepção", "Playback"));
+                if ui
+                    .checkbox(
+                        &mut self.self_preview,
+                        crate::i18n::label("Mostrar minha prévia", "Show my preview"),
+                    )
+                    .changed()
+                {
+                    if !self.self_preview
+                        && self.engine.as_ref().is_some_and(|engine| {
+                            self.focus.as_ref() == Some(&engine.shared.lock().unwrap().identity)
+                        })
+                    {
+                        self.focus = None;
+                    }
+                    self.send_layout();
+                }
                 let mute = ui
                     .checkbox(
                         &mut self.sound_muted,
@@ -1127,28 +1143,15 @@ impl App {
                     self.restart_reception();
                     ui.close();
                 }
-                if crate::desktop_ui::compact_room_header(
-                    ui.ctx().content_rect().width(),
-                    connected && self.sidebar_open,
-                ) {
-                    let room = self
-                        .engine
-                        .as_ref()
-                        .map(|engine| engine.shared.lock().unwrap().room.clone())
-                        .unwrap_or_default();
-                    if !room.is_empty() {
-                        crate::desktop_ui::copy_room_name(ui, &room);
-                    }
-                    if ui
-                        .add_enabled(
-                            has_video,
-                            egui::Button::new(crate::i18n::label("Tela cheia", "Full screen")),
-                        )
-                        .clicked()
-                    {
-                        self.set_fullscreen(ui.ctx(), true);
-                        ui.close();
-                    }
+                ui.separator();
+                ui.strong(crate::i18n::label("Sala e interface", "Room and interface"));
+                let room = self
+                    .engine
+                    .as_ref()
+                    .map(|engine| engine.shared.lock().unwrap().room.clone())
+                    .unwrap_or_default();
+                if !room.is_empty() {
+                    crate::desktop_ui::copy_room_name(ui, &room);
                 }
                 crate::desktop_ui::display_scale(ui);
                 if ui
@@ -1196,6 +1199,7 @@ impl App {
         }
     }
     fn leave_room(&mut self, ctx: &egui::Context, join_next: bool) {
+        self.stream_options_open = false;
         self.left_room = !join_next && self.engine.is_some();
         if let Some(engine) = &self.engine {
             engine.request_exit();
@@ -1461,6 +1465,7 @@ impl eframe::App for App {
         }
         if self.source_draft.is_none()
             && !self.confirm_leave
+            && !self.stream_options_open
             && (self.fullscreen || connected && !videos.is_empty())
             && ctx.input(|i| i.key_pressed(egui::Key::F11))
         {
@@ -1663,7 +1668,6 @@ impl eframe::App for App {
                         } else {
                             &source_error
                         },
-                        !videos.is_empty(),
                     )
                 })
                 .inner
@@ -1861,19 +1865,6 @@ impl eframe::App for App {
                             }
                             ui.add_space(14.0);
                             ui.separator();
-                            self.video_settings(ui, publishing);
-                            if ui
-                                .checkbox(
-                                    &mut self.self_preview,
-                                    crate::i18n::label("Mostrar minha prévia", "Show my preview"),
-                                )
-                                .changed()
-                            {
-                                if !self.self_preview && self.focus.as_ref() == Some(&identity) {
-                                    self.focus = None;
-                                }
-                                self.send_layout();
-                            }
                             if self.server_access.authenticated()
                                 && compact_action(
                                     ui,
@@ -1888,18 +1879,6 @@ impl eframe::App for App {
                                     ctx.clone(),
                                 );
                             }
-                            ui.collapsing(
-                                crate::i18n::label("Indicadores de vídeo", "Video statistics"),
-                                |ui| {
-                                    crate::desktop_ui::quality_strip(
-                                        ui,
-                                        &quality,
-                                        reconnecting,
-                                        publishing,
-                                        self.paused,
-                                    );
-                                },
-                            );
                             if audio_status.starts_with(crate::i18n::label("Áudio:", "Audio:")) {
                                 ui.colored_label(DANGER, &audio_status);
                             }
@@ -2234,35 +2213,27 @@ impl eframe::App for App {
                     } else {
                         crate::desktop_ui::room_state(connected, reconnecting)
                     };
-                    crate::desktop_ui::room_header(ui, &room, room_status, |ui, compact| {
-                        let (panel, modes) =
-                            crate::desktop_ui::room_view_controls(ui, self.sidebar_open, self.mode);
-                        if panel.clicked() {
-                            self.sidebar_open = !self.sidebar_open;
+                    let header = crate::desktop_ui::room_header(
+                        ui,
+                        &room,
+                        room_status,
+                        self.sidebar_open,
+                        self.mode,
+                        !videos.is_empty(),
+                    );
+                    if header.participants.clicked() {
+                        self.sidebar_open = !self.sidebar_open;
+                    }
+                    for (mode, response) in header.modes {
+                        if response.clicked() {
+                            self.mode = mode;
+                            self.single_view = false;
+                            self.send_layout();
                         }
-                        for (mode, response) in modes {
-                            if response.clicked() {
-                                self.mode = mode;
-                                self.single_view = false;
-                                self.send_layout();
-                            }
-                        }
-                        if !compact {
-                            crate::desktop_ui::copy_room_name(ui, &room);
-                        }
-                        if !compact
-                            && crate::desktop_ui::header_button(
-                                ui,
-                                crate::i18n::label("Tela cheia", "Full screen"),
-                                !videos.is_empty(),
-                                None,
-                            )
-                            .on_hover_text("F11")
-                            .clicked()
-                        {
-                            self.set_fullscreen(&ctx, true);
-                        }
-                    });
+                    }
+                    if header.fullscreen.clicked() {
+                        self.set_fullscreen(&ctx, true);
+                    }
                 }
                 let available = ui.available_size();
                 let rect = ui.allocate_space(available).1;
@@ -2273,6 +2244,7 @@ impl eframe::App for App {
                     || (!self.fullscreen
                         && (self.creator.open
                             || self.catalog.open
+                            || self.stream_options_open
                             || self.debug_open
                             || self.updater.open));
                 if videos.is_empty() || self.paused {
@@ -2859,6 +2831,11 @@ impl eframe::App for App {
                 self.leave_room(&ctx, true);
             }
         }
+        if self.stream_options_open && !self.fullscreen && (connected || reconnecting) {
+            self.stream_options_open = crate::desktop_ui::show_stream_options(&ctx, |ui| {
+                self.video_settings(ui, publishing);
+            });
+        }
         if !self.fullscreen && self.debug_open {
             let mut open = self.debug_open;
             crate::desktop_ui::utility_window(&ctx, crate::i18n::label("Diagnóstico", "Diagnostics"), "debug_window", 360.0)
@@ -2884,6 +2861,9 @@ impl eframe::App for App {
                     }
                     ui.add_enabled(idle,egui::Checkbox::new(&mut self.relay_only,crate::i18n::label("Forçar TURN/TLS (teste)","Force TURN/TLS (test)")))
                         .on_hover_text(crate::i18n::label("Ative antes de entrar para testar o relay; desativado escolhe a rota de menor custo","Enable before joining to test the relay; otherwise the lowest-cost route is selected"));
+                    if connected || reconnecting {
+                        crate::desktop_ui::quality_strip(ui, &quality, reconnecting, publishing, self.paused);
+                    }
                     crate::desktop_ui::network_summary(ui,&quality);
                     if crate::desktop_ui::preferences_controls(ui,&mut self.preferences,idle&&self.departure.is_none()&&!self.pending_join&&!self.creator.busy){self.restore_preferences();}
 
