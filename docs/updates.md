@@ -39,14 +39,22 @@ temporários ficam em `%LOCALAPPDATA%/HyperCast/updates/<UUID>` e não são usad
 para executar comandos de shell. Downloads antigos são limpos por allowlist,
 sem exclusão recursiva e sem remover conteúdo desconhecido.
 
-Publicação: gere os pacotes com `pwsh -File tools/package.ps1`, faça commit/push,
-crie a release com tag `v<versão>` no commit correspondente e publique o setup,
-ZIP e `SHA256SUMS.txt`. Sem release estável completa, o cliente mostra a
-indisponibilidade; erros de rede/limite da API permitem tentar novamente.
+Para preparar uma release, atualize a versão em `Cargo.toml` e `Cargo.lock`,
+adicione as notas em `docs/<versão>.md` e integre essas mudanças à `main`.
+No GitHub, abra **Actions → Release client → Run workflow** e selecione
+`main`. Com **Publish** desmarcado, o workflow executa os testes e disponibiliza
+os pacotes como artefatos da execução. Com **Publish** marcado, ele também
+publica a tag `v<versão>` e a release estável após todos os jobs passarem.
 
-`pwsh -File tools/publish-release.ps1 -NotesFile <arquivo.md>` valida os hashes,
-exige checkout limpo, cria um draft com todos os assets e só então publica como
-Latest. Teste operacional: `python -m tests.integration_app_update` usa uma
+O workflow gera o instalador e o ZIP portátil para Windows e o AppImage
+para Linux. O Windows valida instalação limpa, execução em linha de comando
+e atualização da versão estável anterior. O Linux executa o AppImage no Xvfb,
+testa vídeo sintético em HEVC e verifica a preservação do perfil após substituir
+o AppImage anterior. Os hashes dos arquivos enviados são conferidos no rascunho
+da release antes de marcá-la como Latest.
+
+`pwsh -File tools/package.ps1` gera os pacotes Windows localmente.
+O teste operacional `python -m tests.integration_app_update` usa uma
 instalação registrada isolada, uma versão privada anterior do mesmo cliente e
 o instalador oficial baixado do GitHub; recusa uma instalação de usuário existente.
 

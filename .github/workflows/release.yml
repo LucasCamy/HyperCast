@@ -1,0 +1,192 @@
+name: Release client
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the stable release after validation
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/release.yml'
+      - 'docs/[0-9]*.md'
+      - 'installer/**'
+      - 'tools/*release*'
+      - 'tools/package*'
+      - 'tools/build-linux-media.sh'
+      - 'tools/ci-linux-deps.sh'
+      - 'tools/linux-corresponding-source.py'
+
+permissions:
+  contents: read
+concurrency:
+  group: client-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      baseline: ${{ steps.metadata.outputs.baseline }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve candidate and upgrade baseline
+        id: metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+        run: |
+          if [[ "$RELEASE_PUBLISH" == true && "$GITHUB_REF" != refs/heads/main ]]; then
+            echo 'Publishing requires the main branch' >&2
+            exit 1
+          fi
+          python3 tools/release-metadata.py
+
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  windows:
+    needs: prepare
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      BASELINE_TAG: ${{ needs.prepare.outputs.baseline }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Select Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.99.0 --profile minimal
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          rustup override set 1.99.0
+      - name: Build installer and portable ZIP
+        shell: pwsh
+        run: ./tools/package.ps1
+      - name: Download the upgrade baseline
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $baseline = Join-Path $env:RUNNER_TEMP 'hypercast-baseline'
+          $version = $env:BASELINE_TAG.Substring(1)
+          gh release download $env:BASELINE_TAG --repo $env:GITHUB_REPOSITORY --dir $baseline --pattern "HyperCast-$version-windows-x64-setup.exe" --pattern SHA256SUMS.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Test Windows packages and upgrade
+        shell: pwsh
+        run: |
+          $baseline = Join-Path $env:RUNNER_TEMP 'hypercast-baseline'
+          ./tools/test-release-windows.ps1 -Version $env:RELEASE_VERSION -Baseline $env:BASELINE_TAG -BaselineDir $baseline
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-windows
+          if-no-files-found: error
+          compression-level: 0
+          path: |
+            dist/HyperCast-${{ needs.prepare.outputs.version }}-windows-x64-setup.exe
+            dist/HyperCast-${{ needs.prepare.outputs.version }}-windows-x64-portable.zip
+            dist/SHA256SUMS.txt
+
+  linux:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      BASELINE_TAG: ${{ needs.prepare.outputs.baseline }}
+      CC: clang-21
+      CXX: clang++-21
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install packaging dependencies
+        run: |
+          sed 's/^Types: deb$/Types: deb-src/' /etc/apt/sources.list.d/ubuntu.sources |
+            sudo tee /etc/apt/sources.list.d/hypercast-source.sources >/dev/null
+          HYPERCAST_REFRESH_LINUX_DEPS=1 sh tools/ci-linux-deps.sh \
+            ninja-build python3-venv flex bison gettext liborc-0.4-dev libx265-dev libpipewire-0.3-dev gstreamer1.0-x
+          python3 -m venv "$RUNNER_TEMP/meson"
+          "$RUNNER_TEMP/meson/bin/pip" install meson==1.8.5
+          rustup toolchain install 1.92.0 --profile minimal
+          rustup override set 1.92.0
+      - name: Download the upgrade baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          previous="${BASELINE_TAG#v}"
+          gh release download "$BASELINE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/hypercast-baseline" \
+            --pattern "HyperCast-$previous-linux-x86_64.AppImage" \
+            --pattern "HyperCast-$previous-linux-media-source.tar.gz" --pattern SHA256SUMS-linux.txt
+      - name: Build AppImage and source archives
+        run: |
+          mkdir -p dist "$RUNNER_TEMP/hypercast-media-source"
+          previous="${BASELINE_TAG#v}"
+          archive="HyperCast-$previous-linux-media-source.tar.gz"
+          (
+            cd "$RUNNER_TEMP/hypercast-baseline"
+            grep -F "  $archive" SHA256SUMS-linux.txt | sha256sum --check -
+            tar -xzf "$archive" -C "$RUNNER_TEMP/hypercast-media-source" --wildcards --no-wildcards-match-slash '*.tar.xz'
+          )
+          cargo build --release --locked --features desktop
+          media="$RUNNER_TEMP/hypercast-media"
+          media_archive="HyperCast-$RELEASE_VERSION-linux-media-source.tar.gz"
+          PATH="$RUNNER_TEMP/meson/bin:$PATH" sh tools/build-linux-media.sh \
+            "$media" "$RUNNER_TEMP/hypercast-media-source" "$GITHUB_WORKSPACE/dist/$media_archive"
+          python3 tools/package-linux.py --binary target/release/hypercast --media-prefix "$media"
+          python3 tools/linux-corresponding-source.py
+          (cd dist && sha256sum "$media_archive" >> SHA256SUMS-linux.txt)
+      - name: Test AppImage and upgrade
+        run: |
+          (cd dist && sha256sum -c SHA256SUMS-linux.txt)
+          python3 tools/test-release-linux.py "dist/HyperCast-$RELEASE_VERSION-linux-x86_64.AppImage" \
+            "$RUNNER_TEMP/hypercast-baseline/HyperCast-${BASELINE_TAG#v}-linux-x86_64.AppImage"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-linux
+          if-no-files-found: error
+          compression-level: 0
+          path: |
+            dist/HyperCast-${{ needs.prepare.outputs.version }}-linux-x86_64.AppImage
+            dist/HyperCast-${{ needs.prepare.outputs.version }}-linux-corresponding-source.tar.gz
+            dist/HyperCast-${{ needs.prepare.outputs.version }}-linux-media-source.tar.gz
+            dist/SHA256SUMS-linux.txt
+
+  publish:
+    needs: [prepare, checks, windows, linux]
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main' && github.repository == 'LucasCamy/HyperCast'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Check the version again before publishing
+        id: current
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_PUBLISH: 'true'
+        run: python3 tools/release-metadata.py
+      - name: Publish the tested artifacts
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          TESTED_BASELINE: ${{ needs.prepare.outputs.baseline }}
+          CURRENT_BASELINE: ${{ steps.current.outputs.baseline }}
+        run: |
+          if ($env:TESTED_BASELINE -ne $env:CURRENT_BASELINE) { throw 'The upgrade baseline changed. Run release validation again.' }
+          ./tools/publish-release.ps1 -NotesFile "docs/$env:RELEASE_VERSION.md" -RequireLinux
