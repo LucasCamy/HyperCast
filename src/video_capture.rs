@@ -19,10 +19,11 @@ impl ApplicationWindow {
 }
 unsafe extern "C" {
     fn hc_window_open(hwnd:usize,pid:u32,adapter:u32,error:*mut c_char,capacity:usize)->*mut c_void;
+    fn hc_window_start(handle: *mut c_void, error: *mut c_char, capacity: usize) -> i32;
     fn hc_window_device(handle:*mut c_void)->*mut c_void;
     fn hc_window_size(handle:*mut c_void,width:*mut u32,height:*mut u32);
     fn hc_window_frame(handle:*mut c_void,texture:*mut *mut c_void,error:*mut c_char,capacity:usize)->i32;
-    fn hc_window_close(handle:*mut c_void);
+    fn hc_window_close(handle: *mut c_void) -> i32;
     fn hc_window_list(callback:unsafe extern "C" fn(usize,u32,*const u16,*mut c_void),data:*mut c_void);
     fn hc_window_is_live(window:usize,pid:u32)->i32;
     fn hc_window_preview_open(destination:usize,source:usize,pid:u32)->*mut c_void;
@@ -65,6 +66,12 @@ impl WindowCapture {
         let device=unsafe{ID3D11Device::from_raw(hc_window_device(handle.as_ptr()))};
         Ok(Self{handle,device,_affinity:PhantomData})
     }
+    fn start(&mut self) -> Result<()> {
+        let mut error = [0; 1024];
+        let status = unsafe { hc_window_start(self.handle.as_ptr(), error.as_mut_ptr(), error.len()) };
+        ensure!(status == 0, "{}", unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy());
+        Ok(())
+    }
     fn acquire(&mut self)->Result<Option<ID3D11Texture2D>>{
         let mut texture=std::ptr::null_mut();let mut error=[0;1024];
         let status=unsafe{hc_window_frame(self.handle.as_ptr(),&mut texture,error.as_mut_ptr(),error.len())};
@@ -72,7 +79,14 @@ impl WindowCapture {
         Ok(if texture.is_null(){None}else{Some(unsafe{ID3D11Texture2D::from_raw(texture)})})
     }
 }
-impl Drop for WindowCapture {fn drop(&mut self){unsafe{hc_window_close(self.handle.as_ptr());}}}
+impl Drop for WindowCapture {
+    fn drop(&mut self) {
+        let status = unsafe { hc_window_close(self.handle.as_ptr()) };
+        if status < 0 {
+            crate::diagnostics::write("capture_close_error", &format!("Windows Graphics Capture HRESULT {:#010x}", status as u32), "");
+        }
+    }
+}
 pub enum VideoCapture {Monitor(ScreenCapture),Window(WindowCapture)}
 pub enum CaptureFrame<'a>{Monitor(CapturedFrame<'a>),Window(ID3D11Texture2D)}
 impl CaptureFrame<'_>{
@@ -80,10 +94,21 @@ impl CaptureFrame<'_>{
     pub fn release(self)->Result<()>{match self{Self::Monitor(f)=>f.release(),Self::Window(_)=>Ok(())}}
 }
 impl VideoCapture {
-    pub fn new(target:CaptureTarget)->Result<Self>{Ok(match target{
+    pub fn new(target: CaptureTarget) -> Result<Self> {
+        let mut capture = Self::prepare(target)?;
+        capture.start()?;
+        Ok(capture)
+    }
+    pub(crate) fn prepare(target:CaptureTarget)->Result<Self>{Ok(match target{
         CaptureTarget::Monitor{adapter,output}=>Self::Monitor(ScreenCapture::new(CaptureConfig{adapter_index:adapter,output_index:output})?),
         CaptureTarget::Window{adapter,hwnd,pid}=>Self::Window(WindowCapture::new(adapter,hwnd,pid)?),
     })}
+    pub(crate) fn start(&mut self) -> Result<()> {
+        match self {
+            Self::Window(capture) => capture.start(),
+            Self::Monitor(_) => Ok(()),
+        }
+    }
     pub fn device(&self)->&ID3D11Device{match self{Self::Monitor(c)=>c.device(),Self::Window(c)=>&c.device}}
     pub fn dimensions(&self)->(u32,u32){match self{Self::Monitor(c)=>c.dimensions(),Self::Window(c)=>{let(mut w,mut h)=(0,0);unsafe{hc_window_size(c.handle.as_ptr(),&mut w,&mut h);}(w,h)}}}
     pub fn acquire(&mut self)->Result<Option<CaptureFrame<'_>>>{match self{Self::Monitor(c)=>Ok(c.acquire()?.map(CaptureFrame::Monitor)),Self::Window(c)=>Ok(c.acquire()?.map(CaptureFrame::Window))}}

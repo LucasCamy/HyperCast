@@ -397,8 +397,11 @@ async fn session(
     let mut retiring:Option<tokio::task::JoinHandle<()>>=None;
     let mut transmit_paused=false;
     let started = Instant::now();
-    let mut ticks = tokio::time::interval(Duration::from_millis(8));
-    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut capture_ticks = tokio::time::interval(Duration::from_millis(8));
+    let mut idle_ticks = tokio::time::interval(Duration::from_millis(80));
+    capture_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    idle_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_ui_refresh = Instant::now();
     let mut last_refresh = Instant::now() - Duration::from_secs(1);
     let mut reception_restart:Option<Instant>=None;
     let(mut send_meter,mut receive_meter)=(crate::video_metrics::TrafficMeter::default(),crate::video_metrics::TrafficMeter::default());
@@ -407,6 +410,11 @@ async fn session(
     let outcome=async {
         loop {
             anyhow::ensure!(!shared.was_reset(),crate::resilience::worker_failure());
+            // Media capture still needs its short cadence. A viewer receives frame-driven
+            // wakeups, so only periodic room maintenance needs a timer when not publishing.
+            let capture_work = capture.is_some() || camera.is_some() || pending.is_some()
+                || camera_start.is_some() || retiring.is_some();
+            let mut media_tick = false;
             tokio::select!{
                 biased;
                 _=stopping.cancelled()=>break,
@@ -487,7 +495,10 @@ async fn session(
                     Some(RoomEvent::TrackUnsubscribed{publication,..})=>{if publication.is_subscribed(){continue;}video_sinks.remove(&publication.sid().to_string());audio_sinks.remove(&publication.sid().to_string());},
                     _=>{last_refresh=Instant::now()-Duration::from_secs(1);},
                 },
-                _=ticks.tick()=>{
+                _=async {
+                    if capture_work { capture_ticks.tick().await } else { idle_ticks.tick().await }
+                }=>{
+                    media_tick = true;
                     if camera_start.as_ref().is_some_and(tokio::task::JoinHandle::is_finished) {
                         if let Some(task) = camera_start.take() {
                             let result = task.await;
@@ -665,7 +676,10 @@ async fn session(
                 if let Some(sample)=receive_meter.sample(now,state.received,0){state.quality.receive=Some(sample);}
                 state.quality.observe(state.connected,state.reconnecting,state.sharing);
             }
-            ctx.request_repaint();
+            if !media_tick || last_ui_refresh.elapsed() >= Duration::from_millis(200) {
+                ctx.request_repaint();
+                last_ui_refresh = Instant::now();
+            }
         }
         Ok::<(),anyhow::Error>(())
     }.await;

@@ -181,7 +181,7 @@ impl Cast {
         stopping:&crate::room_transition::Cancellation,
         evidence:&crate::evidence::Evidence,
     ) -> Result<Self> {
-        let capture = VideoCapture::new(target)?;
+        let mut capture = VideoCapture::prepare(target)?;
         let device=capture.device().clone();
         let (width, height) = capture.dimensions();
         crate::diagnostics::write("capture", &format!("{width}x{height} target_fps={} codec={codec:?}",settings.fps), "");
@@ -195,7 +195,7 @@ impl Cast {
         )?;
         if rate_mode==crate::adaptive_upload::Mode::Automatic{if let Some(reason)=encoder.capabilities().automatic_rejection(){anyhow::bail!(reason.label());}}
         crate::diagnostics::write("encoder",encoder.backend_name(),"");
-        // No Desktop Duplication frame is held while waiting for publication acknowledgment.
+        // Open the window's capture session only after the SFU accepts the track.
         let (send_width,send_height)=encoder.dimensions();
         crate::diagnostics::write("bandwidth",&format!("video_limit_bps={}",upload.bps()),"");
         crate::diagnostics::write("resolution",&format!("source={width}x{height} output={send_width}x{send_height}"),"");
@@ -207,6 +207,18 @@ impl Cast {
             upload.bps(),
             codec == Codec::Av1,
         ))).ok_or_else(||anyhow::anyhow!(crate::i18n::label("Publicação cancelada","Publication cancelled")))??;
+        let started = if stopping.is_cancelled() {
+            Err(anyhow::anyhow!(crate::i18n::label("Publicação cancelada", "Publication cancelled")))
+        } else {
+            capture.start()
+        };
+        if let Err(error) = started {
+            drop(capture);
+            if let Err(unpublish_error) = runtime.block_on(publisher.stop()) {
+                crate::diagnostics::write("unpublish_error", &format!("{unpublish_error:#}"), "");
+            }
+            return Err(error);
+        }
         Ok(Self {
             audio: None,profile,upload,rate_control:crate::adaptive_upload::Controller::new(rate_mode,upload.bps()),metrics:Default::default(),last_rate:(upload.bps() as u64,settings.fps),sent_bytes:0,rate_blocked:false,
             selection: (target, codec),
@@ -286,16 +298,34 @@ impl Cast {
         else if self.audio.is_none() { self.audio = Some(SystemAudioPublisher::start_for_process(runtime, room.clone(),self.selection.0.process())?); }
         Ok(())
     }
-    fn change_source(&mut self,target:CaptureTarget,runtime:&tokio::runtime::Runtime,room:&Arc<Room>,audio_requested:bool)->Result<()> {
+    fn change_source(&mut self,target:CaptureTarget,runtime:&tokio::runtime::Runtime,room:&Arc<Room>,audio_requested:bool,stopping:&crate::room_transition::Cancellation)->Result<()> {
         if target==self.selection.0 {return Ok(());}
         // Prepare and validate first; failures leave the original source intact.
-        let capture=VideoCapture::new(target)?;
+        let mut capture = VideoCapture::prepare(target)?;
         let dimensions=capture.dimensions();let device=capture.device().clone();
         let mut encoder=HardwareEncoder::new_with_limits(&device,dimensions.0,dimensions.1,self.settings.fps,self.upload.bps(),self.selection.1,self.profile,self.settings.size)?;
-        if self.last_rate.0>0 {self.rate_blocked=!encoder.reconfigure(self.upload.active_rate(self.last_rate.0),self.fps)?;self.paused=self.rate_blocked;}
+        let rate_blocked = if self.last_rate.0 > 0 {
+            !encoder.reconfigure(self.upload.active_rate(self.last_rate.0), self.fps)?
+        } else {
+            self.rate_blocked
+        };
         let send_size=encoder.dimensions();
         let change_audio=self.selection.0.process()!=target.process();
         if change_audio {if let Some(audio)=&self.audio{audio.set_process(target.process())?;}}
+        anyhow::ensure!(!stopping.is_cancelled(), crate::i18n::label("Troca de origem cancelada", "Source change cancelled"));
+        if let Err(error) = capture.start() {
+            drop(capture);
+            if change_audio && let Some(audio) = &self.audio {
+                if let Err(restore_error) = audio.set_process(self.selection.0.process()) {
+                    crate::diagnostics::write("audio_source_restore_error", &format!("{restore_error:#}"), "");
+                }
+            }
+            return Err(error);
+        }
+        if self.last_rate.0 > 0 {
+            self.rate_blocked = rate_blocked;
+            self.paused = rate_blocked;
+        }
         self.capture=capture;self.device=device;self.encoder=Some(encoder);self.dimensions=dimensions;self.selection.0=target;self.has_frame=false;
         if let Some(p)=&mut self.publisher {p.set_resolution(send_size.0,send_size.1);}
         self.evidence.event(crate::evidence::EventKind::SourceChanged);
@@ -305,6 +335,8 @@ impl Cast {
     }
     fn audio_status(&self)->String{if self.audio.is_none(){crate::i18n::label("Áudio desativado","Audio disabled").into()}else if self.selection.0.process().is_some(){crate::i18n::label("Enviando áudio do aplicativo","Sending app audio").into()}else{crate::i18n::label("Enviando áudio do sistema","Sending system audio").into()}}
     fn stop(mut self, runtime: &tokio::runtime::Runtime) {
+        // End local capture and its Windows indicator before waiting on the SFU.
+        drop(self.capture);
         if let Some(audio) = self.audio.take() { audio.stop(runtime); }
         if let Some(publisher) = self.publisher {
             if let Err(error) = runtime.block_on(publisher.stop()) {
@@ -678,7 +710,7 @@ impl Engine {
                             }
                             Command::ChangeSource(target)=>{
                                 if let Some(c)=&mut cast {
-                                    let result=c.change_source(target,&runtime,&room,audio_requested);
+                                    let result=c.change_source(target,&runtime,&room,audio_requested,&stopping);
                                     let mut s=state.lock().unwrap();s.active_target=Some(c.selection.0);s.audio_status=c.audio_status();
                                     s.frames.remove(&room.local_participant().identity().to_string());
                                     if let Err(e)=&result {crate::diagnostics::write("source_error",&format!("{e:#}"),&token);}
@@ -711,6 +743,7 @@ impl Engine {
                             _ => {}
                         }
                     }
+                    if stopping.is_cancelled() { break 'session; }
                     for _ in 0..64 {
                         let Ok(event) = events.try_recv() else {
                             break;

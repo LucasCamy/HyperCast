@@ -26,12 +26,18 @@ struct Presenter {
     ComPtr<ID3D11Query> fence;
     uint32_t width = 0, height = 0, source_width = 0, source_height = 0;
     bool ready = false;
+    bool visible = false;
+    RECT bounds{};
     explicit Presenter(HWND parent) {
         window = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 1, 1, parent, nullptr, GetModuleHandleW(nullptr), nullptr);
         if (!window) throw std::runtime_error("Cannot create DirectX video canvas");
     }
     ~Presenter() { if (window) DestroyWindow(window); }
-    void hide() { ShowWindow(window, SW_HIDE); }
+    void hide() {
+        if (!visible) return;
+        ShowWindow(window, SW_HIDE);
+        visible = false;
+    }
     void present(ID3D11Texture2D* texture, uint32_t slice, uint32_t frame_width, uint32_t frame_height, int x, int y, uint32_t w, uint32_t h) {
         if (!texture || !w || !h || w > 8192 || h > 8192 || !frame_width || !frame_height) { hide(); return; }
         D3D11_TEXTURE2D_DESC input_desc{}; texture->GetDesc(&input_desc);
@@ -113,7 +119,14 @@ struct Presenter {
             if (GetTickCount64() - start > 1000) throw std::runtime_error("Presentation GPU timeout");
             Sleep(0);
         }
-        SetWindowPos(window, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        const RECT next_bounds{x, y, x + static_cast<LONG>(w), y + static_cast<LONG>(h)};
+        if (!visible || !EqualRect(&bounds, &next_bounds)) {
+            if (!SetWindowPos(window, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW)) {
+                throw std::runtime_error("Cannot position DirectX video canvas");
+            }
+            bounds = next_bounds;
+            visible = true;
+        }
         hr(chain->Present(0, 0), "Present video");
     }
 };

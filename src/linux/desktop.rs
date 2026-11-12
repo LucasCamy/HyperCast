@@ -58,6 +58,7 @@ struct App {
     report_copied:Option<Instant>,
     updates:bool,
     textures: HashMap<String, (u64, egui::TextureHandle)>,
+    rgba: Vec<u8>,
     started: Instant,
 }
 impl App {
@@ -98,6 +99,7 @@ impl App {
             debug: false,report_copied:None,
             updates:false,
             textures: HashMap::new(),
+            rgba: Vec::new(),
             started: Instant::now(),
         };
         if std::env::var("HYPERCAST_AUTO_CONNECT").as_deref() == Ok("1") {
@@ -119,10 +121,13 @@ impl App {
     }
     fn restart_reception(&self) {self.send(Command::RestartReception);}
     fn layout(&self) {
-        self.send(Command::Layout(self.layout.clone()));
+        let mut layout = self.layout.clone();
+        if self.fullscreen { layout.mode = ViewMode::Spotlight; }
+        self.send(Command::Layout(layout));
     }
     fn fullscreen(&mut self, ctx: &egui::Context, enabled: bool) {
         self.fullscreen = enabled;
+        self.layout();
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(enabled));
     }
     fn leave_room(&mut self,ctx:&egui::Context,join_next:bool) {
@@ -146,7 +151,18 @@ impl App {
         self.joining=Some(crate::invitation::JoinAttempt::start(address,code,name,device,session,by_room,ctx.clone()));
         self.status=crate::i18n::label("Entrando na sala…","Joining the room…").into();
     }
-    fn video(&mut self, ui: &mut egui::Ui, sid: &str, name: &str, size: Vec2) {
+    fn video(&mut self, ui: &mut egui::Ui, sid: &str, name: &str, card: egui::Rect) {
+        let padding = if card.height() < 144.0 || card.width() < 180.0 { 4.0 } else { 8.0 };
+        let header_height = 24.0_f32.min(card.height() * 0.4);
+        let recovering = self.snapshot.recovering.get(sid).copied();
+        let footer_height = if recovering.is_some() && card.height() >= 100.0 { 22.0 } else { padding };
+        let canvas = egui::Rect::from_min_max(
+            card.min + Vec2::new(padding, header_height),
+            card.max - Vec2::new(padding, footer_height),
+        );
+        if !canvas.is_positive() || !ui.is_rect_visible(card) {
+            return;
+        }
         let frame = self.snapshot.frames.get(sid).cloned();
         if let Some((sequence, frame, delivered_at)) = frame {
             if self
@@ -156,16 +172,16 @@ impl App {
             {
                 let render_started=Instant::now();self.snapshot.quality.evidence.record(crate::evidence::Stage::ReaderToRender,render_started.saturating_duration_since(delivered_at));
                 let (w, h) = (frame.buffer.width(), frame.buffer.height());
-                let mut rgba = vec![0; w as usize * h as usize * 4];
+                self.rgba.resize(w as usize * h as usize * 4, 0);
                 frame.buffer.to_argb(
                     livekit::webrtc::video_frame::VideoFormatType::ABGR,
-                    &mut rgba,
+                    &mut self.rgba,
                     w * 4,
                     w as i32,
                     h as i32,
                 );
                 let image =
-                    egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+                    egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &self.rgba);
                 if let Some(entry) = self.textures.get_mut(sid) {
                     entry.1.set(image, egui::TextureOptions::LINEAR);
                     entry.0 = sequence;
@@ -182,26 +198,29 @@ impl App {
                 self.snapshot.quality.evidence.record(crate::evidence::Stage::RenderPrepare,render_started.elapsed());
             }
         }
-        let response=egui::Frame::new()
-            .fill(PANEL)
-            .corner_radius(12)
-            .inner_margin(10)
-            .show(ui, |ui| {
-                ui.set_min_size(size - Vec2::splat(20.0));
-                ui.label(RichText::new(name).color(MUTED).size(12.0));
-                if let Some(exhausted)=self.snapshot.recovering.get(sid){ui.label(RichText::new(crate::reception_recovery::status_label(*exhausted)).color(MUTED).size(12.0));}
-                if let Some((_, texture)) = self.textures.get(sid) {
-                    ui.add(
-                        egui::Image::new(texture)
-                            .max_size(size - Vec2::new(20.0, if self.snapshot.recovering.contains_key(sid){68.0}else{50.0}))
-                            .maintain_aspect_ratio(true),
-                    );
-                } else {
-                    ui.centered_and_justified(|ui| {
-                        ui.label(crate::i18n::label("Aguardando vídeo…","Waiting for video…"));
-                    });
-                }
-            }).response.interact(egui::Sense::click());
+        let painter = ui.painter().with_clip_rect(card);
+        painter.rect_filled(card, 8.0, PANEL);
+        painter.rect_stroke(card, 8.0, egui::Stroke::new(1.0, crate::desktop_ui::BORDER), egui::StrokeKind::Inside);
+        let title = egui::Rect::from_min_max(
+            card.min + Vec2::new(padding, 0.0),
+            egui::pos2(card.right() - padding, canvas.top()),
+        );
+        crate::desktop_ui::paint_video_label(ui, title, name, 13.0, crate::desktop_ui::TEXT);
+        if let Some(exhausted) = recovering.filter(|_| footer_height > padding) {
+            let footer = egui::Rect::from_min_max(egui::pos2(title.left(), canvas.bottom()), egui::pos2(title.right(), card.bottom()));
+            crate::desktop_ui::paint_video_label(ui, footer, crate::reception_recovery::status_label(exhausted), 12.0, MUTED);
+        }
+        if let Some((_, texture)) = self.textures.get(sid) {
+            let size = texture.size_vec2();
+            let scale = (canvas.width() / size.x).min(canvas.height() / size.y);
+            painter.image(texture.id(), egui::Rect::from_center_size(canvas.center(), size * scale),
+                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), Color32::WHITE);
+        } else if canvas.height() >= 20.0 {
+            crate::desktop_ui::paint_video_label(ui, canvas, crate::i18n::label("Aguardando vídeo.", "Waiting for video."), 12.0, MUTED);
+        }
+        let response = ui.interact(card, ui.id().with(sid), egui::Sense::click());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true,
+            crate::i18n_format!("Transmissão de {}", "Stream from {}", name)));
         if response.double_clicked() || (response.clicked() && response.interact_pointer_pos().is_none()) {
             self.layout.focus = Some(sid.to_owned());
             self.layout.mode=ViewMode::Spotlight;
@@ -248,22 +267,27 @@ impl App {
         }
         // Media teardown, decoder releases and server callbacks may hold the
         // state briefly. Keep drawing the previous snapshot instead of blocking GL.
-        if let Some(engine)=&self.engine {
-            if let Ok(state)=engine.state.try_lock(){self.snapshot=state.clone();}
-        } else {self.snapshot=State::default();}
-        let State{connected,sharing,selecting,can_publish,reconnecting,participants,screens,status:state_status,reception_resetting:resetting,..}=self.snapshot.clone();
+        if let Some(engine) = &self.engine {
+            if let Ok(state) = engine.state.try_lock() {
+                self.snapshot = state.clone();
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(16));
+            }
+        }
+        let State { connected, sharing, selecting, can_publish, reconnecting, reception_resetting: resetting, .. } = self.snapshot;
+        let state_status = self.snapshot.status.clone();
+        let screens = self.snapshot.screens.clone();
+        self.textures.retain(|sid, _| screens.iter().any(|screen| &screen.sid == sid));
         if connected && !self.applied_layout {self.send(Command::RateMode(self.rate_mode));self.send(Command::StreamSettings(self.stream_settings));self.layout();self.send(Command::Audio(self.audio));self.applied_layout=true;}
         if connected && !resetting && ctx.input(|i|i.key_pressed(egui::Key::F5)){self.restart_reception();}
-        if ctx.input(|i| i.key_pressed(egui::Key::F11)) {
+        if !self.confirm_leave && (self.fullscreen || connected && !screens.is_empty()) && ctx.input(|i| i.key_pressed(egui::Key::F11)) {
             self.fullscreen(ctx, !self.fullscreen);
         }
         if self.fullscreen && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.fullscreen(ctx, false);
         }
         if !self.fullscreen && (connected || reconnecting) {
-            egui::Panel::bottom("session_actions")
-                .resizable(false)
-                .frame(crate::desktop_ui::session_bar())
+            crate::desktop_ui::session_panel(ctx.content_rect().width())
                 .show(root, |ui| {
                     let status = if connected && !can_publish {
                         crate::i18n::label("Nesta sala, você pode assistir.", "You can watch in this room.")
@@ -312,7 +336,7 @@ impl App {
                             let pause = if self.layout.paused { crate::i18n::label("Retomar vídeo recebido", "Resume incoming video") } else { crate::i18n::label("Pausar vídeo recebido", "Pause incoming video") };
                             if ui.button(pause).clicked() { self.layout.paused = !self.layout.paused; self.layout(); ui.close(); }
                             if ui.add_enabled(connected && !resetting, egui::Button::new(crate::i18n::label("Reconectar vídeo recebido", "Reconnect incoming video"))).clicked() { self.restart_reception(); ui.close(); }
-                            if ctx.content_rect().width() < 600.0 {
+                            if crate::desktop_ui::compact_room_header(ctx.content_rect().width(), connected && self.sidebar_open) {
                                 if !self.room_title.is_empty() { crate::desktop_ui::copy_room_name(ui, &self.room_title); }
                                 if ui.add_enabled(!screens.is_empty(), egui::Button::new(crate::i18n::label("Tela cheia", "Full screen"))).clicked() {
                                     self.fullscreen(ctx, true); ui.close();
@@ -328,24 +352,25 @@ impl App {
                 });
         }
         if connected && !self.fullscreen && self.sidebar_open {
-            egui::Panel::left("sidebar").exact_size((ctx.content_rect().width() * 0.32).clamp(140.0, 284.0)).frame(egui::Frame::new().fill(PANEL).inner_margin(20)).show(root,|ui|{
+            let width = ctx.content_rect().width();
+            egui::Panel::left("sidebar").exact_size(crate::desktop_ui::sidebar_width(width))
+                .resizable(false).frame(egui::Frame::new().fill(PANEL).inner_margin(crate::desktop_ui::room_margin(width, false))).show(root,|ui|{
                 ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
                 egui::ScrollArea::vertical().auto_shrink([false,false]).show(ui,|ui|{
-                    ui.horizontal(|ui|{crate::desktop_ui::brand_mark(ui,28.0);ui.label(RichText::new("HYPERCAST").size(16.0).strong());
+                    ui.horizontal_wrapped(|ui|{crate::desktop_ui::brand_mark(ui,22.0);ui.label(RichText::new("HyperCast").strong());
                         if small(ui,crate::i18n::label("Atualizar","Update")).clicked(){self.updates=true;}
                     });
-                    ui.label(RichText::new(self.server_status.label()).size(11.0).color(if self.server_status.status==crate::server_status::Status::Online{ACCENT}else{MUTED})).on_hover_text(crate::i18n_format!("Servidor: {}","Server: {}",self.server_status.detail));
+                    crate::desktop_ui::server_indicator(ui, &self.server_status);
                     if reconnecting {ui.label(RichText::new(crate::i18n::label("Sala: reconectando…","Room: reconnecting…")).size(11.0).color(MUTED));}
                     ui.add_space(12.0);
                     {
-                        ui.label(RichText::new(&self.room_title).strong());
                         ui.label(RichText::new(crate::i18n::label("PARTICIPANTES","PARTICIPANTS")).size(11.0).color(MUTED));
                         ui.label(crate::i18n_format!("{} (você) · {}","{} (you) · {}",if self.name.is_empty(){"Linux"}else{&self.name},if sharing{crate::i18n::label("Transmitindo","Sharing")}else{crate::i18n::label("Assistindo","Watching")}));
-                        for(id,name)in participants{
-                            let live=screens.iter().any(|s|s.owner==id);let title=if name.is_empty(){id.clone()}else{name};
-                            let focused=!self.layout.paused && self.layout.mode==ViewMode::Spotlight && (self.layout.focus.as_ref().is_some_and(|focus| focus == &id || screens.iter().any(|s| &s.sid == focus && s.owner == id)) || (self.layout.focus.is_none() && screens.first().is_some_and(|s|s.owner==id)));
+                        for (id, name) in &self.snapshot.participants {
+                            let live=screens.iter().any(|s| &s.owner==id);let title=if name.is_empty(){id}else{name};
+                            let focused=!self.layout.paused && self.layout.mode==ViewMode::Spotlight && (self.layout.focus.as_ref().is_some_and(|focus| focus == id || screens.iter().any(|s| &s.sid == focus && &s.owner == id)) || (self.layout.focus.is_none() && screens.first().is_some_and(|s|&s.owner==id)));
                             let response=button(ui,&format!("{title} · {}",if live {if focused {crate::i18n::label("Em destaque · transmitindo","Focused · sharing")}else{crate::i18n::label("Transmitindo","Sharing")}}else{crate::i18n::label("Assistindo","Watching")}),live,focused);
-                            if response.clicked(){self.layout.focus=Some(id);if response.double_clicked(){self.layout.mode=ViewMode::Spotlight;}self.layout();}
+                            if response.clicked(){self.layout.focus=Some(id.clone());if response.double_clicked(){self.layout.mode=ViewMode::Spotlight;}self.layout();}
                         }
                         if small(ui,crate::i18n::label("Escolher sala","Choose room")).clicked(){self.catalog.open(self.address.clone(),self.access.token(),ctx.clone());}
                     }
@@ -380,12 +405,13 @@ impl App {
             .frame(
                 egui::Frame::new()
                     .fill(BG)
-                    .inner_margin(if self.fullscreen { 8 } else if ctx.content_rect().width() < 600.0 { 12 } else { 28 }),
+                    .inner_margin(crate::desktop_ui::room_margin(ctx.content_rect().width(), self.fullscreen)),
             )
             .show(root, |ui| {
-                if !connected && !self.fullscreen {
+                if !connected && !reconnecting && !self.fullscreen {
                     let status = if self.status.is_empty() { &state_status } else { &self.status }.clone();
                     crate::desktop_ui::home_panel(ui, &status, |ui| {
+                    crate::desktop_ui::server_indicator(ui, &self.server_status);
                     if !connected && self.departure.is_none() && self.joining.is_none() && self.engine.as_ref().is_some_and(|e|e.finished()) && (self.saved_room.is_some() || !self.invite.is_empty()) {
                         if button(ui,crate::i18n::label("Tentar novamente","Try again"),true,true).clicked(){self.leave_room(ctx,true);}
                     }
@@ -421,7 +447,6 @@ impl App {
                     return;
                 }
 
-                let compact = ctx.content_rect().width() < 600.0;
                 if self.fullscreen {
                     ui.horizontal_wrapped(|ui| {
                         if crate::desktop_ui::exit_fullscreen(ui).clicked() { self.fullscreen(ctx, false); }
@@ -435,57 +460,39 @@ impl App {
                         });
                     });
                 } else {
-                    let title = if self.room_title.is_empty() { crate::i18n::label("Sala", "Room") } else { &self.room_title };
-                    ui.add(egui::Label::new(RichText::new(title).size(if compact { 18.0 } else { 24.0 }).strong()).truncate())
-                        .on_hover_text(title);
+                    let title = if self.room_title.is_empty() { crate::i18n::label("Sala", "Room").to_owned() } else { self.room_title.clone() };
                     let status = if resetting {
                         crate::i18n::label("Reconectando vídeo recebido…", "Reconnecting incoming video…")
                     } else {
                         crate::desktop_ui::room_state(connected, reconnecting)
                     };
-                    ui.label(RichText::new(status).size(13.0).color(MUTED));
-                    ui.add_space(8.0);
-                    ui.horizontal_wrapped(|ui| {
-                        let panel = if self.sidebar_open {
-                            crate::i18n::label("Ocultar painel", "Hide panel")
-                        } else {
-                            crate::i18n::label("Pessoas e opções", "People and settings")
-                        };
-                        if crate::desktop_ui::header_button(ui, panel, true, None).clicked() {
-                            self.sidebar_open = !self.sidebar_open;
-                        }
-                        if !compact && !self.room_title.is_empty() {
-                            crate::desktop_ui::copy_room_name(ui, &self.room_title);
-                        }
-                        for (mode, label) in [
-                            (ViewMode::Grid, crate::i18n::label("Em grade", "Grid")),
-                            (ViewMode::Spotlight, crate::i18n::label("Em destaque", "Focus")),
-                        ] {
-                            if crate::desktop_ui::header_button(ui, label, true, Some(self.layout.mode == mode)).clicked() {
+                    crate::desktop_ui::room_header(ui, &title, status, |ui, compact| {
+                        let (panel, modes) = crate::desktop_ui::room_view_controls(ui, self.sidebar_open, self.layout.mode);
+                        if panel.clicked() { self.sidebar_open = !self.sidebar_open; }
+                        for (mode, response) in modes {
+                            if response.clicked() {
                                 self.layout.mode = mode;
                                 self.layout();
                             }
                         }
+                        if !compact && !self.room_title.is_empty() { crate::desktop_ui::copy_room_name(ui, &title); }
                         if !compact && crate::desktop_ui::header_button(ui, crate::i18n::label("Tela cheia", "Full screen"), !screens.is_empty(), None).on_hover_text("F11").clicked() {
                             self.fullscreen(ctx, true);
                         }
                     });
                 }
-                ui.add_space(if compact { 8.0 } else { 16.0 });
                 if self.layout.paused || screens.is_empty() {
                     let area = ui.allocate_space(ui.available_size()).1;
                     ui.painter().rect_filled(area, 12.0, PANEL);
-                    if crate::desktop_ui::playback_empty(ui, area, self.layout.paused, reconnecting || resetting, can_publish) {
+                    if crate::desktop_ui::playback_empty(ui, area, self.layout.paused, reconnecting, resetting, can_publish) {
                         self.layout.paused = false;
                         self.layout();
                     }
                 } else if self.layout.mode == ViewMode::Grid && !self.fullscreen {
-                    let area = ui.available_rect_before_wrap();
+                    let area = ui.allocate_space(ui.available_size()).1;
                     for (index, screen) in screens.iter().enumerate() {
-                        let card = crate::desktop_ui::video_grid_card(area, index, screens.len(), 12.0);
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(card), |ui| {
-                            self.video(ui, &screen.sid, &screen.name, card.size());
-                        });
+                        let card = crate::desktop_ui::video_grid_card(area, index, screens.len(), 10.0);
+                        self.video(ui, &screen.sid, &screen.name, card);
                     }
                 } else {
                     let focus = self
@@ -494,7 +501,8 @@ impl App {
                         .as_deref()
                         .and_then(|id| screens.iter().find(|s| s.sid == id || s.owner == id))
                         .unwrap_or(&screens[0]);
-                    self.video(ui, &focus.sid, &focus.name, ui.available_size());
+                    let area = ui.allocate_space(ui.available_size()).1;
+                    self.video(ui, &focus.sid, &focus.name, area);
                 }
             });
         if self.confirm_leave {
@@ -506,11 +514,8 @@ impl App {
         }
         if self.creator.open {
             let mut open = true;
-            egui::Window::new(crate::i18n::label("Criar sala","Create room")).title_bar(false)
+            crate::desktop_ui::utility_window(ctx, crate::i18n::label("Criar sala", "Create room"), "create_room_window", 360.0)
                 .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
-                .default_width(360.0).max_width(360.0)
                 .show(ctx, |ui| {
                     crate::desktop_ui::modal_header(ui,crate::i18n::label("Criar sala","Create room"));
                     ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
@@ -531,8 +536,10 @@ impl App {
         }
         if self.debug {
             let mut reset_preferences=false;
-            egui::Window::new(crate::i18n::label("Diagnóstico","Diagnostics")).title_bar(false).open(&mut self.debug).collapsible(false).resizable(false).default_width(360.0).frame(crate::desktop_ui::utility_frame(root.style())).show(ctx,|ui|{
+            crate::desktop_ui::utility_window(ctx, crate::i18n::label("Diagnóstico", "Diagnostics"), "debug_window", 360.0)
+                .open(&mut self.debug).show(ctx,|ui|{
                 crate::desktop_ui::modal_header(ui,crate::i18n::label("Diagnóstico","Diagnostics"));
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                 ui.label(format!("HyperCast {} · Linux",env!("CARGO_PKG_VERSION")));
                 ui.label(crate::i18n_format!("Decodificadores ativos: {}","Active decoders: {}",super::media::decoder_count()));
                 ui.label(crate::i18n_format!("Quadros enviados: {} · recebidos: {}","Frames sent: {} · received: {}",self.snapshot.sent,self.snapshot.received));
@@ -549,9 +556,10 @@ impl App {
             if reset_preferences {let p=crate::preferences::Settings::default();self.stream_settings=p.stream;self.upload=p.upload;self.rate_mode=p.rate_mode;self.sidebar_open=p.sidebar;self.layout.volume=p.volume;self.layout.mode=ViewMode::Spotlight;self.layout.focus=None;self.layout.paused=false;self.codec=Codec::Hevc;}
         }
         if self.updates {
-            egui::Window::new(crate::i18n::label("Atualização","Update")).title_bar(false).open(&mut self.updates).collapsible(false).resizable(false).default_width(320.0)
-                .frame(crate::desktop_ui::utility_frame(root.style())).show(ctx,|ui|{
+            crate::desktop_ui::utility_window(ctx, crate::i18n::label("Atualização", "Update"), "update_window", 320.0)
+                .open(&mut self.updates).show(ctx,|ui|{
                     crate::desktop_ui::modal_header(ui,crate::i18n::label("Atualização","Update"));
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                     ui.label(crate::i18n_format!("Versão atual: {}","Current version: {}",env!("CARGO_PKG_VERSION")));
                     ui.label(RichText::new(crate::i18n::label("Linux · AppImage portátil","Linux · portable AppImage")).size(11.0).color(MUTED));
                     ui.label(crate::i18n::label("Confira a versão disponível na página de downloads. Para atualizar, substitua o AppImage.","Check the downloads page for the latest version. Replace the AppImage to update."));
@@ -579,7 +587,8 @@ impl App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
-        ctx.request_repaint_after(Duration::from_millis(if connected { 16 } else { 100 }));
+        let busy = self.access.busy || self.creator.busy || self.departure.is_some() || self.joining.is_some();
+        ctx.request_repaint_after(Duration::from_millis(if busy { 100 } else { 500 }));
     }
 }
 impl eframe::App for App {

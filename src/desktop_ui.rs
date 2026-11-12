@@ -60,6 +60,22 @@ pub fn utility_frame(style:&egui::Style)->egui::Frame {
     egui::Frame::window(style).fill(PANEL).inner_margin(12).corner_radius(12)
         .stroke(egui::Stroke::new(1.0,BORDER))
 }
+
+pub(crate) fn utility_window(ctx: &egui::Context, title: &'static str, id: &'static str, width: f32) -> egui::Window<'static> {
+    let area = ctx.content_rect();
+    let width = width.min((area.width() - 56.0).max(96.0));
+    egui::Window::new(title)
+        .id(egui::Id::new(id))
+        .title_bar(false)
+        .frame(utility_frame(&ctx.style_of(egui::Theme::Dark)))
+        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 12.0))
+        .default_width(width)
+        .max_width(width)
+        .max_height((area.height() - 54.0).max(64.0))
+        .resizable(false)
+        .collapsible(false)
+        .vscroll(true)
+}
 pub fn action(ui:&mut egui::Ui,label:&str,enabled:bool,primary:bool)->egui::Response {
     let width=ui.available_width();
     ui.add_enabled_ui(enabled,|ui|ui.add_sized([width,40.0],
@@ -170,6 +186,42 @@ mod tests {
         assert_eq!(label.galley.rows.len(),1);
         assert!(button.contains_rect(label.visual_bounding_rect()));
     }
+
+    #[test]
+    fn compact_room_keeps_actions_and_playback_inside_the_viewport() {
+        let ctx = egui::Context::default();
+        let area = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 250.0));
+        let _ = ctx.run_ui(egui::RawInput { screen_rect: Some(area), ..Default::default() }, |root| {
+            let mut actions = Vec::new();
+            session_panel(area.width()).show(root, |ui| {
+                session_status(ui, true, true, "Conectado");
+                session_actions(ui, |ui| {
+                    actions.push(session_stop(ui, "Parar compartilhamento", true).rect);
+                    actions.push(session_button(ui, "Desligar câmera", true, false).rect);
+                    actions.push(session_button(ui, "Mais opções", true, false).rect);
+                    actions.push(session_stop(ui, "Sair da sala", true).rect);
+                });
+            });
+            egui::Panel::left("test_sidebar").exact_size(sidebar_width(area.width())).show(root, |_| {});
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new().inner_margin(room_margin(area.width(), false)))
+                .show(root, |ui| {
+                    room_header(ui, "Nome longo da sala de compartilhamento", "Conectado à sala", |ui, compact| {
+                        assert!(compact);
+                        let (panel, modes) = room_view_controls(ui, true, crate::subscription::ViewMode::Grid);
+                        actions.push(panel.rect);
+                        actions.extend(modes.into_iter().map(|(_, response)| response.rect));
+                    });
+                    let playback = ui.available_rect_before_wrap();
+                    assert!(playback.height() >= 56.0, "{playback:?}");
+                    assert!(area.contains_rect(playback));
+                    for (index, rect) in actions.iter().enumerate() {
+                        assert!(area.contains_rect(*rect) && !rect.intersects(playback),
+                            "action {index} at {rect:?}, viewport {area:?}, playback {playback:?}");
+                    }
+                });
+        });
+    }
 }
 
 pub fn stream_settings(ui:&mut egui::Ui,value:&mut crate::resolution::StreamSettings,enabled:bool,max_fps:u32){
@@ -227,12 +279,100 @@ pub(crate) fn video_grid_card(area: egui::Rect, index: usize, count: usize, gap:
     let row = index / columns;
     let column = index % columns;
     let row_count = count.saturating_sub(row * columns).clamp(1, columns);
-    let width = ((area.width() - gap * (row_count - 1) as f32) / row_count as f32).max(0.0);
+    let column_gap = gap.min(area.width().max(0.0) / row_count as f32 * 0.25);
+    let width = ((area.width() - column_gap * (row_count - 1) as f32) / row_count as f32).max(0.0);
     let height = ((area.height() - row_gap * (rows - 1) as f32) / rows as f32).max(0.0);
     egui::Rect::from_min_size(
-        area.min + egui::vec2(column as f32 * (width + gap), row as f32 * (height + row_gap)),
+        area.min + egui::vec2(column as f32 * (width + column_gap), row as f32 * (height + row_gap)),
         egui::vec2(width, height),
     )
+}
+
+pub(crate) fn spotlight_card(area: egui::Rect, index: usize, count: usize) -> egui::Rect {
+    if count <= 1 {
+        return area;
+    }
+    let gap = 8.0;
+    if area.width() >= 520.0 && area.height() >= 160.0 {
+        let rail_width = (area.width() * 0.26).clamp(128.0, 224.0);
+        let main = egui::Rect::from_min_max(area.min, egui::pos2(area.right() - rail_width - gap, area.bottom()));
+        if index == 0 {
+            return main;
+        }
+        let rail = egui::Rect::from_min_max(egui::pos2(main.right() + gap, area.top()), area.max);
+        return video_grid_card(rail, index - 1, count - 1, gap);
+    }
+    let gap = gap.min(area.height() * 0.1);
+    let rail_height = (area.height() * 0.28).min(112.0);
+    let main = egui::Rect::from_min_max(area.min, egui::pos2(area.right(), area.bottom() - rail_height - gap));
+    if index == 0 {
+        return main;
+    }
+    let width = ((area.width() - gap * (count - 2) as f32) / (count - 1) as f32).max(0.0);
+    let start = area.left() + (index - 1) as f32 * (width + gap);
+    egui::Rect::from_min_size(egui::pos2(start, main.bottom() + gap), Vec2::new(width, rail_height))
+}
+
+pub(crate) fn room_margin(width: f32, fullscreen: bool) -> i8 {
+    if fullscreen || width < 480.0 { 8 } else if width < 900.0 { 14 } else { 24 }
+}
+
+pub(crate) fn sidebar_width(width: f32) -> f32 {
+    (width * 0.29).clamp(100.0, 272.0)
+}
+
+pub(crate) fn room_header(ui: &mut egui::Ui, title: &str, status: &str, content: impl FnOnce(&mut egui::Ui, bool)) {
+    let compact = ui.available_width() < 520.0;
+    let show_status = ui.available_height() >= 180.0 || status != room_state(true, false);
+    ui.spacing_mut().item_spacing = Vec2::new(6.0, 5.0);
+    ui.add(egui::Label::new(RichText::new(title).size(if compact { 18.0 } else { 24.0 }).strong()).truncate())
+        .on_hover_text(title);
+    if show_status {
+        ui.add(egui::Label::new(RichText::new(status).size(13.0).color(MUTED)).truncate())
+            .on_hover_text(status);
+    }
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().button_padding = Vec2::new(8.0, 4.0);
+        content(ui, compact);
+    });
+    ui.add_space(if compact { 4.0 } else { 8.0 });
+}
+
+pub(crate) fn compact_room_header(viewport_width: f32, sidebar_open: bool) -> bool {
+    let sidebar = if sidebar_open { sidebar_width(viewport_width) } else { 0.0 };
+    viewport_width - sidebar - 2.0 * f32::from(room_margin(viewport_width, false)) < 520.0
+}
+
+pub(crate) fn room_view_controls(
+    ui: &mut egui::Ui,
+    sidebar_open: bool,
+    mode: crate::subscription::ViewMode,
+) -> (egui::Response, [(crate::subscription::ViewMode, egui::Response); 2]) {
+    use crate::{i18n::label, subscription::ViewMode};
+    let narrow = ui.available_width() < 260.0;
+    let panel_label = if sidebar_open { label("Ocultar painel", "Hide panel") } else { label("Pessoas e opções", "People and settings") };
+    let panel = if narrow {
+        header_button(ui, label("Painel", "Panel"), true, Some(sidebar_open)).on_hover_text(panel_label)
+    } else {
+        header_button(ui, panel_label, true, None)
+    };
+    let modes = [
+        (ViewMode::Grid, if narrow { label("Grade", "Grid") } else { label("Em grade", "Grid") }),
+        (ViewMode::Spotlight, if narrow { label("Foco", "Focus") } else { label("Em destaque", "Focus") }),
+    ].map(|(option, title)| (option, header_button(ui, title, true, Some(option == mode))));
+    (panel, modes)
+}
+
+pub(crate) fn paint_video_label(ui: &egui::Ui, rect: egui::Rect, label: &str, size: f32, color: Color32) {
+    if !rect.is_positive() {
+        return;
+    }
+    let painter = ui.painter().with_clip_rect(rect);
+    let mut job = egui::text::LayoutJob::simple_singleline(label.to_owned(), egui::FontId::proportional(size), color);
+    job.wrap.max_width = rect.width();
+    job.wrap.max_rows = 1;
+    let galley = painter.layout_job(job);
+    painter.galley(egui::pos2(rect.left(), rect.center().y - galley.size().y * 0.5), galley, color);
 }
 
 #[cfg(test)]
@@ -273,11 +413,31 @@ fn narrow_room_grid_keeps_cards_inside_the_viewport() {
     }
 }
 
-pub(crate) fn session_bar() -> egui::Frame {
-    egui::Frame::new()
-        .fill(PANEL)
-        .stroke(egui::Stroke::new(1.0, BORDER))
-        .inner_margin(egui::Margin::symmetric(16, 10))
+#[cfg(test)]
+#[test]
+fn spotlight_keeps_previews_in_bounds_and_prioritizes_the_main_stream() {
+    for size in [egui::vec2(980.0, 460.0), egui::vec2(310.0, 128.0), egui::vec2(120.0, 32.0)] {
+        let area = egui::Rect::from_min_size(egui::pos2(20.0, 30.0), size);
+        assert_eq!(spotlight_card(area, 0, 1), area);
+        let cards: Vec<_> = (0..3).map(|index| spotlight_card(area, index, 3)).collect();
+        assert!(cards[0].area() > area.area() * 0.55);
+        for (index, card) in cards.iter().enumerate() {
+            assert!(card.is_positive() && area.expand(0.01).contains_rect(*card));
+            assert!(cards[..index].iter().all(|previous| !card.intersects(*previous)));
+        }
+    }
+}
+
+pub(crate) fn session_panel(width: f32) -> egui::Panel {
+    let compact = width < 626.0;
+    egui::Panel::bottom("session_actions")
+        .resizable(false)
+        .default_size(if compact { 106.0 } else { 88.0 })
+        .frame(
+            egui::Frame::new().fill(PANEL)
+                .stroke(egui::Stroke::new(1.0, BORDER))
+                .inner_margin(if compact { egui::Margin::symmetric(12, 6) } else { egui::Margin::symmetric(16, 10) }),
+        )
 }
 
 pub(crate) fn room_state(connected: bool, reconnecting: bool) -> &'static str {
@@ -291,25 +451,27 @@ pub(crate) fn room_state(connected: bool, reconnecting: bool) -> &'static str {
 }
 
 pub(crate) fn session_status(ui: &mut egui::Ui, sharing: bool, camera_active: bool, status: &str) {
+    let status = (!status.is_empty() && status != crate::i18n::label("Conectado", "Connected")).then_some(status);
+    if !sharing && !camera_active && status.is_none() {
+        return;
+    }
     ui.horizontal_wrapped(|ui| {
-        let label = if sharing {
-            crate::i18n::label("Compartilhando tela", "Sharing screen")
-        } else {
-            crate::i18n::label("Sem compartilhar tela", "Screen sharing off")
-        };
-        ui.label(RichText::new(label).strong().color(if sharing { ACCENT } else { TEXT }));
+        if sharing {
+            ui.label(RichText::new(crate::i18n::label("Compartilhando tela", "Sharing screen")).strong().color(ACCENT));
+        }
         if camera_active {
             ui.label(RichText::new(crate::i18n::label("Câmera ligada", "Camera on")).strong().color(ACCENT));
         }
-        if !status.is_empty() && status != crate::i18n::label("Conectado", "Connected") {
-            ui.label(RichText::new(status).size(13.0).color(MUTED));
+        if let Some(status) = status {
+            ui.add(egui::Label::new(RichText::new(status).size(13.0).color(MUTED)).truncate())
+                .on_hover_text(status);
         }
     });
-    ui.add_space(6.0);
+    ui.add_space(2.0);
 }
 
 /// A paused viewer can resume without searching the room controls.
-pub(crate) fn playback_empty(ui: &mut egui::Ui, area: egui::Rect, paused: bool, reconnecting: bool, can_publish: bool) -> bool {
+pub(crate) fn playback_empty(ui: &mut egui::Ui, area: egui::Rect, paused: bool, reconnecting: bool, waiting_for_video: bool, can_publish: bool) -> bool {
     if area.width() < 32.0 || area.height() < 32.0 {
         return false;
     }
@@ -317,6 +479,8 @@ pub(crate) fn playback_empty(ui: &mut egui::Ui, area: egui::Rect, paused: bool, 
         crate::i18n::label("Vídeo pausado por você", "You paused incoming video")
     } else if reconnecting {
         crate::i18n::label("Aguardando a conexão voltar", "Waiting for the connection to return")
+    } else if waiting_for_video {
+        crate::i18n::label("Aguardando vídeo", "Waiting for video")
     } else {
         crate::i18n::label("Nenhum vídeo compartilhado", "No shared video yet")
     };
@@ -332,9 +496,9 @@ pub(crate) fn playback_empty(ui: &mut egui::Ui, area: egui::Rect, paused: bool, 
         ui.vertical_centered(|ui| {
             ui.add_space(if compact { 0.0 } else { (area.height() / 2.0 - 44.0).max(0.0) });
             ui.label(RichText::new(title).size(if compact { 16.0 } else { 24.0 }).color(TEXT));
-            if paused && area.height() >= 76.0 {
+            if paused && area.height() >= 64.0 {
                 resume = session_button(ui, crate::i18n::label("Retomar vídeo recebido", "Resume incoming video"), true, true).clicked();
-            } else if !compact && !reconnecting {
+            } else if !compact && !reconnecting && !waiting_for_video {
                 ui.label(RichText::new(hint).size(14.0).color(MUTED));
             }
         });
@@ -345,9 +509,12 @@ pub(crate) fn playback_empty(ui: &mut egui::Ui, area: egui::Rect, paused: bool, 
 pub(crate) fn session_actions(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     let width = ui.available_width();
     ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
-        if width < 520.0 {
-            ui.spacing_mut().interact_size.x = ((width - 8.0) / 2.0).floor();
+        ui.spacing_mut().item_spacing = Vec2::new(6.0, 5.0);
+        if width < 600.0 {
+            ui.spacing_mut().button_padding = Vec2::new(6.0, 4.0);
+            ui.spacing_mut().interact_size = Vec2::new(((width - 7.0) / 2.0).floor().max(0.0), 32.0);
+        } else {
+            ui.spacing_mut().interact_size.y = 40.0;
         }
         content(ui);
     });
@@ -363,7 +530,15 @@ pub(crate) fn session_stop(ui: &mut egui::Ui, label: &str, enabled: bool) -> egu
 
 pub(crate) fn session_menu(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) -> Option<egui::Rect> {
     let more = session_button(ui, crate::i18n::label("Mais opções", "More options"), true, false);
-    egui::Popup::menu(&more).width(254.0).show(content).map(|popup| popup.response.rect)
+    let area = ui.ctx().content_rect();
+    egui::Popup::menu(&more)
+        .width((area.width() - 28.0).clamp(96.0, 254.0))
+        .show(|ui| {
+            ui.spacing_mut().button_padding = Vec2::new(8.0, 4.0);
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+            egui::ScrollArea::vertical().max_height((area.height() - 44.0).max(48.0)).show(ui, content);
+        })
+        .map(|popup| popup.response.rect)
 }
 
 pub(crate) fn display_scale(ui: &mut egui::Ui) {
@@ -380,17 +555,35 @@ pub(crate) fn display_scale(ui: &mut egui::Ui) {
 }
 
 fn session_action(ui: &mut egui::Ui, label: &str, enabled: bool, color: Color32, fill: Color32) -> egui::Response {
-    let response = ui.add_enabled(enabled, egui::Button::new(RichText::new(label).size(14.0).color(color))
+    let text = egui::WidgetText::from(RichText::new(label).size(14.0).color(color));
+    let width = ui.spacing().interact_size.x;
+    let (text, elided) = if width > 64.0 {
+        let galley = text.into_galley(
+            ui, Some(egui::TextWrapMode::Truncate), width - 2.0 * ui.spacing().button_padding.x,
+            egui::TextStyle::Button,
+        );
+        let elided = galley.elided;
+        (egui::WidgetText::from(galley), elided)
+    } else {
+        (text, false)
+    };
+    let response = ui.add_enabled(enabled, egui::Button::new(text)
         .fill(fill)
-        .wrap_mode(egui::TextWrapMode::Extend)
-        .min_size(Vec2::new(ui.spacing().interact_size.x, 40.0)).corner_radius(8));
+        .wrap_mode(egui::TextWrapMode::Wrap)
+        .min_size(Vec2::new(ui.spacing().interact_size.x, ui.spacing().interact_size.y.max(30.0))).corner_radius(8));
     if response.has_focus() {
         ui.painter().rect_stroke(
             response.rect.expand(2.0), 9.0, egui::Stroke::new(2.0, TEXT),
             egui::StrokeKind::Outside,
         );
     }
-    response
+    if elided { response.on_hover_text(label) } else { response }
+}
+
+pub(crate) fn server_indicator(ui: &mut egui::Ui, server: &crate::server_status::ServerStatus) {
+    let color = if server.status == crate::server_status::Status::Online { ACCENT } else { MUTED };
+    ui.label(RichText::new(server.label()).size(11.0).color(color))
+        .on_hover_text(crate::i18n_format!("Servidor: {}", "Server: {}", server.detail));
 }
 
 pub(crate) fn home_panel(ui: &mut egui::Ui, status: &str, content: impl FnOnce(&mut egui::Ui)) {
@@ -418,17 +611,18 @@ pub(crate) fn home_panel(ui: &mut egui::Ui, status: &str, content: impl FnOnce(&
 
 pub(crate) fn confirm_leave(ctx: &egui::Context) -> Option<bool> {
     let modal = egui::Modal::new(egui::Id::new("confirm_leave")).show(ctx, |ui| {
+        ui.set_width((ctx.content_rect().width() - 36.0).clamp(120.0, 320.0));
         ui.heading(crate::i18n::label("Sair da sala?", "Leave the room?"));
         ui.label(crate::i18n::label(
             "Seu compartilhamento será encerrado ao sair.",
             "Your sharing will end when you leave.",
         ));
         ui.add_space(12.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if session_button(ui, crate::i18n::label("Continuar na sala", "Stay in the room"), true, false).clicked() {
                 return Some(false);
             }
-            if session_button(ui, crate::i18n::label("Sair da sala", "Leave room"), true, true).clicked() {
+            if session_stop(ui, crate::i18n::label("Sair da sala", "Leave room"), true).clicked() {
                 return Some(true);
             }
             None

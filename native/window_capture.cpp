@@ -12,6 +12,8 @@
 #include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
 #include <atomic>
 #include <memory>
+#include <optional>
+#include <utility>
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
@@ -35,7 +37,7 @@ struct WindowCapture {
     GraphicsCaptureSession session{nullptr};
     SizeInt32 size{};
     std::shared_ptr<std::atomic_bool> closed=std::make_shared<std::atomic_bool>(false);
-    event_token closed_token{};
+    std::optional<event_token> closed_token;
     WindowCapture(HWND hwnd, DWORD process, UINT adapter_index):window(hwnd),pid(process) {
         validate();
         if (!GraphicsCaptureSession::IsSupported()) throw std::runtime_error("Windows Graphics Capture unavailable");
@@ -50,6 +52,9 @@ struct WindowCapture {
         auto interop=get_activation_factory<GraphicsCaptureItem,IGraphicsCaptureItemInterop>();
         check_hresult(interop->CreateForWindow(hwnd,guid_of<GraphicsCaptureItem>(),put_abi(item)));
         size=item.Size(); validate_size(size);
+    }
+    void start() {
+        validate();
         auto flag=closed;
         closed_token=item.Closed([flag](auto const&,auto const&){flag->store(true);});
         pool=Direct3D11CaptureFramePool::CreateFreeThreaded(runtime_device,DirectXPixelFormat::B8G8R8A8UIntNormalized,2,size);
@@ -57,11 +62,31 @@ struct WindowCapture {
         // Keep the Windows capture indicator; do not silently capture other windows.
         session.StartCapture();
     }
-    ~WindowCapture() noexcept {
-        try { if(item) item.Closed(closed_token); } catch (...) {}
-        try { if(session) session.Close(); } catch (...) {}
-        try { if(pool) pool.Close(); } catch (...) {}
+    HRESULT close() noexcept {
+        HRESULT status = S_OK;
+        const auto cleanup = [&](auto&& action) noexcept {
+            try {
+                action();
+            } catch (...) {
+                const auto error = to_hresult();
+                if (SUCCEEDED(status) && error != RO_E_CLOSED) status = error;
+            }
+        };
+        if (session) {
+            auto closing = std::exchange(session, nullptr);
+            cleanup([&] { closing.Close(); });
+        }
+        if (pool) {
+            auto closing = std::exchange(pool, nullptr);
+            cleanup([&] { closing.Close(); });
+        }
+        if (auto token = std::exchange(closed_token, std::nullopt)) {
+            cleanup([&] { item.Closed(*token); });
+        }
+        item = nullptr;
+        return status;
     }
+    ~WindowCapture() noexcept { close(); }
     void validate(){ DWORD current=0; GetWindowThreadProcessId(window,&current);
         if(!IsWindow(window)||!pid||current!=pid||pid==GetCurrentProcessId()||closed->load())
             throw std::runtime_error("A janela selecionada foi fechada ou mudou de processo"); }
@@ -69,6 +94,7 @@ struct WindowCapture {
         throw std::runtime_error("Janela excede 8192 pixels por eixo ou 32 megapixels"); }
     com_ptr<ID3D11Texture2D> acquire(){
         validate(); if(IsIconic(window)) return nullptr;
+        if (!pool) throw std::logic_error("Window capture has not started");
         auto frame=pool.TryGetNextFrame(); if(!frame) return nullptr;
         auto content=frame.ContentSize(); validate_size(content);
         auto access=frame.Surface().as<::Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
@@ -93,7 +119,15 @@ struct WindowCapture {
 };
 extern "C" {
 void* hc_window_open(size_t hwnd, unsigned pid, unsigned adapter, char* error,size_t capacity) noexcept {
-    try{return new WindowCapture(reinterpret_cast<HWND>(hwnd),pid,adapter);}catch(hresult_error const& e){report(error,capacity,to_string(e.message()).c_str());}catch(std::exception const& e){report(error,capacity,e.what());}catch(...){report(error,capacity,"Window capture failed");}return nullptr;
+    try{return new WindowCapture(reinterpret_cast<HWND>(hwnd),pid,adapter);}catch(hresult_error const& e){report(error,capacity,to_string(e.message()).c_str());}catch(std::exception const& e){report(error,capacity,e.what());}catch(...){report(error,capacity,"Window capture failed");}
+    return nullptr;
+}
+int hc_window_start(void* handle, char* error, size_t capacity) noexcept {
+    try {
+        static_cast<WindowCapture*>(handle)->start();
+        return 0;
+    } catch(hresult_error const& e){report(error,capacity,to_string(e.message()).c_str());}catch(std::exception const& e){report(error,capacity,e.what());}catch(...){report(error,capacity,"Window capture failed");}
+    return -1;
 }
 void* hc_window_device(void* handle) noexcept {auto* c=static_cast<WindowCapture*>(handle);c->device->AddRef();return c->device.get();}
 void hc_window_size(void* handle,unsigned* w,unsigned* h) noexcept {auto* c=static_cast<WindowCapture*>(handle);*w=c->size.Width;*h=c->size.Height;}
@@ -101,7 +135,10 @@ int hc_window_frame(void* handle,void** texture,char* error,size_t capacity) noe
     *texture=nullptr;try{auto frame=static_cast<WindowCapture*>(handle)->acquire();*texture=frame.detach();return 0;}
     catch(hresult_error const& e){report(error,capacity,to_string(e.message()).c_str());}catch(std::exception const& e){report(error,capacity,e.what());}catch(...){report(error,capacity,"Window capture failed");}return -1;
 }
-void hc_window_close(void* handle) noexcept {delete static_cast<WindowCapture*>(handle);}
+HRESULT hc_window_close(void* handle) noexcept {
+    std::unique_ptr<WindowCapture> capture(static_cast<WindowCapture*>(handle));
+    return capture->close();
+}
 // Bounded metadata enumeration; never read window content or log titles.
 typedef void (*WindowCallback)(size_t,unsigned,const wchar_t*,void*);
 struct Enumeration{WindowCallback callback;void* data;};
