@@ -1117,9 +1117,18 @@ fn avatar(
     response
 }
 
+const ROOM_MENU_WIDTH: f32 = 240.0;
+
+const CAPTURE_BORDER_LABEL: [&str; 2] = ["Borda amarela na janela", "Yellow window border"];
+
+fn capture_border_label() -> &'static str {
+    let [pt, en] = CAPTURE_BORDER_LABEL;
+    crate::i18n::label(pt, en)
+}
+
 fn room_menu(ui: &egui::Ui, anchor: &egui::Response, me: &Me<'_>) -> Option<RoomChoice> {
     use crate::i18n::label;
-    popup(ui, anchor, 240.0, |ui| {
+    popup(ui, anchor, ROOM_MENU_WIDTH, |ui| {
         let mut choice = None;
         menu_heading(ui, label("Sala e interface", "Room and interface"));
         if !me.room.is_empty() {
@@ -1149,16 +1158,12 @@ fn room_menu(ui: &egui::Ui, anchor: &egui::Response, me: &Me<'_>) -> Option<Room
             choice = Some(RoomChoice::Reconnect);
         }
         if let Some(border) = me.capture_border
-            && menu_row(
-                ui,
-                label(
-                    "Borda amarela ao compartilhar janela",
-                    "Yellow border when sharing a window",
-                ),
-                true,
-                Some(border),
-            )
-            .clicked()
+            && menu_row(ui, capture_border_label(), true, Some(border))
+                .on_hover_text(label(
+                    "Contorno que o Windows desenha em volta da janela compartilhada",
+                    "Outline Windows draws around a shared window",
+                ))
+                .clicked()
         {
             choice = Some(RoomChoice::CaptureBorder);
         }
@@ -1642,4 +1647,27 @@ fn the_you_panel_fits_the_sidebar_and_the_rail() {
             }
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn the_capture_border_row_is_not_truncated() {
+    // Menu rows leave 44 px for padding and the check mark inside the
+    // popup's 8 px margins; longer text is cut with an ellipsis.
+    let room = ROOM_MENU_WIDTH - 2.0 * 8.0 - 44.0;
+    let ctx = egui::Context::default();
+    let _ = ctx.run_ui(Default::default(), |ui| {
+        for text in CAPTURE_BORDER_LABEL {
+            let width = ui
+                .painter()
+                .layout_no_wrap(
+                    text.into(),
+                    egui::FontId::proportional(crate::kit::TEXT_SIZE),
+                    egui::Color32::WHITE,
+                )
+                .size()
+                .x;
+            assert!(width <= room, "{text}: {width} > {room}");
+        }
+    });
 }
