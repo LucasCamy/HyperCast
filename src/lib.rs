@@ -30,6 +30,10 @@ pub mod room_transition;
 pub mod screen_capture;
 #[cfg(feature = "desktop")]
 pub mod server_status;
+#[cfg(feature = "desktop")]
+pub mod stage;
+#[cfg(all(windows, feature = "desktop"))]
+mod stage_ui;
 pub mod subscription;
 #[cfg(all(windows, feature = "desktop"))]
 pub mod system_audio;

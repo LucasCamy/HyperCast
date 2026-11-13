@@ -25,7 +25,8 @@ unsafe extern "C" {
         handle: *mut c_void,
         width: i32,
         height: i32,
-        rects: *const [i32; 4],
+        corner: i32,
+        rects: *const [i32; 5],
         count: usize,
     ) -> i32;
     fn hc_presenter_close(handle: *mut c_void);
@@ -35,7 +36,8 @@ pub struct Presenter {
     _ui_thread: PhantomData<Rc<()>>,
     visible: bool,
     region_size: [i32; 2],
-    cutouts: Vec<[i32; 4]>,
+    corner: i32,
+    cutouts: Vec<[i32; 5]>,
 }
 impl Presenter {
     /// Parent is the live app window. Constructor and all calls stay on its UI thread.
@@ -47,6 +49,7 @@ impl Presenter {
             _ui_thread: PhantomData,
             visible: false,
             region_size: [0; 2],
+            corner: 0,
             cutouts: Vec::new(),
         })
     }
@@ -90,8 +93,10 @@ impl Presenter {
             hc_presenter_hide(self.handle.as_ptr());
         }
     }
-    pub fn set_cutouts(&mut self, size: [i32; 2], rects: &[[i32; 4]]) -> bool {
-        if self.cutouts == rects && (rects.is_empty() || self.region_size == size) {
+    /// Shape the canvas: rounded by `corner` pixels, with rounded holes where
+    /// egui draws over the video. Returns false if Windows rejected it.
+    pub fn set_cutouts(&mut self, size: [i32; 2], corner: i32, rects: &[[i32; 5]]) -> bool {
+        if self.cutouts == rects && self.corner == corner && self.region_size == size {
             return true;
         }
         if unsafe {
@@ -99,6 +104,7 @@ impl Presenter {
                 self.handle.as_ptr(),
                 size[0],
                 size[1],
+                corner,
                 rects.as_ptr(),
                 rects.len(),
             )
@@ -107,6 +113,7 @@ impl Presenter {
             return false;
         }
         self.region_size = size;
+        self.corner = corner;
         self.cutouts.clear();
         self.cutouts.extend_from_slice(rects);
         true

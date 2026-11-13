@@ -28,10 +28,6 @@ fn update_action(ui: &mut egui::Ui, label: &str, primary: bool) -> egui::Respons
     crate::desktop_ui::action(ui, label, true, primary)
 }
 
-fn exit_fullscreen(ui: &mut egui::Ui) -> egui::Response {
-    crate::desktop_ui::exit_fullscreen(ui)
-}
-
 fn monitor_symbol(painter: &egui::Painter, center: egui::Pos2, color: Color32, size: f32) {
     let stroke = egui::Stroke::new(1.6, color);
     let screen = egui::Rect::from_center_size(
@@ -184,6 +180,20 @@ struct NativeVideo<'a> {
     identity: &'a str,
     frame: &'a Arc<VideoFrame>,
     canvas: egui::Rect,
+    /// Corner radius of the video itself, in points.
+    corner: f32,
+    /// Rounded holes for what egui draws over this video.
+    cutouts: Vec<Overlay>,
+}
+
+/// Something egui draws over native video, with its corner radius in points.
+type Overlay = (egui::Rect, f32);
+
+/// How long the controls over the video stay after the mouse stops.
+const CONTROLS_LINGER: Duration = Duration::from_secs(2);
+
+fn is_camera_key(id: &str) -> bool {
+    id == crate::camera_preview::LOCAL_CAMERA || id.ends_with("/camera")
 }
 
 fn canvas_bounds(canvas: egui::Rect, scale: f32) -> [i32; 4] {
@@ -197,17 +207,19 @@ fn canvas_bounds(canvas: egui::Rect, scale: f32) -> [i32; 4] {
     ]
 }
 
-fn canvas_cutouts(bounds: [i32; 4], scale: f32, overlays: &[egui::Rect]) -> Vec<[i32; 4]> {
+fn canvas_cutouts(bounds: [i32; 4], scale: f32, overlays: &[Overlay]) -> Vec<[i32; 5]> {
     let [x, y, width, height] = bounds;
     overlays
         .iter()
-        .filter_map(|overlay| {
-            let overlay = overlay.expand(2.0);
+        .filter_map(|&(overlay, radius)| {
+            // One extra point hides the antialiased edge of what egui draws.
+            let overlay = overlay.expand(1.0);
+            let radius = ((radius + 1.0) * scale).round() as i32;
             let left = ((overlay.left() * scale).floor() as i32 - x).clamp(0, width);
             let top = ((overlay.top() * scale).floor() as i32 - y).clamp(0, height);
             let right = ((overlay.right() * scale).ceil() as i32 - x).clamp(0, width);
             let bottom = ((overlay.bottom() * scale).ceil() as i32 - y).clamp(0, height);
-            (left < right && top < bottom).then_some([left, top, right, bottom])
+            (left < right && top < bottom).then_some([left, top, right, bottom, radius])
         })
         .collect()
 }
@@ -224,12 +236,12 @@ fn native_canvas_clips_the_dialog_and_its_open_menu_at_high_scale() {
             bounds,
             1.5,
             &[
-                rect(40.0, 0.0, 150.0, 60.0),
-                rect(130.0, 50.0, 250.0, 110.0),
-                rect(0.0, 130.0, 50.0, 140.0),
+                (rect(40.0, 0.0, 150.0, 60.0), 0.0),
+                (rect(130.0, 50.0, 250.0, 110.0), 12.0),
+                (rect(0.0, 130.0, 50.0, 140.0), 8.0),
             ],
         ),
-        [[42, 0, 213, 63], [177, 42, 300, 138]],
+        [[43, 0, 212, 62, 2], [178, 43, 300, 137, 20]],
     );
 }
 
@@ -242,7 +254,6 @@ struct App {
     name: String,
     sidebar_open: bool,
     self_preview: bool,
-    single_view: bool,
     client_id: String,
     token_mode: bool,
     mode: ViewMode,
@@ -277,7 +288,27 @@ struct App {
     preferences: crate::preferences::Store,
     server_access: crate::room_creation::ServerAccess,
     server_status: crate::server_status::ServerStatus,
-    before_fullscreen_mode: ViewMode,
+    show: crate::stage::Show,
+    anchor: crate::stage::Anchor,
+    /// Published and previewed videos in the order they appeared.
+    arrival: Vec<String>,
+    /// Videos on the stage: one chosen video or the screens side by side.
+    stage_videos: Vec<String>,
+    stage_rect: egui::Rect,
+    /// Strip position and velocity for the spring; `None` until first shown.
+    strip_pos: Option<egui::Pos2>,
+    strip_vel: Vec2,
+    /// Grab offset while the strip is dragged.
+    strip_grab: Option<Vec2>,
+    /// Overlay controls stay visible for a moment after the mouse moves.
+    last_motion: Instant,
+    last_pointer: Option<egui::Pos2>,
+    control_rects: Vec<Overlay>,
+    control_bar: Option<egui::Rect>,
+    live: Vec<String>,
+    audio: Vec<String>,
+    /// `HYPERCAST_TRACE_STAGE=1`: frames shown per video, printed every 2 s.
+    stage_trace: Option<(Instant, HashMap<String, u64>)>,
     codec: crate::encoder::Codec,
     amd_profile: crate::encoder::AmdProfile,
     upload: crate::bandwidth::UploadProfile,
@@ -348,7 +379,6 @@ impl App {
             name: crate::preferences::load_name(),
             sidebar_open: prefs.sidebar,
             self_preview: prefs.self_preview,
-            single_view: false,
             client_id: crate::invitation::client_id(),
             token_mode: std::env::var("HYPERCAST_ROOM_TOKEN").is_ok(),
             mode: if std::env::var("HYPERCAST_VIEW_MODE").map_or(prefs.grid, |v| v == "grid") {
@@ -386,7 +416,22 @@ impl App {
             stream_settings: prefs.stream,
             server_access: crate::room_creation::ServerAccess::default(),
             server_status: crate::server_status::ServerStatus::default(),
-            before_fullscreen_mode: ViewMode::Grid,
+            show: prefs.show,
+            anchor: prefs.anchor,
+            arrival: Vec::new(),
+            stage_videos: Vec::new(),
+            stage_rect: egui::Rect::NOTHING,
+            strip_pos: None,
+            strip_vel: Vec2::ZERO,
+            strip_grab: None,
+            last_motion: Instant::now(),
+            last_pointer: None,
+            control_rects: Vec::new(),
+            control_bar: None,
+            live: Vec::new(),
+            audio: Vec::new(),
+            stage_trace: (std::env::var("HYPERCAST_TRACE_STAGE").as_deref() == Ok("1"))
+                .then(|| (Instant::now(), HashMap::new())),
             amd_profile: match prefs.amd_profile {
                 crate::preferences::AmdPreset::Fast => crate::encoder::AmdProfile::Fast,
                 crate::preferences::AmdPreset::Text => crate::encoder::AmdProfile::Text,
@@ -453,11 +498,9 @@ impl App {
             muted: self.sound_muted,
             sidebar: self.sidebar_open,
             self_preview: self.self_preview,
-            grid: if self.fullscreen {
-                self.before_fullscreen_mode == ViewMode::Grid
-            } else {
-                self.mode == ViewMode::Grid
-            },
+            grid: self.mode == ViewMode::Grid,
+            show: self.show,
+            anchor: self.anchor,
         });
     }
     fn restore_preferences(&mut self) {
@@ -469,9 +512,13 @@ impl App {
         self.sound_muted = p.muted;
         self.sidebar_open = p.sidebar;
         self.self_preview = p.self_preview;
-        self.mode = ViewMode::Grid;
-        self.before_fullscreen_mode = ViewMode::Grid;
-        self.single_view = false;
+        self.mode = if p.grid {
+            ViewMode::Grid
+        } else {
+            ViewMode::Spotlight
+        };
+        self.show = p.show;
+        self.anchor = p.anchor;
         self.codec = crate::encoder::Codec::H265;
         self.amd_profile = crate::encoder::AmdProfile::Fast;
     }
@@ -533,14 +580,8 @@ impl App {
         if self.fullscreen == enabled {
             return;
         }
+        // The view mode and stage survive full screen; only the chrome changes.
         self.fullscreen = enabled;
-        if enabled {
-            self.before_fullscreen_mode = self.mode;
-            self.mode = ViewMode::Spotlight;
-        } else {
-            self.mode = self.before_fullscreen_mode;
-        }
-        self.send_layout();
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(enabled));
         self.last_presented.clear();
         self.camera_textures.clear();
@@ -1134,17 +1175,21 @@ impl App {
     fn present_videos(
         &mut self,
         videos: &[NativeVideo<'_>],
-        overlays: &[egui::Rect],
+        overlays: &[Overlay],
         scale: f32,
         evidence: &crate::evidence::Evidence,
     ) {
         let mut visible = Vec::new();
-        for &NativeVideo {
+        for NativeVideo {
             identity,
             frame,
             canvas,
+            corner,
+            cutouts,
         } in videos
         {
+            let (identity, canvas) = (*identity, *canvas);
+            let corner = (corner * scale).round() as i32;
             let Some((texture, slice)) = frame.surface() else {
                 continue;
             };
@@ -1167,7 +1212,12 @@ impl App {
             let presenter = self.presenters.get_mut(identity).unwrap();
             if !presenter.set_cutouts(
                 [bounds[2], bounds[3]],
-                &canvas_cutouts(bounds, scale, overlays),
+                corner,
+                &canvas_cutouts(
+                    bounds,
+                    scale,
+                    &overlays.iter().chain(cutouts).copied().collect::<Vec<_>>(),
+                ),
             ) {
                 continue;
             }
@@ -1194,6 +1244,9 @@ impl App {
                     continue;
                 }
                 self.rendered += 1;
+                if let Some((_, shown)) = &mut self.stage_trace {
+                    *shown.entry(identity.to_owned()).or_default() += 1;
+                }
                 self.last_presented
                     .insert(identity.to_owned(), (Arc::clone(frame), bounds));
                 evidence.record(crate::evidence::Stage::PresentCall, started.elapsed());
@@ -1206,15 +1259,218 @@ impl App {
             }
         }
     }
+    fn layout(&self) -> Layout {
+        Layout {
+            self_preview: self.self_preview,
+            volume: if self.sound_muted { 0 } else { self.volume },
+            mode: self.mode,
+            focus: (self.mode == ViewMode::Spotlight)
+                .then(|| self.stage_videos.first().cloned())
+                .flatten(),
+            paused: self.paused,
+            explicit: true,
+            live: self.live.clone(),
+            audio: self.audio.clone(),
+        }
+    }
+    /// Place one video: GPU frames go to a native presenter (with `cutouts`
+    /// for cards drawn over it); software camera frames are painted by egui.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_video<'a>(
+        &mut self,
+        ui: &egui::Ui,
+        canvas: egui::Rect,
+        identity: &'a String,
+        frame: &'a Arc<VideoFrame>,
+        corner: f32,
+        cutouts: Vec<Overlay>,
+        native_videos: &mut Vec<NativeVideo<'a>>,
+    ) {
+        if !canvas.is_positive() {
+            return;
+        }
+        if frame.surface().is_some() {
+            native_videos.push(NativeVideo {
+                identity,
+                frame,
+                canvas,
+                corner,
+                cutouts,
+            });
+            return;
+        }
+        let Some((software, captured_at)) =
+            frame.software_frame().filter(|_| is_camera_key(identity))
+        else {
+            self.error = crate::i18n::label(
+                "O decoder não entregou uma textura GPU compatível.",
+                "The decoder did not return a compatible GPU texture.",
+            )
+            .into();
+            return;
+        };
+        let (frame_width, frame_height) = frame.dimensions();
+        if frame_width == 0 || frame_height == 0 {
+            return;
+        }
+        let ctx = ui.ctx();
+        let texture = self
+            .camera_textures
+            .entry(identity.clone())
+            .or_insert_with(|| {
+                (
+                    None,
+                    ctx.load_texture(
+                        identity.as_str(),
+                        egui::ColorImage::filled([1, 1], egui::Color32::BLACK),
+                        egui::TextureOptions::LINEAR,
+                    ),
+                )
+            });
+        if texture.0 != Some(captured_at) {
+            self.camera_rgba
+                .resize(frame_width as usize * frame_height as usize * 4, 0);
+            software.buffer.to_argb(
+                livekit::webrtc::video_frame::VideoFormatType::ABGR,
+                &mut self.camera_rgba,
+                frame_width * 4,
+                frame_width as i32,
+                frame_height as i32,
+            );
+            texture.1.set(
+                egui::ColorImage::from_rgba_unmultiplied(
+                    [frame_width as usize, frame_height as usize],
+                    &self.camera_rgba,
+                ),
+                egui::TextureOptions::LINEAR,
+            );
+            texture.0 = Some(captured_at);
+            if let Some((_, shown)) = &mut self.stage_trace {
+                *shown.entry(identity.clone()).or_default() += 1;
+            }
+        }
+        let size = Vec2::new(frame_width as f32, frame_height as f32);
+        let scale = (canvas.width() / size.x).min(canvas.height() / size.y);
+        ui.painter().with_clip_rect(canvas).image(
+            texture.1.id(),
+            egui::Rect::from_center_size(canvas.center(), size * scale),
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+    }
+    /// Recompute what is on the stage and in the strip, and tell the engine
+    /// which videos and screen audio to receive when that changes.
+    fn arrange_stage(
+        &mut self,
+        remote: &[String],
+        identity: &str,
+        publishing: bool,
+        camera_active: bool,
+    ) -> crate::stage::Arrangement {
+        use crate::camera_preview::LOCAL_CAMERA;
+        let mut published = remote.to_vec();
+        if publishing && self.self_preview && !identity.is_empty() {
+            published.push(identity.to_owned());
+        }
+        if camera_active && self.self_preview {
+            published.push(LOCAL_CAMERA.into());
+        }
+        self.arrival.retain(|id| published.contains(id));
+        for id in &published {
+            if !self.arrival.contains(id) {
+                self.arrival.push(id.clone());
+            }
+        }
+        // A manual choice ends when that video ends, not when a filter hides it.
+        if self
+            .focus
+            .as_ref()
+            .is_some_and(|id| self.stage_videos.contains(id) && !published.contains(id))
+        {
+            self.focus = None;
+        }
+        let sources: Vec<_> = self
+            .arrival
+            .iter()
+            .map(|id| {
+                let local_camera = id == LOCAL_CAMERA;
+                crate::stage::Source {
+                    id,
+                    owner: if local_camera {
+                        identity
+                    } else {
+                        crate::desktop_engine::video_owner(id)
+                    },
+                    camera: local_camera || id.ends_with("/camera"),
+                    local: local_camera || id == identity,
+                }
+            })
+            .collect();
+        let arrangement = crate::stage::arrange(
+            &sources,
+            self.show,
+            self.focus.as_deref(),
+            &self.stage_videos,
+        );
+        let remote_screens: Vec<String> = sources
+            .iter()
+            .filter(|s| !s.camera && !s.local)
+            .map(|s| s.id.to_owned())
+            .collect();
+        let (live, audio) = if self.mode == ViewMode::Grid {
+            let visible = sources
+                .iter()
+                .filter(|s| !s.local && self.show.allows(s.camera))
+                .map(|s| s.id.to_owned())
+                .collect();
+            (visible, remote_screens)
+        } else {
+            let strip = if self.stage_rect.is_positive()
+                && !crate::stage::too_small_for_cards(self.stage_rect)
+            {
+                let layout = crate::stage::strip_layout(
+                    self.stage_rect,
+                    arrangement.strip.len(),
+                    self.anchor,
+                );
+                &arrangement.strip[..layout.shown.min(arrangement.strip.len())]
+            } else {
+                &[][..]
+            };
+            let live = arrangement
+                .stage
+                .iter()
+                .skip(1)
+                .chain(strip)
+                .cloned()
+                .collect();
+            // Screens on the stage are heard; with a camera on the stage (or
+            // "Cameras only") the screens keep playing their sound.
+            let on_stage: Vec<String> = remote_screens
+                .iter()
+                .filter(|id| arrangement.stage.contains(id))
+                .cloned()
+                .collect();
+            (
+                live,
+                if on_stage.is_empty() {
+                    remote_screens
+                } else {
+                    on_stage
+                },
+            )
+        };
+        if (&self.stage_videos, &self.live, &self.audio) != (&arrangement.stage, &live, &audio) {
+            self.stage_videos = arrangement.stage.clone();
+            self.live = live;
+            self.audio = audio;
+            self.send_layout();
+        }
+        arrangement
+    }
     fn send_layout(&self) {
         if let Some(engine) = &self.engine {
-            let _ = engine.commands.send(Command::Layout(Layout {
-                self_preview: self.self_preview,
-                volume: if self.sound_muted { 0 } else { self.volume },
-                mode: self.mode,
-                focus: self.focus.clone(),
-                paused: self.paused,
-            }));
+            let _ = engine.commands.send(Command::Layout(self.layout()));
         }
     }
     fn leave_room(&mut self, ctx: &egui::Context, join_next: bool) {
@@ -1232,7 +1488,12 @@ impl App {
         self.camera_textures.clear();
         self.window_previews.clear();
         self.focus = None;
-        self.single_view = false;
+        self.arrival.clear();
+        self.stage_videos.clear();
+        self.strip_pos = None;
+        self.strip_grab = None;
+        self.live.clear();
+        self.audio.clear();
         self.paused = false;
         self.auto_connect = false;
         self.pending_join = join_next;
@@ -1286,13 +1547,7 @@ impl App {
         let _ = engine
             .commands
             .send(Command::SystemAudio(self.system_audio));
-        let _ = engine.commands.send(Command::Layout(Layout {
-            self_preview: self.self_preview,
-            mode: self.mode,
-            focus: self.focus.clone(),
-            paused: self.paused,
-            volume: if self.sound_muted { 0 } else { self.volume },
-        }));
+        let _ = engine.commands.send(Command::Layout(self.layout()));
         engine
     }
 }
@@ -1359,6 +1614,13 @@ impl eframe::App for App {
         }
         if self.fullscreen && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.set_fullscreen(&ctx, false);
+        }
+        if self.fullscreen
+            && !ctx.egui_wants_keyboard_input()
+            && ctx.input(|i| i.key_pressed(egui::Key::M) && i.modifiers.is_none())
+        {
+            crate::desktop_ui::toggle_mute(&mut self.volume, &mut self.sound_muted);
+            self.send_layout();
         }
         if self.smoke_seconds.is_some()
             && std::env::var("HYPERCAST_SMOKE_SOUND").as_deref() == Ok("1")
@@ -1527,16 +1789,11 @@ impl eframe::App for App {
             .retain(|key, _| videos.iter().any(|(id, _)| id == key));
         screens.sort();
         videos.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+        let arrangement = self.arrange_stage(&screens, &identity, publishing, camera_active);
         let watched = if self.paused || self.mode != ViewMode::Spotlight {
             None
         } else {
-            self.focus
-                .as_ref()
-                .filter(|id| screens.contains(id) || videos.iter().any(|(owner, _)| owner == *id))
-                .or_else(|| screens.first())
-                .or_else(|| videos.iter().find(|(_, f)| !f.local()).map(|(id, _)| id))
-                .or_else(|| videos.first().map(|(id, _)| id))
-                .cloned()
+            self.stage_videos.first().cloned()
         };
         self.last_presented
             .retain(|id, _| videos.iter().any(|(owner, _)| owner == id));
@@ -1776,7 +2033,6 @@ impl eframe::App for App {
                                     if response.clicked() {
                                         self.focus = Some(identity.clone());
                                         self.mode = ViewMode::Spotlight;
-                                        self.single_view = response.double_clicked();
                                         self.send_layout();
                                     }
                                 } else {
@@ -1805,8 +2061,11 @@ impl eframe::App for App {
                                         })
                                     });
                                 let live = target.is_some();
-                                let focused =
-                                    target.is_some_and(|key| watched.as_ref() == Some(key));
+                                let camera_only =
+                                    target.is_some_and(|key| key.ends_with("/camera"));
+                                let focused = watched.as_deref().is_some_and(|key| {
+                                    crate::desktop_engine::video_owner(key) == identity
+                                });
                                 let response = choice_card(
                                     ui,
                                     if name.is_empty() {
@@ -1816,10 +2075,19 @@ impl eframe::App for App {
                                     },
                                     if live {
                                         if focused && self.mode == ViewMode::Spotlight {
-                                            crate::i18n::label(
-                                                "Em destaque · compartilhando",
-                                                "Focused · sharing",
-                                            )
+                                            if watched.as_deref().is_some_and(is_camera_key) {
+                                                crate::i18n::label(
+                                                    "Em destaque · câmera",
+                                                    "Focused · camera",
+                                                )
+                                            } else {
+                                                crate::i18n::label(
+                                                    "Em destaque · compartilhando",
+                                                    "Focused · sharing",
+                                                )
+                                            }
+                                        } else if camera_only {
+                                            crate::i18n::label("Câmera ligada", "Camera on")
                                         } else {
                                             crate::i18n::label(
                                                 "Compartilhando tela",
@@ -1834,7 +2102,6 @@ impl eframe::App for App {
                                     Some(name.chars().next().unwrap_or('P')),
                                 );
                                 if response.clicked() {
-                                    self.single_view = response.double_clicked();
                                     self.focus = target.cloned();
                                     self.mode = ViewMode::Spotlight;
                                     self.send_layout();
@@ -1896,6 +2163,7 @@ impl eframe::App for App {
                 });
         }
         let mut native_videos = Vec::new();
+        let mut control_overlays: Vec<Overlay> = Vec::new();
         let mut hide_native_video = false;
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(BG).inner_margin(egui::Margin::same(
@@ -2139,49 +2407,65 @@ impl eframe::App for App {
                     return;
                 }
 
-                if self.fullscreen {
-                    ui.spacing_mut().item_spacing = Vec2::new(8.0, 4.0);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(if reception_resetting {
-                                crate::i18n::label(
-                                    "Reconectando recepção…",
-                                    "Reconnecting playback…",
-                                )
-                            } else {
-                                crate::i18n::label("Tela em destaque", "Focused stream")
-                            })
-                            .size(13.0)
-                            .color(MUTED),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if exit_fullscreen(ui).clicked() {
-                                self.set_fullscreen(&ctx, false);
-                            }
-                            let resetting = self
-                                .engine
-                                .as_ref()
-                                .is_some_and(|e| e.shared.lock().unwrap().reception_resetting);
-                            if crate::desktop_ui::reconnect_button(
-                                ui,
-                                connected && !resetting,
-                                24.0,
-                            )
-                            .clicked()
-                            {
-                                self.restart_reception();
-                            }
-                            if crate::desktop_ui::playback_audio(
-                                ui,
-                                &mut self.volume,
-                                &mut self.sound_muted,
-                                true,
-                            ) {
-                                self.send_layout();
-                            }
-                        });
-                    });
-                } else {
+                let label_for = |id: &str| -> String {
+                    if id == crate::camera_preview::LOCAL_CAMERA {
+                        crate::i18n::label("Minha câmera", "My camera").to_owned()
+                    } else if id == identity {
+                        crate::i18n::label("Minha tela", "My screen").to_owned()
+                    } else {
+                        let owner = crate::desktop_engine::video_owner(id);
+                        let name = people
+                            .iter()
+                            .find(|(person, _)| person == owner)
+                            .map(|(_, name)| name.as_str())
+                            .filter(|name| !name.is_empty())
+                            .unwrap_or(owner);
+                        let kind = if is_camera_key(id) {
+                            crate::i18n::label("Câmera", "Camera")
+                        } else {
+                            crate::i18n::label("Tela", "Screen")
+                        };
+                        format!("{name} · {kind}")
+                    }
+                };
+                let detail_for = |id: &str, frame: Option<&Arc<VideoFrame>>| -> String {
+                    if frozen.iter().any(|f| f == id) {
+                        crate::i18n::label(
+                            "Reconectando • último quadro",
+                            "Reconnecting • last frame",
+                        )
+                        .into()
+                    } else if let Some(exhausted) = recovering.get(id) {
+                        crate::reception_recovery::status_label(*exhausted).into()
+                    } else if let Some(frame) = frame {
+                        let (width, height) = frame.dimensions();
+                        format!("{width} × {height}")
+                    } else {
+                        crate::i18n::label("Carregando…", "Loading…").into()
+                    }
+                };
+                let visible: Vec<String> = self
+                    .arrival
+                    .iter()
+                    .filter(|id| self.show.allows(is_camera_key(id)))
+                    .cloned()
+                    .collect();
+                let hidden = self.arrival.len() - visible.len();
+                let entries: Vec<_> = visible
+                    .iter()
+                    .map(|id| crate::stage_ui::StageEntry {
+                        id: id.clone(),
+                        label: label_for(id),
+                        on_stage: self.mode == ViewMode::Spotlight
+                            && arrangement.stage.contains(id),
+                    })
+                    .collect();
+                let menu = crate::stage_ui::ViewMenu {
+                    show: self.show,
+                    mode: self.mode,
+                    entries: &entries,
+                };
+                if !self.fullscreen {
                     let detail = if reception_resetting {
                         crate::i18n::label(
                             "Reconectando vídeo e áudio recebidos…",
@@ -2203,28 +2487,10 @@ impl eframe::App for App {
                         detail,
                         crate::desktop_ui::room_state(connected, reconnecting),
                     );
-                    let header = crate::desktop_ui::room_header(
-                        ui,
-                        &room,
-                        &room_status,
-                        self.sidebar_open,
-                        self.mode,
-                        !videos.is_empty(),
-                        (&mut self.volume, &mut self.sound_muted),
-                    );
-                    if header.audio_changed {
-                        self.send_layout();
-                    }
-                    if header.participants.clicked() {
+                    if crate::stage_ui::stage_header(ui, &room, &room_status, self.sidebar_open)
+                        .clicked()
+                    {
                         self.sidebar_open = !self.sidebar_open;
-                    }
-                    if header.grid.clicked() {
-                        self.mode = ViewMode::Grid;
-                        self.single_view = false;
-                        self.send_layout();
-                    }
-                    if header.fullscreen.clicked() {
-                        self.set_fullscreen(&ctx, true);
                     }
                 }
                 let available = ui.available_size();
@@ -2238,8 +2504,41 @@ impl eframe::App for App {
                             || self.catalog.open
                             || self.debug_open
                             || self.updater.open));
-                if videos.is_empty() || self.paused {
-                    if crate::desktop_ui::playback_empty(
+                self.stage_rect = rect;
+                // Controls over the video show for 2 s after the mouse moves and
+                // while they are in use.
+                let pointer = ctx.input(|i| i.pointer.hover_pos());
+                if pointer != self.last_pointer
+                    || ctx.input(|i| i.pointer.any_down() || !i.keys_down.is_empty())
+                {
+                    self.last_motion = Instant::now();
+                    self.last_pointer = pointer;
+                }
+                let idle = self.last_motion.elapsed();
+                let empty = self.paused || visible.is_empty();
+                let controls_visible = empty
+                    || idle < CONTROLS_LINGER
+                    || self.strip_grab.is_some()
+                    || egui::Popup::is_any_open(&ctx)
+                    || pointer
+                        .is_some_and(|p| self.control_rects.iter().any(|(r, _)| r.contains(p)));
+                if controls_visible && idle < CONTROLS_LINGER {
+                    ctx.request_repaint_after(CONTROLS_LINGER - idle + Duration::from_millis(30));
+                }
+                if !controls_visible && self.fullscreen && pointer.is_some_and(|p| rect.contains(p))
+                {
+                    ctx.set_cursor_icon(egui::CursorIcon::None);
+                }
+                let frame_of = |id: &str| videos.iter().find(|(key, _)| key == id);
+                let mut selection: Option<String> = None;
+                let mut tags: Vec<(egui::Rect, String)> = Vec::new();
+                if empty {
+                    if !self.paused && hidden > 0 {
+                        if crate::stage_ui::hidden_by_view(ui, rect, self.show, hidden) {
+                            self.show = crate::stage::Show::All;
+                            ctx.request_repaint();
+                        }
+                    } else if crate::desktop_ui::playback_empty(
                         ui,
                         rect,
                         self.paused,
@@ -2250,61 +2549,18 @@ impl eframe::App for App {
                         self.paused = false;
                         self.send_layout();
                     }
-                } else {
-                    let mut selection = None;
-                    let focus = self
-                        .focus
-                        .as_ref()
-                        .filter(|id| {
-                            screens.contains(id) || videos.iter().any(|(owner, _)| owner == *id)
-                        })
-                        .or(watched.as_ref())
-                        .or_else(|| screens.first())
-                        .or_else(|| videos.first().map(|(id, _)| id));
-                    let mut selected: Vec<_> = videos
-                        .iter()
-                        .filter(|(id, _)| self.mode == ViewMode::Grid || Some(id) == focus)
-                        .take(6 + usize::from(self.self_preview && camera_active))
-                        .collect();
-                    if selected.is_empty() {
-                        // Keep showing the last available video until the newly
-                        // selected source has delivered its first frame.
-                        selected.push(&videos[0]);
-                    }
-                    if self.mode == ViewMode::Spotlight && !self.fullscreen && !self.single_view {
-                        let primary = &selected[0].0;
-                        selected.extend(videos.iter().filter(|(id, _)| id != primary).take(2));
-                    }
-                    let unseen: Vec<_> = if self.mode == ViewMode::Spotlight
-                        && !self.fullscreen
-                        && !self.single_view
-                    {
-                        screens
-                            .iter()
-                            .filter(|id| {
-                                Some(*id) != focus && !videos.iter().any(|(owner, _)| owner == *id)
-                            })
-                            .take(3 - selected.len())
-                            .collect()
-                    } else {
-                        Vec::new()
-                    };
-                    let count = (selected.len() + unseen.len()).max(1);
-                    for (index, (identity, frame)) in selected.iter().enumerate() {
-                        let thumbnail = self.mode == ViewMode::Spotlight && index > 0;
-                        let card = if self.mode == ViewMode::Grid {
-                            crate::desktop_ui::video_grid_card(rect, index, count, 10.0)
-                        } else {
-                            crate::desktop_ui::spotlight_card(rect, index, count)
-                        };
+                } else if self.mode == ViewMode::Grid {
+                    let tiles: Vec<&String> = visible.iter().take(7).collect();
+                    let count = tiles.len();
+                    for (index, id) in tiles.into_iter().enumerate() {
+                        let card = crate::desktop_ui::video_grid_card(rect, index, count, 10.0);
                         ui.painter().rect_stroke(
                             card,
                             8.0,
                             egui::Stroke::new(1.0, BORDER),
                             egui::StrokeKind::Inside,
                         );
-                        let compact_card =
-                            card.height() < 144.0 || card.width() < 180.0 || self.fullscreen;
+                        let compact_card = card.height() < 144.0 || card.width() < 180.0;
                         let padding = if compact_card { 4.0 } else { 8.0 };
                         let header_height =
                             (if compact_card { 20.0_f32 } else { 30.0 }).min(card.height() * 0.4);
@@ -2316,196 +2572,289 @@ impl eframe::App for App {
                         if !canvas.is_positive() {
                             continue;
                         }
-                        let owner = crate::desktop_engine::video_owner(identity);
-                        let local_camera = identity == crate::camera_preview::LOCAL_CAMERA;
-                        let is_camera = local_camera || owner != identity.as_str();
-                        let name = people
-                            .iter()
-                            .find(|(id, _)| id.as_str() == owner)
-                            .map(|(_, name)| name.as_str())
-                            .filter(|name| !name.is_empty())
-                            .unwrap_or(owner);
-                        let label = if local_camera {
-                            crate::i18n::label("Minha câmera", "My camera").to_owned()
-                        } else if frame.local() {
-                            crate::i18n::label("Minha tela", "My screen").to_owned()
-                        } else {
-                            let kind = if is_camera {
-                                crate::i18n::label("Câmera", "Camera")
-                            } else {
-                                crate::i18n::label("Tela", "Screen")
-                            };
-                            format!("{name} · {kind}")
-                        };
                         let title = egui::Rect::from_min_max(
                             card.min + Vec2::new(padding, 0.0),
                             egui::pos2(card.right() - padding, canvas.top()),
                         );
+                        let label = label_for(id);
                         crate::desktop_ui::paint_video_label(ui, title, &label, 13.0, TEXT);
+                        let found = frame_of(id);
+                        if !compact_card {
+                            let footer = egui::Rect::from_min_max(
+                                egui::pos2(title.left(), canvas.bottom()),
+                                egui::pos2(title.right(), card.bottom()),
+                            );
+                            let details = detail_for(id, found.map(|(_, frame)| frame));
+                            crate::desktop_ui::paint_video_label(ui, footer, &details, 12.0, MUTED);
+                        }
                         let response = ui
-                            .interact(
-                                card,
-                                egui::Id::new(("focus", identity)),
-                                egui::Sense::click(),
-                            )
+                            .interact(card, egui::Id::new(("focus", id)), egui::Sense::click())
                             .on_hover_cursor(egui::CursorIcon::PointingHand);
                         response.widget_info(|| {
                             egui::WidgetInfo::labeled(
                                 egui::WidgetType::Button,
                                 true,
                                 crate::i18n_format!(
-                                    "Transmissão de {}",
-                                    "Stream from {}",
-                                    if frame.local() { &label } else { name }
+                                    "Colocar {} no palco",
+                                    "Put {} on stage",
+                                    label
                                 ),
                             )
                         });
-                        if response.clicked() {
-                            selection = Some((identity.clone(), response.double_clicked()));
+                        if response.double_clicked() {
+                            self.set_fullscreen(&ctx, !self.fullscreen);
+                        } else if response.clicked() {
+                            selection = Some((*id).clone());
                         }
-                        let (frame_width, frame_height) = frame.dimensions();
-                        if !compact_card {
-                            let footer = egui::Rect::from_min_max(
-                                egui::pos2(title.left(), canvas.bottom()),
-                                egui::pos2(title.right(), card.bottom()),
-                            );
-                            let details = if frozen.contains(identity) {
-                                crate::i18n::label(
-                                    "Reconectando • último quadro",
-                                    "Reconnecting • last frame",
-                                )
-                                .into()
-                            } else if let Some(exhausted) = recovering.get(identity) {
-                                crate::reception_recovery::status_label(*exhausted).into()
-                            } else if thumbnail && !frame.local() {
-                                crate::i18n::label("Último quadro • pausada", "Last frame • paused")
-                                    .into()
-                            } else {
-                                format!("{frame_width} × {frame_height}")
-                            };
-                            crate::desktop_ui::paint_video_label(ui, footer, &details, 12.0, MUTED);
-                        }
-                        if frame.surface().is_some() {
-                            native_videos.push(NativeVideo {
-                                identity,
-                                frame,
-                                canvas,
-                            });
-                        } else if is_camera {
-                            if let Some((software, captured_at)) = frame.software_frame() {
-                                let entry = self.camera_textures.entry((*identity).clone());
-                                let texture = entry.or_insert_with(|| {
-                                    (
-                                        None,
-                                        ctx.load_texture(
-                                            identity.as_str(),
-                                            egui::ColorImage::filled([1, 1], egui::Color32::BLACK),
-                                            egui::TextureOptions::LINEAR,
-                                        ),
-                                    )
-                                });
-                                if texture.0 != Some(captured_at) {
-                                    self.camera_rgba.resize(
-                                        frame_width as usize * frame_height as usize * 4,
-                                        0,
-                                    );
-                                    software.buffer.to_argb(
-                                        livekit::webrtc::video_frame::VideoFormatType::ABGR,
-                                        &mut self.camera_rgba,
-                                        frame_width * 4,
-                                        frame_width as i32,
-                                        frame_height as i32,
-                                    );
-                                    texture.1.set(
-                                        egui::ColorImage::from_rgba_unmultiplied(
-                                            [frame_width as usize, frame_height as usize],
-                                            &self.camera_rgba,
-                                        ),
-                                        egui::TextureOptions::LINEAR,
-                                    );
-                                    texture.0 = Some(captured_at);
-                                }
-                                if canvas.is_positive() && frame_width != 0 && frame_height != 0 {
-                                    let size = Vec2::new(frame_width as f32, frame_height as f32);
-                                    let scale =
-                                        (canvas.width() / size.x).min(canvas.height() / size.y);
-                                    ui.painter().image(
-                                        texture.1.id(),
-                                        egui::Rect::from_center_size(canvas.center(), size * scale),
-                                        egui::Rect::from_min_max(
-                                            egui::Pos2::ZERO,
-                                            egui::pos2(1.0, 1.0),
-                                        ),
-                                        egui::Color32::WHITE,
-                                    );
-                                }
-                            }
-                        } else {
-                            self.error = crate::i18n::label(
-                                "O decoder não entregou uma textura GPU compatível.",
-                                "The decoder did not return a compatible GPU texture.",
-                            )
-                            .into();
-                        }
-                    }
-                    for (index, id) in unseen.iter().enumerate() {
-                        let card =
-                            crate::desktop_ui::spotlight_card(rect, selected.len() + index, count);
-                        ui.painter().rect_stroke(
-                            card,
-                            8.0,
-                            egui::Stroke::new(1.0, BORDER),
-                            egui::StrokeKind::Inside,
-                        );
-                        let owner = crate::desktop_engine::video_owner(id);
-                        let name = people
-                            .iter()
-                            .find(|(identity, _)| identity == owner)
-                            .map(|(_, name)| name.as_str())
-                            .unwrap_or(owner);
-                        let kind = if owner == id.as_str() {
-                            crate::i18n::label("Tela", "Screen")
-                        } else {
-                            crate::i18n::label("Câmera", "Camera")
-                        };
-                        let label = format!("{name} · {kind}");
-                        let title = card.shrink2(Vec2::new(6.0, 0.0));
-                        let title = if card.height() >= 56.0 {
-                            egui::Rect::from_min_max(
-                                title.min,
-                                egui::pos2(title.right(), title.center().y),
-                            )
-                        } else {
-                            title
-                        };
-                        crate::desktop_ui::paint_video_label(ui, title, &label, 13.0, TEXT);
-                        if card.height() >= 56.0 {
-                            let footer = egui::Rect::from_min_max(
-                                egui::pos2(title.left(), title.bottom()),
-                                egui::pos2(title.right(), card.bottom()),
-                            );
-                            crate::desktop_ui::paint_video_label(
+                        match found {
+                            Some((key, frame)) => self.draw_video(
                                 ui,
-                                footer,
-                                crate::i18n::label("Selecione para ver", "Select to watch"),
-                                12.0,
-                                MUTED,
-                            );
-                        }
-                        let response = ui
-                            .interact(card, egui::Id::new(("unseen", id)), egui::Sense::click())
-                            .on_hover_cursor(egui::CursorIcon::PointingHand);
-                        if response.clicked() {
-                            selection = Some(((*id).clone(), response.double_clicked()));
+                                canvas,
+                                key,
+                                frame,
+                                6.0,
+                                Vec::new(),
+                                &mut native_videos,
+                            ),
+                            None => crate::stage_ui::video_loading(ui, canvas),
                         }
                     }
-                    if let Some((identity, single_view)) = selection {
-                        self.focus = Some(identity);
-                        self.single_view = single_view;
-                        self.mode = ViewMode::Spotlight;
+                } else {
+                    use crate::stage::{GAP, LABEL};
+                    let stage = rect;
+                    let tiles = crate::stage::stage_tiles(stage, arrangement.stage.len(), GAP);
+                    // Interactions in stacking order: tiles, then the strip above them.
+                    for (id, tile) in arrangement.stage.iter().zip(&tiles) {
+                        let label = label_for(id);
+                        let response =
+                            ui.interact(*tile, egui::Id::new(("stage", id)), egui::Sense::click());
+                        response.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Other,
+                                true,
+                                crate::i18n_format!("No palco: {}", "On stage: {}", label),
+                            )
+                        });
+                        if response.double_clicked() {
+                            self.set_fullscreen(&ctx, !self.fullscreen);
+                        } else if response.clicked() && tiles.len() > 1 {
+                            selection = Some(id.clone());
+                        }
+                        let tag = if tiles.len() == 1 && self.fullscreen {
+                            format!("{room} · {label}")
+                        } else {
+                            label
+                        };
+                        tags.push((*tile, tag));
+                    }
+                    let strip = &arrangement.strip;
+                    let small = crate::stage::too_small_for_cards(stage);
+                    let mut cutouts = Vec::new();
+                    let mut cards = Vec::new();
+                    let mut chip = None;
+                    let dragging = self.strip_grab.is_some();
+                    if strip.is_empty() || small {
+                        self.strip_pos = None;
+                        self.strip_grab = None;
+                    }
+                    if !strip.is_empty() && !small {
+                        let layout = crate::stage::strip_layout(stage, strip.len(), self.anchor);
+                        let size = layout.size();
+                        // Bottom anchors rise above the control bar while it shows.
+                        let resting = crate::stage::anchor_origin(stage, size, self.anchor, 0.0);
+                        let reserve = match self.control_bar {
+                            Some(bar)
+                                if controls_visible
+                                    && self.anchor.bottom()
+                                    && egui::Rect::from_min_size(resting, size)
+                                        .intersects(bar.expand(GAP)) =>
+                            {
+                                (resting.y + size.y) - (bar.top() - GAP)
+                            }
+                            _ => 0.0,
+                        };
+                        let target = crate::stage::anchor_origin(stage, size, self.anchor, reserve);
+                        let dt = ctx.input(|i| i.stable_dt).clamp(1.0 / 240.0, 0.1);
+                        let mut position = self.strip_pos.unwrap_or(target);
+                        let handle = ui
+                            .interact(
+                                egui::Rect::from_min_size(position, size),
+                                egui::Id::new("stage-strip"),
+                                egui::Sense::drag(),
+                            )
+                            .on_hover_cursor(egui::CursorIcon::Grab);
+                        let pointer_now = ctx.pointer_latest_pos();
+                        if handle.drag_started()
+                            && let Some(p) = handle.interact_pointer_pos()
+                        {
+                            self.strip_grab = Some(p - position);
+                        }
+                        if let (Some(grab), Some(p), true) =
+                            (self.strip_grab, pointer_now, handle.dragged())
+                        {
+                            let next = crate::stage::clamp_origin(stage, size, p - grab);
+                            self.strip_vel = (next - position) / dt;
+                            position = next;
+                            ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+                        }
+                        if handle.drag_stopped() {
+                            self.anchor =
+                                crate::stage::nearest_anchor(stage, position + size / 2.0);
+                            self.strip_grab = None;
+                            self.strip_vel *= 0.4;
+                            ctx.request_repaint();
+                        }
+                        if !handle.dragged() {
+                            self.strip_grab = None;
+                            if crate::stage::at_rest(position, self.strip_vel, target) {
+                                position = target;
+                                self.strip_vel = Vec2::ZERO;
+                            } else {
+                                (position, self.strip_vel) =
+                                    crate::stage::spring_step(position, self.strip_vel, target, dt);
+                                ctx.request_repaint();
+                            }
+                        }
+                        self.strip_pos = Some(position);
+                        let slots = layout.slots_at(position);
+                        for (id, slot) in strip.iter().zip(&slots).take(layout.shown) {
+                            cards.push((id.clone(), *slot));
+                        }
+                        if layout.overflow > 0 {
+                            chip = slots.last().copied();
+                        }
+                        // The "+N" chip is a pill; cards have 8 pt corners.
+                        let chip_slot = (layout.overflow > 0).then(|| slots.len() - 1);
+                        cutouts.extend(slots.iter().enumerate().map(|(i, slot)| {
+                            if Some(i) == chip_slot {
+                                (*slot, slot.height().min(slot.width()) / 2.0)
+                            } else {
+                                (*slot, 8.0)
+                            }
+                        }));
+                    }
+                    let pill = (!strip.is_empty() && small).then(|| {
+                        egui::Rect::from_min_size(
+                            stage.right_bottom() - Vec2::new(188.0, 46.0),
+                            Vec2::new(176.0, 34.0),
+                        )
+                    });
+                    cutouts.extend(pill.map(|pill| (pill, pill.height() / 2.0)));
+                    // Paint the stage first: egui-painted cameras stay under the strip.
+                    for (id, tile) in arrangement.stage.iter().zip(&tiles) {
+                        match frame_of(id) {
+                            Some((key, frame)) => self.draw_video(
+                                ui,
+                                *tile,
+                                key,
+                                frame,
+                                12.0,
+                                cutouts.clone(),
+                                &mut native_videos,
+                            ),
+                            None => crate::stage_ui::video_loading(ui, *tile),
+                        }
+                    }
+                    for (id, slot) in &cards {
+                        let label = label_for(id);
+                        let (video, response) =
+                            crate::stage_ui::strip_card(ui, *slot, &label, LABEL, dragging);
+                        if response.clicked() {
+                            selection = Some(id.clone());
+                        }
+                        match frame_of(id) {
+                            Some((key, frame)) => self.draw_video(
+                                ui,
+                                video,
+                                key,
+                                frame,
+                                6.0,
+                                Vec::new(),
+                                &mut native_videos,
+                            ),
+                            None => crate::stage_ui::video_loading(ui, video),
+                        }
+                    }
+                    let choices = |ids: &[String]| -> Vec<(String, String)> {
+                        ids.iter().map(|id| (id.clone(), label_for(id))).collect()
+                    };
+                    if let Some(chip) = chip
+                        && let Some(id) = crate::stage_ui::overflow_chip(
+                            ui,
+                            chip,
+                            &choices(&strip[cards.len()..]),
+                        )
+                    {
+                        selection = Some(id);
+                    }
+                    if let Some(pill) = pill {
+                        let text = if strip.iter().all(|id| is_camera_key(id)) {
+                            crate::i18n_format!("{} câmera(s)", "{} camera(s)", strip.len())
+                        } else {
+                            crate::i18n_format!("{} vídeo(s)", "{} video(s)", strip.len())
+                        };
+                        if let Some(id) =
+                            crate::stage_ui::strip_pill(ui, pill, &text, &choices(strip))
+                        {
+                            selection = Some(id);
+                        }
+                    }
+                }
+                self.control_rects.clear();
+                self.control_bar = None;
+                if controls_visible && !empty {
+                    let screens_visible = visible.iter().filter(|id| !is_camera_key(id)).count();
+                    let controls = crate::stage_ui::StageControls {
+                        menu: &menu,
+                        side_by_side: self.mode == ViewMode::Spotlight
+                            && self.focus.is_some()
+                            && screens_visible >= 2,
+                        fullscreen: self.fullscreen,
+                        can_reconnect: connected && !reception_resetting,
+                    };
+                    let outcome = crate::stage_ui::stage_controls(
+                        &ctx,
+                        rect,
+                        &tags,
+                        &controls,
+                        &mut self.volume,
+                        &mut self.sound_muted,
+                    );
+                    if outcome.audio_changed {
                         self.send_layout();
+                    }
+                    use crate::stage_ui::{ControlAction, ViewChoice};
+                    let acted = outcome.action.is_some();
+                    match outcome.action {
+                        Some(ControlAction::View(ViewChoice::Show(show))) => {
+                            self.show = show;
+                            self.focus = None;
+                        }
+                        Some(ControlAction::View(ViewChoice::Mode(mode))) => {
+                            self.mode = mode;
+                            self.send_layout();
+                        }
+                        Some(ControlAction::View(ViewChoice::Stage(id))) => {
+                            selection = Some(id);
+                        }
+                        Some(ControlAction::SideBySide) => self.focus = None,
+                        Some(ControlAction::Reconnect) => self.restart_reception(),
+                        Some(ControlAction::Fullscreen) => {
+                            self.set_fullscreen(&ctx, !self.fullscreen)
+                        }
+                        None => {}
+                    }
+                    if acted {
                         ctx.request_repaint();
                     }
+                    self.control_bar = Some(outcome.bar);
+                    self.control_rects = outcome.rects;
+                    control_overlays.extend(self.control_rects.iter().copied());
+                }
+                if let Some(identity) = selection {
+                    self.focus = Some(identity);
+                    self.mode = ViewMode::Spotlight;
+                    ctx.request_repaint();
                 }
             });
         if !self.window_picker_open || self.fullscreen || self.debug_open || self.updater.open {
@@ -2530,7 +2879,7 @@ impl eframe::App for App {
                 self.server_access.logout(&self.address);
             }
         }
-        let mut overlays: Vec<_> = menu_rect.into_iter().collect();
+        let mut overlays: Vec<Overlay> = menu_rect.into_iter().map(|r| (r, 12.0)).collect();
         if let Some(mut draft) = self.source_draft {
             use crate::desktop_ui::{
                 ShareTab, dialog_body, share_confirmation, share_tabs, sharing_dialog,
@@ -2603,7 +2952,7 @@ impl eframe::App for App {
                     )
                 },
             );
-            overlays.push(modal.response.rect);
+            overlays.push((modal.response.rect, 12.0));
             let (cancel, confirm) = modal.inner;
             if confirm {
                 self.apply_source(draft);
@@ -3056,6 +3405,7 @@ impl eframe::App for App {
             }
         }
         overlays.extend(crate::desktop_ui::take_video_popups(&ctx));
+        overlays.extend(control_overlays);
         if hide_native_video {
             native_videos.clear();
         }
@@ -3065,6 +3415,25 @@ impl eframe::App for App {
             ctx.pixels_per_point(),
             &quality.evidence,
         );
+        if let Some((since, shown)) = &mut self.stage_trace
+            && since.elapsed() >= Duration::from_secs(2)
+        {
+            let mut frames: Vec<_> = shown.drain().collect();
+            frames.sort();
+            println!(
+                "GUI stage: mode={:?} show={} fullscreen={} anchor={} stage={:?} strip={:?} live={:?} audio={:?} frames_2s={frames:?}",
+                self.mode,
+                self.show.key(),
+                self.fullscreen,
+                self.anchor.key(),
+                self.stage_videos,
+                arrangement.strip,
+                self.live,
+                self.audio,
+            );
+            *since = Instant::now();
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
         ctx.request_repaint_after(Duration::from_millis(
             if self.updater.busy || self.creator.busy || self.server_access.busy {
                 100

@@ -1072,6 +1072,7 @@ impl App {
                         self.layout.mode,
                         !screens.is_empty(),
                         (&mut self.volume, &mut self.sound_muted),
+                        None,
                     );
                     if header.audio_changed {
                         self.layout();
@@ -1079,7 +1080,7 @@ impl App {
                     if header.participants.clicked() {
                         self.sidebar_open = !self.sidebar_open;
                     }
-                    if header.grid.clicked() {
+                    if header.grid.as_ref().is_some_and(egui::Response::clicked) {
                         self.layout.mode = ViewMode::Grid;
                         self.layout();
                     }

@@ -561,10 +561,7 @@ mod native_tests {
         #[cfg(windows)]
         let mut layout = Layout {
             self_preview: false,
-            mode: crate::subscription::ViewMode::Grid,
-            focus: None,
-            paused: false,
-            volume: 80,
+            ..Layout::new(crate::subscription::ViewMode::Grid, 80)
         };
         #[cfg(target_os = "linux")]
         let mut layout = Layout::default();

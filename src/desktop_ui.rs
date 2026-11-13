@@ -67,7 +67,7 @@ fn modal_header(ui: &mut egui::Ui, title: &str) {
     );
 }
 
-fn popup_style(ui: &mut egui::Ui) {
+pub(crate) fn popup_style(ui: &mut egui::Ui) {
     let visuals = ui.visuals_mut();
     visuals.window_fill = PANEL;
     visuals.window_stroke = egui::Stroke::new(1.0, BORDER);
@@ -116,15 +116,15 @@ pub(crate) fn select_menu<R>(
         popup_layer.and_then(|layer| ui.ctx().memory(|memory| memory.area_rect(layer.id)))
     {
         ui.ctx().data_mut(|data| {
-            data.get_temp_mut_or_default::<Vec<egui::Rect>>(egui::Id::new("video_popups"))
-                .push(rect);
+            data.get_temp_mut_or_default::<Vec<(egui::Rect, f32)>>(egui::Id::new("video_popups"))
+                .push((rect, 8.0));
         });
     }
     response
 }
 
 #[cfg(windows)]
-pub(crate) fn take_video_popups(ctx: &egui::Context) -> Vec<egui::Rect> {
+pub(crate) fn take_video_popups(ctx: &egui::Context) -> Vec<(egui::Rect, f32)> {
     ctx.data_mut(|data| std::mem::take(data.get_temp_mut_or_default(egui::Id::new("video_popups"))))
 }
 pub fn upload_selector(
@@ -217,6 +217,7 @@ pub fn rate_mode_selector(
         );
     });
 }
+#[cfg_attr(windows, allow(dead_code))] // Linux room header.
 pub(crate) fn playback_audio(
     ui: &mut egui::Ui,
     volume: &mut u32,
@@ -229,56 +230,84 @@ pub(crate) fn playback_audio(
         egui::vec2(width, size),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
-            let silent = *muted || *volume == 0;
-            let label = if silent {
-                crate::i18n::label("Reativar som recebido", "Unmute incoming audio")
-            } else {
-                crate::i18n::label("Silenciar som recebido", "Mute incoming audio")
-            };
-            let toggled =
-                room_icon_button_sized(ui, RoomIcon::Speaker(silent), label, true, false, size)
-                    .clicked();
-            if toggled {
-                *muted = !silent;
-                if silent && *volume == 0 {
-                    *volume = 80;
-                }
-            }
-            ui.spacing_mut().slider_width = slider_width;
-            ui.spacing_mut().interact_size.y = size;
-            ui.spacing_mut().slider_rail_height = 6.0;
-            ui.visuals_mut().widgets.inactive.bg_fill = Color32::from_rgb(65, 78, 73);
-            ui.visuals_mut().widgets.inactive.fg_stroke = egui::Stroke::new(1.5, ACCENT);
-            ui.visuals_mut().selection.bg_fill = if *muted { MUTED } else { ACCENT };
-            let slider = ui.add(
-                egui::Slider::new(volume, 0..=100)
-                    .show_value(false)
-                    .trailing_fill(true)
-                    .handle_shape(egui::style::HandleShape::Circle),
-            );
-            slider.widget_info(|| {
-                egui::WidgetInfo::slider(
-                    true,
-                    *volume as f64,
-                    crate::i18n::label("Volume recebido", "Incoming volume"),
-                )
-            });
-            let changed = slider.changed();
-            slider.on_hover_text(crate::i18n_format!(
-                "Volume recebido · {}%",
-                "Incoming volume · {}%",
-                *volume
-            ));
-            if changed {
-                *muted = false;
-            }
-            toggled || changed
+            let toggled = speaker_toggle(ui, volume, muted, size).clicked();
+            volume_slider(ui, volume, muted, slider_width, size) || toggled
         },
     )
     .inner
 }
 
-fn utility_frame(style: &egui::Style) -> egui::Frame {
+pub(crate) fn speaker_toggle(
+    ui: &mut egui::Ui,
+    volume: &mut u32,
+    muted: &mut bool,
+    size: f32,
+) -> egui::Response {
+    let silent = *muted || *volume == 0;
+    let label = if silent {
+        crate::i18n::label("Reativar som recebido", "Unmute incoming audio")
+    } else {
+        crate::i18n::label("Silenciar som recebido", "Mute incoming audio")
+    };
+    let response = room_icon_button_sized(ui, RoomIcon::Speaker(silent), label, true, false, size);
+    if response.clicked() {
+        toggle_mute(volume, muted);
+    }
+    response
+}
+
+#[cfg_attr(not(windows), allow(dead_code))] // Windows stage only.
+/// Shared by the speaker button and the full-screen `M` shortcut.
+pub(crate) fn toggle_mute(volume: &mut u32, muted: &mut bool) {
+    let silent = *muted || *volume == 0;
+    *muted = !silent;
+    if silent && *volume == 0 {
+        *volume = 80;
+    }
+}
+
+pub(crate) fn volume_slider(
+    ui: &mut egui::Ui,
+    volume: &mut u32,
+    muted: &mut bool,
+    width: f32,
+    height: f32,
+) -> bool {
+    ui.scope(|ui| {
+        ui.spacing_mut().slider_width = width;
+        ui.spacing_mut().interact_size.y = height;
+        ui.spacing_mut().slider_rail_height = 6.0;
+        ui.visuals_mut().widgets.inactive.bg_fill = Color32::from_rgb(65, 78, 73);
+        ui.visuals_mut().widgets.inactive.fg_stroke = egui::Stroke::new(1.5, ACCENT);
+        ui.visuals_mut().selection.bg_fill = if *muted { MUTED } else { ACCENT };
+        let slider = ui.add(
+            egui::Slider::new(volume, 0..=100)
+                .show_value(false)
+                .trailing_fill(true)
+                .handle_shape(egui::style::HandleShape::Circle),
+        );
+        slider.widget_info(|| {
+            egui::WidgetInfo::slider(
+                true,
+                *volume as f64,
+                crate::i18n::label("Volume recebido", "Incoming volume"),
+            )
+        });
+        let changed = slider.changed();
+        slider.on_hover_text(crate::i18n_format!(
+            "Volume recebido · {}%",
+            "Incoming volume · {}%",
+            *volume
+        ));
+        if changed {
+            *muted = false;
+        }
+        changed
+    })
+    .inner
+}
+
+pub(crate) fn utility_frame(style: &egui::Style) -> egui::Frame {
     egui::Frame::window(style)
         .fill(PANEL)
         .inner_margin(12)
@@ -1147,6 +1176,7 @@ pub(crate) fn video_grid_card(
     )
 }
 
+#[cfg_attr(windows, allow(dead_code))] // Linux keeps the thumbnail rail.
 pub(crate) fn spotlight_card(area: egui::Rect, index: usize, count: usize) -> egui::Rect {
     if count <= 1 {
         return area;
@@ -1224,6 +1254,7 @@ pub(crate) fn sidebar_width(width: f32) -> f32 {
     (width * 0.29).clamp(100.0, 272.0)
 }
 
+#[cfg_attr(windows, allow(dead_code))] // Linux room header.
 pub(crate) struct RoomHeader {
     pub participants: egui::Response,
     pub grid: egui::Response,
@@ -1231,6 +1262,7 @@ pub(crate) struct RoomHeader {
     pub audio_changed: bool,
 }
 
+#[cfg_attr(windows, allow(dead_code))] // Linux room header.
 pub(crate) fn room_header(
     ui: &mut egui::Ui,
     title: &str,
@@ -1901,7 +1933,7 @@ fn confirm_exit(
         .or_else(|| modal.should_close().then_some(false))
 }
 
-fn room_button(label: &str, active: bool) -> egui::Button<'_> {
+pub(crate) fn room_button(label: &str, active: bool) -> egui::Button<'_> {
     egui::Button::new(
         RichText::new(label)
             .size(13.0)
@@ -1926,9 +1958,12 @@ fn room_button(label: &str, active: bool) -> egui::Button<'_> {
     .selected(active)
 }
 
-enum RoomIcon {
+pub(crate) enum RoomIcon {
     Panel,
+    #[cfg_attr(windows, allow(dead_code))] // Linux room header.
     Grid,
+    #[cfg_attr(not(windows), allow(dead_code))] // The Windows stage menu.
+    Stage,
     Fullscreen,
     Gear,
     Preview(bool),
@@ -1947,7 +1982,7 @@ fn room_icon_button(
     room_icon_button_sized(ui, icon, label, enabled, selected, 34.0)
 }
 
-fn room_icon_button_sized(
+pub(crate) fn room_icon_button_sized(
     ui: &mut egui::Ui,
     icon: RoomIcon,
     label: &str,
@@ -1993,6 +2028,7 @@ fn room_icon_button_sized(
                 }
             }
         }
+        RoomIcon::Stage => paint_stage_icon(painter, center, stroke.color),
         RoomIcon::Fullscreen => {
             for x in [-1.0, 1.0] {
                 for y in [-1.0, 1.0] {
@@ -2143,4 +2179,19 @@ pub(crate) fn copy_room_name(ui: &mut egui::Ui, name: &str) {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_secs(2));
     }
+}
+
+pub(crate) fn paint_stage_icon(painter: &egui::Painter, center: egui::Pos2, color: Color32) {
+    let bounds = egui::Rect::from_center_size(center, egui::vec2(18.0, 13.0));
+    painter.rect_stroke(
+        bounds,
+        2.0,
+        egui::Stroke::new(1.5, color),
+        egui::StrokeKind::Inside,
+    );
+    let card = egui::Rect::from_min_max(
+        bounds.right_bottom() - egui::vec2(8.0, 6.0),
+        bounds.right_bottom() - egui::vec2(2.0, 2.0),
+    );
+    painter.rect_filled(card, 1.0, color);
 }

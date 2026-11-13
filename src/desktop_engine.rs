@@ -111,6 +111,27 @@ pub struct Layout {
     pub focus: Option<String>,
     pub paused: bool,
     pub volume: u32,
+    /// Set by the room UI: only `focus` and `live` are received, with no
+    /// fallback to the first screen, and only `audio` owners are heard.
+    pub explicit: bool,
+    /// Videos kept live besides `focus`, such as floating camera cards.
+    pub live: Vec<String>,
+    /// Participants whose screen-share audio stays on.
+    pub audio: Vec<String>,
+}
+impl Layout {
+    pub fn new(mode: ViewMode, volume: u32) -> Self {
+        Self {
+            self_preview: true,
+            mode,
+            focus: None,
+            paused: false,
+            volume,
+            explicit: false,
+            live: Vec::new(),
+            audio: Vec::new(),
+        }
+    }
 }
 #[derive(Clone, Copy, PartialEq)]
 pub struct ShareQuality {
@@ -672,13 +693,22 @@ fn update_subscriptions(
                         .into_values()
                         .any(|p| p.source() == TrackSource::Camera && p.kind() == TrackKind::Video))
         })
-        .or_else(|| screens.first().map(|(id, _)| id.as_str()));
+        .or_else(|| {
+            (!layout.explicit)
+                .then(|| screens.first().map(|(id, _)| id.as_str()))
+                .flatten()
+        });
     let mut count = 0;
     for (identity, publication) in &screens {
+        let wanted = if layout.explicit {
+            Some(identity.as_str()) == focus || layout.live.contains(identity)
+        } else {
+            layout.mode == ViewMode::Grid || Some(identity.as_str()) == focus
+        };
         let enabled = !layout.paused
             && count < 6
             && !receive_monitor.held(&publication.sid().to_string())
-            && (layout.mode == ViewMode::Grid || Some(identity.as_str()) == focus);
+            && wanted;
         if count < 6 {
             crate::subscription::keep_receiver(publication, enabled);
             count += 1;
@@ -696,10 +726,12 @@ fn update_subscriptions(
             if publication.source() != TrackSource::ScreenshareAudio {
                 continue;
             }
-            let enabled = has_screen
-                && !layout.paused
-                && layout.volume > 0
-                && (layout.mode == ViewMode::Grid || Some(identity.as_str()) == focus);
+            let wanted = if layout.explicit {
+                layout.audio.contains(&identity)
+            } else {
+                layout.mode == ViewMode::Grid || Some(identity.as_str()) == focus
+            };
+            let enabled = has_screen && !layout.paused && layout.volume > 0 && wanted;
             crate::subscription::keep_receiver(&publication, enabled);
         }
     }
@@ -957,13 +989,7 @@ impl Engine {
                             .permission()
                             .is_some_and(|grant| grant.can_publish);
                     }
-                    let mut layout = Layout {
-                        self_preview: true,
-                        volume: 80,
-                        mode: ViewMode::Spotlight,
-                        focus: None,
-                        paused: false,
-                    };
+                    let mut layout = Layout::new(ViewMode::Spotlight, 80);
                     if std::env::var("HYPERCAST_VIEW_MODE").as_deref() == Ok("grid") {
                         layout.mode = ViewMode::Grid;
                     }
@@ -1280,8 +1306,14 @@ impl Engine {
                                     crate::diagnostics::write(
                                         "layout",
                                         &format!(
-                                            "mode={:?} paused={} volume={} self_preview={}",
-                                            next.mode, next.paused, next.volume, next.self_preview
+                                            "mode={:?} paused={} volume={} self_preview={} explicit={} live={} audio={}",
+                                            next.mode,
+                                            next.paused,
+                                            next.volume,
+                                            next.self_preview,
+                                            next.explicit,
+                                            next.live.len() + usize::from(next.focus.is_some()),
+                                            next.audio.len()
                                         ),
                                         "",
                                     );

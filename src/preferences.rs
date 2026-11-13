@@ -125,6 +125,8 @@ pub struct Settings {
     pub sidebar: bool,
     pub self_preview: bool,
     pub grid: bool,
+    pub show: crate::stage::Show,
+    pub anchor: crate::stage::Anchor,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -138,7 +140,11 @@ impl Default for Settings {
             muted: false,
             sidebar: true,
             self_preview: true,
-            grid: true,
+            // Windows opens on the stage with floating cameras; Linux keeps
+            // its single-stream spotlight and grid behaviour unchanged.
+            grid: !cfg!(windows),
+            show: Default::default(),
+            anchor: Default::default(),
         }
     }
 }
@@ -194,6 +200,14 @@ impl Settings {
                 _ => return None,
             },
         };
+        let show = match v.get("show") {
+            None => crate::stage::Show::All,
+            Some(v) => crate::stage::Show::from_key(v.as_str()?)?,
+        };
+        let anchor = match v.get("strip") {
+            None => crate::stage::Anchor::BottomRight,
+            Some(v) => crate::stage::Anchor::from_key(v.as_str()?)?,
+        };
         Some(Self {
             codec,
             amd_profile,
@@ -204,11 +218,15 @@ impl Settings {
             muted: v["muted"].as_bool()?,
             sidebar: v["sidebar"].as_bool()?,
             self_preview: v["self_preview"].as_bool()?,
-            grid: v["grid"].as_bool()?,
+            // Before 0.9.7 the grid was the only header layout on Windows;
+            // open those profiles on the stage so floating cameras show up.
+            grid: v["grid"].as_bool()? && (!cfg!(windows) || v.get("show").is_some()),
+            show,
+            anchor,
         })
     }
     fn encode(self) -> String {
-        serde_json::json!({"schema":1,"codec":match self.codec{VideoCodec::Hevc=>"hevc",VideoCodec::Av1=>"av1"},"amd_profile":match self.amd_profile{AmdPreset::Fast=>"fast",AmdPreset::Text=>"text",AmdPreset::Compatibility=>"compatibility"},"resolution":match self.stream.size{crate::resolution::OutputSize::Native=>"native",crate::resolution::OutputSize::FullHd=>"1080p",crate::resolution::OutputSize::QuadHd=>"1440p"},"fps":self.stream.fps,"upload_mbps":self.upload.bps()/1_000_000,"rate_mode":match self.rate_mode{crate::adaptive_upload::Mode::Manual=>"manual",crate::adaptive_upload::Mode::Automatic=>"automatic"},"volume":self.volume,"muted":self.muted,"sidebar":self.sidebar,"self_preview":self.self_preview,"grid":self.grid}).to_string()
+        serde_json::json!({"schema":1,"codec":match self.codec{VideoCodec::Hevc=>"hevc",VideoCodec::Av1=>"av1"},"amd_profile":match self.amd_profile{AmdPreset::Fast=>"fast",AmdPreset::Text=>"text",AmdPreset::Compatibility=>"compatibility"},"resolution":match self.stream.size{crate::resolution::OutputSize::Native=>"native",crate::resolution::OutputSize::FullHd=>"1080p",crate::resolution::OutputSize::QuadHd=>"1440p"},"fps":self.stream.fps,"upload_mbps":self.upload.bps()/1_000_000,"rate_mode":match self.rate_mode{crate::adaptive_upload::Mode::Manual=>"manual",crate::adaptive_upload::Mode::Automatic=>"automatic"},"volume":self.volume,"muted":self.muted,"sidebar":self.sidebar,"self_preview":self.self_preview,"grid":self.grid,"show":self.show.key(),"strip":self.anchor.key()}).to_string()
     }
     fn file() -> Option<PathBuf> {
         path().map(|p| p.with_file_name("preferences.json"))
@@ -492,6 +510,9 @@ mod settings_tests {
                 size: crate::resolution::OutputSize::FullHd,
                 fps: 60,
             },
+            grid: true,
+            show: crate::stage::Show::Cameras,
+            anchor: crate::stage::Anchor::Top,
             ..Default::default()
         };
         assert_eq!(Settings::decode(value.encode().as_bytes()), Some(value));
@@ -505,7 +526,21 @@ mod settings_tests {
         assert_eq!(old.codec, VideoCodec::Hevc);
         assert_eq!(old.amd_profile, AmdPreset::Fast);
         assert_eq!(old.volume, 35);
+        assert_eq!(old.show, crate::stage::Show::Cameras);
+        let mut before_stage = base.clone();
+        before_stage.as_object_mut().unwrap().remove("show");
+        before_stage.as_object_mut().unwrap().remove("strip");
+        let old = Settings::decode(before_stage.to_string().as_bytes()).unwrap();
+        assert_eq!(old.show, crate::stage::Show::All);
+        assert_eq!(old.anchor, crate::stage::Anchor::BottomRight);
+        assert_eq!(
+            old.grid,
+            !cfg!(windows),
+            "Windows profiles open on the stage once"
+        );
         for (field, bad) in [
+            ("show", serde_json::json!("everything")),
+            ("strip", serde_json::json!(3)),
             ("codec", serde_json::json!("wrong")),
             ("amd_profile", serde_json::json!("wrong")),
             ("schema", serde_json::json!(2)),
