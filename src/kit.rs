@@ -129,6 +129,20 @@ pub fn button_with(
     width: Option<f32>,
     height: f32,
 ) -> egui::Response {
+    labeled_button(ui, text, text, tone, enabled, width, height)
+}
+
+/// A button whose visible text is shorter than its accessible name and
+/// tooltip ("Parar" for "Parar compartilhamento").
+pub fn labeled_button(
+    ui: &mut egui::Ui,
+    text: &str,
+    accessible: &str,
+    tone: Tone,
+    enabled: bool,
+    width: Option<f32>,
+    height: f32,
+) -> egui::Response {
     let enabled = enabled && ui.is_enabled();
     let color = tone.text();
     let (size, padding) = if height < HEIGHT {
@@ -145,7 +159,8 @@ pub fn button_with(
             ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::click())
         })
         .inner;
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, text));
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, accessible));
     if ui.is_rect_visible(rect) {
         paint_frame(ui, &response, tone, f32::from(RADIUS));
         let color = if enabled {
@@ -160,8 +175,8 @@ pub fn button_with(
     if enabled && response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    if elided {
-        response.on_hover_text(text)
+    if elided || accessible != text {
+        response.on_hover_text(accessible)
     } else {
         response
     }
@@ -216,6 +231,23 @@ pub fn icon_button(
     size: f32,
     paint: impl FnOnce(&egui::Painter, egui::Pos2, egui::Stroke),
 ) -> egui::Response {
+    let tone = if selected {
+        Tone::Selected
+    } else {
+        Tone::Secondary
+    };
+    icon_button_tone(ui, label, enabled, tone, size, paint)
+}
+
+/// An icon button in any tone (primary share, danger leave).
+pub fn icon_button_tone(
+    ui: &mut egui::Ui,
+    label: &str,
+    enabled: bool,
+    tone: Tone,
+    size: f32,
+    paint: impl FnOnce(&egui::Painter, egui::Pos2, egui::Stroke),
+) -> egui::Response {
     let enabled = enabled && ui.is_enabled();
     let (rect, response) = ui
         .add_enabled_ui(enabled, |ui| {
@@ -223,19 +255,19 @@ pub fn icon_button(
         })
         .inner;
     response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, selected, label)
+        egui::WidgetInfo::selected(
+            egui::WidgetType::Button,
+            enabled,
+            tone == Tone::Selected,
+            label,
+        )
     });
     if ui.is_rect_visible(rect) {
-        let tone = if selected {
-            Tone::Selected
-        } else {
-            Tone::Secondary
-        };
         paint_frame(ui, &response, tone, f32::from(RADIUS));
-        let color = if !enabled {
-            Tone::Secondary.text().gamma_multiply(0.45)
-        } else {
+        let color = if enabled {
             tone.text()
+        } else {
+            tone.text().gamma_multiply(0.45)
         };
         paint(ui.painter(), rect.center(), egui::Stroke::new(1.5, color));
         focus_ring(ui, &response, f32::from(RADIUS));

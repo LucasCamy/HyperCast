@@ -394,6 +394,7 @@ pub(crate) fn share_audio(ui: &mut egui::Ui, enabled: &mut bool, app_audio: bool
     ui.checkbox(enabled, label).changed()
 }
 
+#[cfg_attr(windows, allow(dead_code))] // Linux footer.
 pub(crate) fn active_share_actions(
     ui: &mut egui::Ui,
     compact: bool,
@@ -428,6 +429,7 @@ pub(crate) fn active_share_actions(
     .inner
 }
 
+#[cfg_attr(windows, allow(dead_code))] // Linux footer.
 pub(crate) fn preview_button(ui: &mut egui::Ui, visible: bool) -> egui::Response {
     let label = if visible {
         crate::i18n::label("Ocultar minha prévia", "Hide my preview")
@@ -437,6 +439,7 @@ pub(crate) fn preview_button(ui: &mut egui::Ui, visible: bool) -> egui::Response
     room_icon_button(ui, RoomIcon::Preview(visible), label, true, false)
 }
 
+#[cfg_attr(windows, allow(dead_code))] // Linux footer.
 pub(crate) fn camera_actions(
     ui: &mut egui::Ui,
     compact: bool,
@@ -1364,8 +1367,10 @@ fn spotlight_keeps_previews_in_bounds_and_prioritizes_the_main_stream() {
     }
 }
 
+#[cfg_attr(windows, allow(dead_code))] // Linux footer.
 const COMPACT_SESSION_WIDTH: f32 = 700.0;
 
+#[cfg_attr(windows, allow(dead_code))] // Linux footer.
 pub(crate) fn session_panel(width: f32) -> egui::Panel {
     let compact = width < COMPACT_SESSION_WIDTH;
     egui::Panel::bottom("session_actions")
@@ -1487,6 +1492,7 @@ pub(crate) fn playback_empty(
     resume
 }
 
+#[cfg_attr(windows, allow(dead_code))] // Linux footer.
 pub(crate) fn session_actions(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui, bool)) {
     let width = ui.available_width();
     let compact = ui.ctx().content_rect().width() < COMPACT_SESSION_WIDTH;
@@ -1503,6 +1509,7 @@ pub(crate) fn session_actions(ui: &mut egui::Ui, content: impl FnOnce(&mut egui:
     });
 }
 
+#[cfg_attr(windows, allow(dead_code))] // Linux footer.
 pub(crate) fn session_room_actions(
     ui: &mut egui::Ui,
     compact: bool,
@@ -1517,6 +1524,7 @@ pub(crate) fn session_room_actions(
     });
 }
 
+#[cfg_attr(windows, allow(dead_code))] // Linux footer.
 pub(crate) fn session_playback_actions(
     ui: &mut egui::Ui,
     paused: bool,
@@ -1542,6 +1550,7 @@ pub(crate) fn session_playback_actions(
     .inner
 }
 
+#[cfg_attr(windows, allow(dead_code))] // Linux footer.
 pub(crate) fn reconnect_button(ui: &mut egui::Ui, enabled: bool, size: f32) -> egui::Response {
     room_icon_button_sized(
         ui,
@@ -1585,6 +1594,7 @@ pub(crate) fn session_stop(ui: &mut egui::Ui, label: &str, enabled: bool) -> egu
     session_action(ui, label, enabled, crate::kit::Tone::Danger)
 }
 
+#[cfg_attr(windows, allow(dead_code))] // Linux footer.
 pub(crate) fn session_leave(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
     session_action(
         ui,
@@ -1817,6 +1827,16 @@ pub(crate) enum RoomIcon {
     Speaker(bool),
     Playback(bool),
     Reconnect,
+    #[cfg_attr(not(windows), allow(dead_code))] // The Windows "you" panel.
+    Share,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Stop,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Camera(bool),
+    #[cfg_attr(not(windows), allow(dead_code))]
+    More,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Leave,
 }
 
 fn room_icon_button(
@@ -1847,7 +1867,7 @@ pub(crate) fn room_icon_button_sized(
     )
 }
 
-fn paint_room_icon(
+pub(crate) fn paint_room_icon(
     painter: &egui::Painter,
     center: egui::Pos2,
     stroke: egui::Stroke,
@@ -1976,6 +1996,68 @@ fn paint_room_icon(
                     egui::Stroke::new(2.5, stroke.color),
                 );
             }
+        }
+        RoomIcon::Share => {
+            let screen = egui::Rect::from_center_size(center, egui::vec2(18.0, 12.0));
+            painter.rect_stroke(screen, 2.0, stroke, egui::StrokeKind::Inside);
+            let tip = center + egui::vec2(0.0, -3.0);
+            painter.line_segment([tip, center + egui::vec2(0.0, 3.0)], stroke);
+            painter.line_segment([tip, tip + egui::vec2(-3.0, 3.0)], stroke);
+            painter.line_segment([tip, tip + egui::vec2(3.0, 3.0)], stroke);
+            painter.line_segment(
+                [
+                    center + egui::vec2(-4.0, 9.0),
+                    center + egui::vec2(4.0, 9.0),
+                ],
+                stroke,
+            );
+        }
+        RoomIcon::Stop => {
+            painter.rect_stroke(
+                egui::Rect::from_center_size(center, egui::vec2(11.0, 11.0)),
+                2.0,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+        RoomIcon::Camera(on) => {
+            let body =
+                egui::Rect::from_min_size(center + egui::vec2(-9.0, -6.0), egui::vec2(12.0, 12.0));
+            painter.rect_stroke(body, 2.5, stroke, egui::StrokeKind::Inside);
+            painter.add(egui::Shape::closed_line(
+                vec![
+                    center + egui::vec2(4.0, -2.0),
+                    center + egui::vec2(9.0, -5.0),
+                    center + egui::vec2(9.0, 5.0),
+                    center + egui::vec2(4.0, 2.0),
+                ],
+                stroke,
+            ));
+            if !on {
+                painter.line_segment(
+                    [
+                        center + egui::vec2(-9.0, 8.0),
+                        center + egui::vec2(9.0, -8.0),
+                    ],
+                    stroke,
+                );
+            }
+        }
+        RoomIcon::More => {
+            for x in [-6.0, 0.0, 6.0] {
+                painter.circle_filled(center + egui::vec2(x, 0.0), 1.8, stroke.color);
+            }
+        }
+        RoomIcon::Leave => {
+            let door =
+                egui::Rect::from_min_size(center + egui::vec2(-8.0, -8.0), egui::vec2(9.0, 16.0));
+            painter.line_segment([door.left_top(), door.right_top()], stroke);
+            painter.line_segment([door.left_top(), door.left_bottom()], stroke);
+            painter.line_segment([door.left_bottom(), door.right_bottom()], stroke);
+            let arrow = center + egui::vec2(8.0, 0.0);
+            painter.line_segment([center + egui::vec2(-2.0, 0.0), arrow], stroke);
+            painter.line_segment([arrow, arrow + egui::vec2(-4.0, -4.0)], stroke);
+            painter.line_segment([arrow, arrow + egui::vec2(-4.0, 4.0)], stroke);
         }
         RoomIcon::Reconnect => {
             let arc: Vec<_> = (0..=16)

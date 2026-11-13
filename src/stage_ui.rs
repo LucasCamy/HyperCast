@@ -412,6 +412,7 @@ pub(crate) fn stage_header(
 pub(crate) enum ControlAction {
     View(ViewChoice),
     SideBySide,
+    Pause,
     Reconnect,
     Fullscreen,
 }
@@ -422,6 +423,7 @@ pub(crate) struct StageControls<'a> {
     pub side_by_side: bool,
     pub fullscreen: bool,
     pub can_reconnect: bool,
+    pub paused: bool,
 }
 
 pub(crate) struct ControlsOutcome {
@@ -542,6 +544,22 @@ fn controls_row(
     group_separator(ui);
     if room_icon_button_sized(
         ui,
+        RoomIcon::Playback(controls.paused),
+        if controls.paused {
+            label("Retomar recepção", "Resume playback")
+        } else {
+            label("Pausar recepção", "Pause playback")
+        },
+        controls.can_reconnect,
+        controls.paused,
+        HIT,
+    )
+    .clicked()
+    {
+        action = Some(ControlAction::Pause);
+    }
+    if room_icon_button_sized(
+        ui,
         RoomIcon::Reconnect,
         label("Reconectar recepção (F5)", "Reconnect playback (F5)"),
         controls.can_reconnect,
@@ -644,6 +662,7 @@ fn stage_controls_keep_separate_targets_inside_the_stage() {
             side_by_side: true,
             fullscreen: false,
             can_reconnect: true,
+            paused: false,
         };
         let mut outcome = None;
         // Areas take their size from the previous frame.
@@ -680,5 +699,455 @@ fn stage_controls_keep_separate_targets_inside_the_stage() {
         );
         let tag = outcome.rects[0].0;
         assert!(!tag.intersects(outcome.bar), "{width}: tag {tag:?}");
+    }
+}
+
+/// Everything the viewer does as a participant, shown at the foot of the
+/// participants panel (or as icons in the collapsed rail).
+pub(crate) struct Me<'a> {
+    pub name: &'a str,
+    pub status: &'a str,
+    pub room: &'a str,
+    pub rail: bool,
+    pub connected: bool,
+    pub can_publish: bool,
+    pub publishing: bool,
+    pub camera_active: bool,
+    pub camera_starting: bool,
+    pub preview: bool,
+    pub paused: bool,
+    pub resetting: bool,
+    pub can_switch_room: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RoomChoice {
+    SwitchRoom,
+    Pause,
+    Reconnect,
+    Diagnostics,
+}
+
+#[derive(Default)]
+pub(crate) struct MeOutcome {
+    /// Share (or stop sharing) was pressed; the id restores focus later.
+    pub share: Option<egui::Id>,
+    pub gear: Option<egui::Id>,
+    pub camera: bool,
+    pub preview: bool,
+    pub leave: bool,
+    pub menu: Option<RoomChoice>,
+    /// The avatar was pressed while sharing: watch your own screen.
+    pub focus_self: bool,
+}
+
+const RAIL_ICON: f32 = HIT;
+
+fn camera_label(me: &Me<'_>) -> &'static str {
+    if me.camera_starting {
+        crate::i18n::label("Abrindo câmera…", "Opening camera…")
+    } else if me.camera_active {
+        crate::i18n::label("Desligar câmera", "Turn off camera")
+    } else {
+        crate::i18n::label("Ligar câmera", "Turn on camera")
+    }
+}
+
+fn avatar(
+    ui: &mut egui::Ui,
+    initial: char,
+    size: f32,
+    live: bool,
+    focused: bool,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::click());
+    let painter = ui.painter();
+    let center = rect.center();
+    let radius = size / 2.0 - 1.0;
+    painter.circle_filled(
+        center,
+        radius,
+        if focused {
+            crate::kit::SELECTED
+        } else {
+            crate::desktop_ui::SURFACE
+        },
+    );
+    painter.circle_stroke(
+        center,
+        radius,
+        egui::Stroke::new(
+            if focused { 2.0 } else { 1.0 },
+            if focused {
+                crate::desktop_ui::ACCENT
+            } else {
+                BORDER
+            },
+        ),
+    );
+    painter.text(
+        center,
+        egui::Align2::CENTER_CENTER,
+        initial.to_uppercase().to_string(),
+        egui::FontId::proportional(size * 0.42),
+        if focused {
+            crate::desktop_ui::ACCENT
+        } else {
+            TEXT
+        },
+    );
+    if live {
+        let dot = center + egui::vec2(radius * 0.72, radius * 0.72);
+        painter.circle_filled(dot, 4.5, PANEL);
+        painter.circle_filled(dot, 3.0, crate::desktop_ui::ACCENT);
+    }
+    focus_ring(ui, &response, size / 2.0);
+    response
+}
+
+fn room_menu(ui: &egui::Ui, anchor: &egui::Response, me: &Me<'_>) -> Option<RoomChoice> {
+    use crate::i18n::label;
+    popup(ui, anchor, 240.0, |ui| {
+        let mut choice = None;
+        menu_heading(ui, label("Sala e interface", "Room and interface"));
+        if !me.room.is_empty() {
+            crate::desktop_ui::copy_room_name(ui, me.room);
+        }
+        if me.can_switch_room
+            && menu_row(ui, label("Trocar de sala", "Switch room"), true, None).clicked()
+        {
+            choice = Some(RoomChoice::SwitchRoom);
+        }
+        let pause = if me.paused {
+            label("Retomar recepção", "Resume playback")
+        } else {
+            label("Pausar recepção", "Pause playback")
+        };
+        if menu_row(ui, pause, me.connected, None).clicked() {
+            choice = Some(RoomChoice::Pause);
+        }
+        if menu_row(
+            ui,
+            label("Reconectar recepção (F5)", "Reconnect playback (F5)"),
+            me.connected && !me.resetting,
+            None,
+        )
+        .clicked()
+        {
+            choice = Some(RoomChoice::Reconnect);
+        }
+        crate::desktop_ui::display_scale(ui);
+        if menu_row(ui, label("Diagnóstico", "Diagnostics"), true, None).clicked() {
+            choice = Some(RoomChoice::Diagnostics);
+        }
+        if choice.is_some() {
+            ui.close();
+        }
+        choice
+    })
+    .flatten()
+}
+
+fn icon(
+    ui: &mut egui::Ui,
+    icon: RoomIcon,
+    label: &str,
+    enabled: bool,
+    tone: Tone,
+) -> egui::Response {
+    crate::kit::icon_button_tone(ui, label, enabled, tone, HIT, |painter, center, stroke| {
+        crate::desktop_ui::paint_room_icon(painter, center, stroke, icon)
+    })
+}
+
+/// The "you" card (or rail) at the foot of the participants panel.
+pub(crate) fn me_panel(ui: &mut egui::Ui, me: &Me<'_>) -> MeOutcome {
+    use crate::i18n::label;
+    let mut out = MeOutcome::default();
+    let share_label = if me.publishing {
+        label("Parar compartilhamento", "Stop screen sharing")
+    } else {
+        label("Compartilhar tela", "Share screen")
+    };
+    let share_enabled = me.connected && me.can_publish;
+    let camera_enabled = me.connected && me.can_publish && !me.camera_starting;
+    let preview_label = if me.preview {
+        label("Ocultar minha prévia", "Hide my preview")
+    } else {
+        label("Mostrar minha prévia", "Show my preview")
+    };
+    let show_preview = me.publishing || me.camera_active;
+    let leave_label = label("Sair da sala", "Leave room");
+    let more_label = label("Mais opções", "More options");
+    if me.rail {
+        ui.vertical_centered(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(0.0, 6.0);
+            if me.can_publish || me.publishing {
+                let share = icon(
+                    ui,
+                    if me.publishing {
+                        RoomIcon::Stop
+                    } else {
+                        RoomIcon::Share
+                    },
+                    share_label,
+                    share_enabled || me.publishing,
+                    if me.publishing {
+                        Tone::Danger
+                    } else {
+                        Tone::Primary
+                    },
+                );
+                if share.clicked() {
+                    out.share = Some(share.id);
+                }
+            }
+            if me.publishing {
+                let gear = icon(
+                    ui,
+                    RoomIcon::Gear,
+                    crate::desktop_ui::stream_options_title(),
+                    true,
+                    Tone::Secondary,
+                );
+                if gear.clicked() {
+                    out.gear = Some(gear.id);
+                }
+            }
+            if me.can_publish || me.camera_active {
+                out.camera = icon(
+                    ui,
+                    RoomIcon::Camera(me.camera_active),
+                    camera_label(me),
+                    camera_enabled,
+                    if me.camera_active {
+                        Tone::Selected
+                    } else {
+                        Tone::Secondary
+                    },
+                )
+                .clicked();
+            }
+            if show_preview {
+                out.preview = icon(
+                    ui,
+                    RoomIcon::Preview(me.preview),
+                    preview_label,
+                    true,
+                    Tone::Secondary,
+                )
+                .clicked();
+            }
+            let more = icon(ui, RoomIcon::More, more_label, true, Tone::Secondary);
+            out.menu = room_menu(ui, &more, me);
+            out.leave = icon(ui, RoomIcon::Leave, leave_label, true, Tone::Danger).clicked();
+        });
+        return out;
+    }
+    egui::Frame::new()
+        .fill(crate::desktop_ui::SURFACE)
+        .stroke(egui::Stroke::new(1.0, BORDER))
+        .corner_radius(crate::kit::PANEL_RADIUS)
+        .inner_margin(egui::Margin::same(10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing = Vec2::new(6.0, 8.0);
+            ui.horizontal(|ui| {
+                let initial = me.name.chars().next().unwrap_or('V');
+                let you = avatar(ui, initial, 36.0, me.publishing, false)
+                    .on_hover_text(label("Ver minha tela no palco", "Watch my screen on stage"));
+                if me.publishing && you.clicked() {
+                    out.focus_self = true;
+                }
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 1.0;
+                    let name = if me.name.is_empty() {
+                        label("Você", "You").to_owned()
+                    } else {
+                        crate::i18n_format!("{} (você)", "{} (you)", me.name)
+                    };
+                    ui.add(egui::Label::new(RichText::new(name).size(14.0).color(TEXT)).truncate());
+                    ui.add(
+                        egui::Label::new(RichText::new(me.status).size(12.0).color(MUTED))
+                            .truncate(),
+                    )
+                    .on_hover_text(me.status);
+                });
+            });
+            if me.can_publish || me.publishing {
+                ui.horizontal(|ui| {
+                    let gear_width = if me.publishing {
+                        HIT + ui.spacing().item_spacing.x
+                    } else {
+                        0.0
+                    };
+                    let width = (ui.available_width() - gear_width).max(HIT);
+                    let share = crate::kit::labeled_button(
+                        ui,
+                        if me.publishing {
+                            label("Parar", "Stop")
+                        } else {
+                            share_label
+                        },
+                        share_label,
+                        if me.publishing {
+                            Tone::Danger
+                        } else {
+                            Tone::Primary
+                        },
+                        share_enabled || me.publishing,
+                        Some(width),
+                        HIT,
+                    );
+                    if share.clicked() {
+                        out.share = Some(share.id);
+                    }
+                    if me.publishing {
+                        let gear = icon(
+                            ui,
+                            RoomIcon::Gear,
+                            crate::desktop_ui::stream_options_title(),
+                            true,
+                            Tone::Secondary,
+                        );
+                        if gear.clicked() {
+                            out.gear = Some(gear.id);
+                        }
+                    }
+                });
+            }
+            ui.horizontal(|ui| {
+                if me.can_publish || me.camera_active {
+                    out.camera = icon(
+                        ui,
+                        RoomIcon::Camera(me.camera_active),
+                        camera_label(me),
+                        camera_enabled,
+                        if me.camera_active {
+                            Tone::Selected
+                        } else {
+                            Tone::Secondary
+                        },
+                    )
+                    .clicked();
+                }
+                if show_preview {
+                    out.preview = icon(
+                        ui,
+                        RoomIcon::Preview(me.preview),
+                        preview_label,
+                        true,
+                        Tone::Secondary,
+                    )
+                    .clicked();
+                }
+                let more = icon(ui, RoomIcon::More, more_label, true, Tone::Secondary);
+                out.menu = room_menu(ui, &more, me);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    out.leave =
+                        icon(ui, RoomIcon::Leave, leave_label, true, Tone::Danger).clicked();
+                });
+            });
+        });
+    out
+}
+
+/// One participant in the collapsed rail.
+pub(crate) struct RailPerson<'a> {
+    pub name: &'a str,
+    pub status: &'a str,
+    pub live: bool,
+    pub focused: bool,
+}
+
+/// Participants as avatars in the collapsed panel. Returns the one pressed.
+pub(crate) fn rail_people(ui: &mut egui::Ui, people: &[RailPerson<'_>]) -> Option<usize> {
+    let mut chosen = None;
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(0.0, 8.0);
+                for (index, person) in people.iter().enumerate() {
+                    let initial = person.name.chars().next().unwrap_or('P');
+                    let response = avatar(ui, initial, RAIL_ICON, person.live, person.focused)
+                        .on_hover_text(format!("{}\n{}", person.name, person.status));
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            true,
+                            format!("{}: {}", person.name, person.status),
+                        )
+                    });
+                    if response.clicked() {
+                        chosen = Some(index);
+                    }
+                }
+            });
+        });
+    chosen
+}
+
+#[cfg(test)]
+#[test]
+fn the_you_panel_fits_the_sidebar_and_the_rail() {
+    for (width, rail) in [(272.0, false), (186.0, false), (40.0, true)] {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let area = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 600.0));
+        let output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(area),
+                ..Default::default()
+            },
+            |root| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::new())
+                    .show(root, |ui| {
+                        let me = Me {
+                            name: "Ana",
+                            status: "Transmitindo · câmera ligada",
+                            room: "sala",
+                            rail,
+                            connected: true,
+                            can_publish: true,
+                            publishing: true,
+                            camera_active: true,
+                            camera_starting: false,
+                            preview: true,
+                            paused: false,
+                            resetting: false,
+                            can_switch_room: true,
+                        };
+                        let _ = me_panel(ui, &me);
+                    });
+            },
+        );
+        let update = output
+            .platform_output
+            .accesskit_update
+            .expect("accessibility tree");
+        let buttons: Vec<_> = update
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.role() == egui::accesskit::Role::Button)
+            .filter_map(|(_, node)| node.bounds())
+            .collect();
+        // Stop, settings, camera, preview, more options and leave.
+        assert_eq!(buttons.len(), 6, "{width}: {buttons:?}");
+        for (i, b) in buttons.iter().enumerate() {
+            assert!(b.width() >= 35.9 && b.height() >= 35.9, "{width}: {b:?}");
+            assert!(
+                b.x0 >= 0.0 && b.x1 <= f64::from(width) + 0.01,
+                "{width}: {b:?}"
+            );
+            for other in &buttons[i + 1..] {
+                let apart = b.x1 <= other.x0 + 0.01
+                    || other.x1 <= b.x0 + 0.01
+                    || b.y1 <= other.y0 + 0.01
+                    || other.y1 <= b.y0 + 0.01;
+                assert!(apart, "{width}: {b:?} overlaps {other:?}");
+            }
+        }
     }
 }

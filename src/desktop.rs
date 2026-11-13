@@ -193,6 +193,10 @@ struct NativeVideo<'a> {
 /// Something egui draws over native video, with its corner radius in points.
 type Overlay = (egui::Rect, f32);
 
+/// The participants panel collapses to an icon rail when hidden or narrow.
+const RAIL_WIDTH: f32 = 60.0;
+const RAIL_BELOW: f32 = 640.0;
+
 /// How long the controls over the video stay after the mouse stops.
 const CONTROLS_LINGER: Duration = Duration::from_secs(2);
 
@@ -1002,15 +1006,17 @@ impl App {
         let _ = engine.commands.send(command);
     }
 
-    fn sharing_controls(
+    /// Your own actions at the foot of the participants panel.
+    fn me_panel(
         &mut self,
         ui: &mut egui::Ui,
-        connected: bool,
-        can_publish: bool,
-        publishing: bool,
+        rail: bool,
+        (connected, can_publish, publishing): (bool, bool, bool),
         active_target: Option<crate::video_capture::CaptureTarget>,
-    ) -> Option<egui::Rect> {
-        ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+        room: &str,
+        identity: &str,
+    ) {
+        use crate::i18n::label;
         let (camera_active, camera_starting, resetting) =
             self.engine
                 .as_ref()
@@ -1022,125 +1028,78 @@ impl App {
                         state.reception_resetting,
                     )
                 });
-        use crate::desktop_ui::{
-            active_share_actions, camera_actions, session_actions, session_button, session_leave,
-            session_menu, session_playback_actions, session_room_actions,
+        let status = match (publishing, camera_active) {
+            (true, true) => label("Transmitindo · câmera ligada", "Sharing · camera on"),
+            (true, false) => label("Transmitindo sua tela", "Sharing your screen"),
+            (false, true) => label("Câmera ligada", "Camera on"),
+            _ if connected && !can_publish => label("Só assistindo", "Watching only"),
+            _ => label("Assistindo", "Watching"),
         };
-        let paused = self.paused;
-        let playback =
-            |ui: &mut egui::Ui| session_playback_actions(ui, paused, connected, resetting);
-        let mut menu_rect = None;
-        session_actions(ui, |ui, compact| {
-            let mut toggle_preview = false;
-            let share = if publishing {
-                let (stop, gear, preview) =
-                    active_share_actions(ui, compact, Some(self.self_preview));
-                if gear.clicked() {
-                    self.choose_source(gear.id, active_target);
-                }
-                toggle_preview = preview.is_some_and(|button| button.clicked());
-                stop
-            } else {
-                session_button(
-                    ui,
-                    crate::i18n::label("Compartilhar tela", "Share screen"),
-                    connected && can_publish,
-                    true,
-                )
-            };
-            if share.clicked() {
-                if publishing {
-                    if let Some(engine) = &self.engine {
-                        let _ = engine.commands.send(Command::StopShare);
-                    }
-                } else {
-                    self.choose_source(share.id, None);
-                }
-            }
-            let playback_in_first_row = (!compact).then(|| playback(ui));
-            let camera = if camera_starting {
-                crate::i18n::label("Abrindo câmera…", "Opening camera…")
-            } else if camera_active {
-                crate::i18n::label("Desligar câmera", "Turn off camera")
-            } else {
-                crate::i18n::label("Ligar câmera", "Turn on camera")
-            };
-            let (camera, preview) = camera_actions(
-                ui,
-                compact,
-                camera,
-                connected && can_publish && !camera_starting,
-                (camera_active && !publishing).then_some(self.self_preview),
-            );
-            if camera.clicked() {
+        let name = self.name.clone();
+        let out = crate::stage_ui::me_panel(
+            ui,
+            &crate::stage_ui::Me {
+                name: &name,
+                status,
+                room,
+                rail,
+                connected,
+                can_publish,
+                publishing,
+                camera_active,
+                camera_starting,
+                preview: self.self_preview,
+                paused: self.paused,
+                resetting,
+                can_switch_room: self.server_access.authenticated(),
+            },
+        );
+        if let Some(opener) = out.share {
+            if publishing {
                 if let Some(engine) = &self.engine {
-                    let _ = engine.commands.send(Command::ToggleCamera);
+                    let _ = engine.commands.send(Command::StopShare);
                 }
+            } else {
+                self.choose_source(opener, None);
             }
-            if toggle_preview || preview.is_some_and(|button| button.clicked()) {
-                self.self_preview = !self.self_preview;
-                self.send_layout();
-            }
-            let (pause, reconnect) = playback_in_first_row.unwrap_or_else(|| {
-                ui.end_row();
-                playback(ui)
-            });
-            if pause.clicked() {
+        }
+        if let Some(opener) = out.gear {
+            self.choose_source(opener, active_target);
+        }
+        if out.camera
+            && let Some(engine) = &self.engine
+        {
+            let _ = engine.commands.send(Command::ToggleCamera);
+        }
+        if out.preview {
+            self.self_preview = !self.self_preview;
+            self.send_layout();
+        }
+        if out.focus_self {
+            self.focus = Some(identity.to_owned());
+            self.mode = ViewMode::Spotlight;
+        }
+        match out.menu {
+            Some(crate::stage_ui::RoomChoice::SwitchRoom) => self.catalog.open(
+                self.address.clone(),
+                self.server_access.token(),
+                ui.ctx().clone(),
+            ),
+            Some(crate::stage_ui::RoomChoice::Pause) => {
                 self.paused = !self.paused;
                 self.send_layout();
             }
-            if reconnect.clicked() {
-                self.restart_reception();
+            Some(crate::stage_ui::RoomChoice::Reconnect) => self.restart_reception(),
+            Some(crate::stage_ui::RoomChoice::Diagnostics) => self.debug_open = true,
+            None => {}
+        }
+        if out.leave {
+            if publishing || camera_active {
+                self.confirm_leave = true;
+            } else {
+                self.leave_room(ui.ctx(), false);
             }
-            session_room_actions(ui, compact, |ui| {
-                let leave = session_leave(ui, self.engine.is_some());
-                menu_rect = session_menu(ui, |ui| {
-                    ui.strong(crate::i18n::label("Sala e interface", "Room and interface"));
-                    let room = self
-                        .engine
-                        .as_ref()
-                        .map(|engine| engine.shared.lock().unwrap().room.clone())
-                        .unwrap_or_default();
-                    if !room.is_empty() {
-                        crate::desktop_ui::copy_room_name(ui, &room);
-                    }
-                    if self.server_access.authenticated()
-                        && crate::desktop_ui::menu_action(
-                            ui,
-                            crate::i18n::label("Trocar de sala", "Switch room"),
-                            true,
-                        )
-                        .clicked()
-                    {
-                        self.catalog.open(
-                            self.address.clone(),
-                            self.server_access.token(),
-                            ui.ctx().clone(),
-                        );
-                        ui.close();
-                    }
-                    crate::desktop_ui::display_scale(ui);
-                    if crate::desktop_ui::menu_action(
-                        ui,
-                        crate::i18n::label("Diagnóstico", "Diagnostics"),
-                        true,
-                    )
-                    .clicked()
-                    {
-                        self.debug_open = true;
-                        ui.close();
-                    }
-                });
-                if leave.clicked() {
-                    if publishing || camera_active {
-                        self.confirm_leave = true;
-                    } else {
-                        self.leave_room(ui.ctx(), false);
-                    }
-                }
-            });
-        });
-        menu_rect
+        }
     }
     fn restart_reception(&mut self) {
         if let Some(engine) = &self.engine {
@@ -1942,29 +1901,100 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
-        let menu_rect = if !self.fullscreen && (connected || reconnecting) {
-            crate::desktop_ui::session_panel(ctx.content_rect().width())
-                .show(ui, |ui| {
-                    self.sharing_controls(ui, connected, can_publish, publishing, active_target)
-                })
-                .inner
-        } else {
-            None
-        };
+        let menu_rect: Option<egui::Rect> = None;
 
-        if connected && !self.fullscreen && self.sidebar_open {
+        let rail = !self.sidebar_open || ctx.content_rect().width() < RAIL_BELOW;
+        if (connected || reconnecting) && !self.fullscreen {
             egui::Panel::left("room_sidebar")
-                .exact_size(crate::desktop_ui::sidebar_width(ctx.content_rect().width()))
+                .exact_size(if rail {
+                    RAIL_WIDTH
+                } else {
+                    crate::desktop_ui::sidebar_width(ctx.content_rect().width())
+                })
                 .resizable(false)
                 .frame(
                     egui::Frame::new()
                         .fill(PANEL)
-                        .inner_margin(egui::Margin::same(crate::desktop_ui::room_margin(
-                            ctx.content_rect().width(),
-                            false,
-                        ))),
+                        .inner_margin(egui::Margin::same(if rail {
+                            10
+                        } else {
+                            crate::desktop_ui::room_margin(ctx.content_rect().width(), false)
+                        })),
                 )
                 .show(ui, |ui| {
+                    egui::Panel::bottom("room_me")
+                        .frame(egui::Frame::new().inner_margin(egui::Margin {
+                            top: 8,
+                            ..Default::default()
+                        }))
+                        .resizable(false)
+                        .show(ui, |ui| {
+                            self.me_panel(
+                                ui,
+                                rail,
+                                (connected, can_publish, publishing),
+                                active_target,
+                                &room,
+                                &identity,
+                            )
+                        });
+                    people.sort_by(|a, b| {
+                        screens
+                            .contains(&b.0)
+                            .cmp(&screens.contains(&a.0))
+                            .then_with(|| a.1.cmp(&b.1))
+                            .then_with(|| a.0.cmp(&b.0))
+                    });
+                    if rail {
+                        let targets: Vec<_> = people
+                            .iter()
+                            .map(|(identity, _)| {
+                                screens
+                                    .iter()
+                                    .find(|key| *key == identity)
+                                    .or_else(|| {
+                                        screens.iter().find(|key| {
+                                            crate::desktop_engine::video_owner(key) == identity
+                                        })
+                                    })
+                                    .cloned()
+                            })
+                            .collect();
+                        let rail_people: Vec<_> = people
+                            .iter()
+                            .zip(&targets)
+                            .map(|((identity, name), target)| crate::stage_ui::RailPerson {
+                                name: if name.is_empty() {
+                                    crate::i18n::label("Participante", "Participant")
+                                } else {
+                                    name
+                                },
+                                status: match target {
+                                    Some(key) if key.ends_with("/camera") => {
+                                        crate::i18n::label("Câmera ligada", "Camera on")
+                                    }
+                                    Some(_) => {
+                                        crate::i18n::label("Compartilhando tela", "Sharing screen")
+                                    }
+                                    None => {
+                                        crate::i18n::label("Assistindo à sala", "Watching the room")
+                                    }
+                                },
+                                live: target.is_some(),
+                                focused: watched.as_deref().is_some_and(|key| {
+                                    crate::desktop_engine::video_owner(key) == identity
+                                }),
+                            })
+                            .collect();
+                        if let Some(index) = crate::stage_ui::rail_people(ui, &rail_people)
+                            && let Some(target) = &targets[index]
+                        {
+                            self.focus = Some(target.clone());
+                            self.mode = ViewMode::Spotlight;
+                            self.send_layout();
+                        }
+                        return;
+                    }
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
@@ -1979,59 +2009,6 @@ impl eframe::App for App {
                                 self.updater.check(ctx.clone());
                             }
                             crate::desktop_ui::participant_heading(ui, people.len() + 1);
-                            if connected {
-                                let label = if self.name.is_empty() {
-                                    crate::i18n::label("Você", "You").to_owned()
-                                } else {
-                                    crate::i18n_format!("{} (você)", "{} (you)", self.name)
-                                };
-                                if publishing {
-                                    let response = choice_card(
-                                        ui,
-                                        &label,
-                                        if !self.self_preview {
-                                            crate::i18n::label(
-                                                "Transmitindo · prévia oculta",
-                                                "Sharing · preview hidden",
-                                            )
-                                        } else if watched.as_ref() == Some(&identity) {
-                                            crate::i18n::label(
-                                                "Em destaque · transmitindo",
-                                                "Focused · sharing",
-                                            )
-                                        } else {
-                                            crate::i18n::label(
-                                                "Transmitindo · sua tela",
-                                                "Sharing · your screen",
-                                            )
-                                        },
-                                        self.self_preview && watched.as_ref() == Some(&identity),
-                                        self.self_preview,
-                                        Some(self.name.chars().next().unwrap_or('V')),
-                                    );
-                                    if response.clicked() {
-                                        self.focus = Some(identity.clone());
-                                        self.mode = ViewMode::Spotlight;
-                                        self.send_layout();
-                                    }
-                                } else {
-                                    ui.label(
-                                        RichText::new(crate::i18n_format!(
-                                            "{label} · assistindo",
-                                            "{label} · watching"
-                                        ))
-                                        .size(12.0)
-                                        .color(MUTED),
-                                    );
-                                }
-                            }
-                            people.sort_by(|a, b| {
-                                screens
-                                    .contains(&b.0)
-                                    .cmp(&screens.contains(&a.0))
-                                    .then_with(|| a.1.cmp(&b.1))
-                                    .then_with(|| a.0.cmp(&b.0))
-                            });
                             for (identity, name) in &people {
                                 let target =
                                     screens.iter().find(|key| *key == identity).or_else(|| {
@@ -2786,6 +2763,7 @@ impl eframe::App for App {
                             && screens_visible >= 2,
                         fullscreen: self.fullscreen,
                         can_reconnect: connected && !reception_resetting,
+                        paused: self.paused,
                     };
                     let outcome = crate::stage_ui::stage_controls(
                         &ctx,
@@ -2813,6 +2791,10 @@ impl eframe::App for App {
                             selection = Some(id);
                         }
                         Some(ControlAction::SideBySide) => self.focus = None,
+                        Some(ControlAction::Pause) => {
+                            self.paused = !self.paused;
+                            self.send_layout();
+                        }
                         Some(ControlAction::Reconnect) => self.restart_reception(),
                         Some(ControlAction::Fullscreen) => {
                             self.set_fullscreen(&ctx, !self.fullscreen)

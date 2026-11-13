@@ -9,16 +9,21 @@ normalmente o aplicativo. Credenciais e convites não fazem parte desse arquivo.
 alterar o cache do usuário. Um cache inválido é ignorado.
 
 **Participantes**, à esquerda do nome da sala, recolhe ou restaura o painel lateral.
-Em janelas estreitas, aparece como um ícone de painel. Os ícones de **Grade** e
-**Tela cheia** ficam à direita na linha do título.
 
-Na barra inferior, **Compartilhar tela** e **Ligar câmera** ficam agrupados.
-O cabeçalho informa quando a tela ou a câmera está ativa.
-Os ícones de pausa e reconexão da recepção ficam ao lado dos controles de
-compartilhamento ou à esquerda na segunda linha em janelas estreitas.
-**Mais opções** e **Sair da sala** ficam à direita ou em uma segunda linha em
-janelas estreitas. Use **Mais opções → Trocar de sala** para abrir a lista de
-salas.
+No Windows, as suas ações ficam no fim do painel de participantes, num cartão
+com o seu nome e o seu estado: **Compartilhar tela** (ou **Parar
+compartilhamento** com a engrenagem de ajustes), a câmera, o olho da prévia,
+**Mais opções** e **Sair da sala**, em vermelho, à direita. Clique no seu avatar
+enquanto transmite para ver a sua tela no palco. **Mais opções** reúne copiar o
+nome da sala, **Trocar de sala**, pausar e reconectar a recepção, a escala da
+interface e **Diagnóstico**. Recolhido, ou em janelas com menos de 640 px, o
+painel vira um trilho de ícones: os participantes como avatares (o ponto verde
+indica quem transmite) e as suas ações embaixo. Não há barra inferior; pausa e
+reconexão também ficam nos controles sobre o vídeo.
+
+No Linux, a barra inferior continua com **Compartilhar tela**, **Ligar câmera**,
+pausa, reconexão, **Mais opções** e **Sair da sala**.
+
 **Sair da sala** mantém o acesso ao servidor. Use **Trocar acesso ao servidor**
 na tela inicial para encerrar a autenticação.
 
