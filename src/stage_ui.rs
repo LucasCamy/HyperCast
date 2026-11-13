@@ -1010,6 +1010,8 @@ pub(crate) struct Me<'a> {
     pub paused: bool,
     pub resetting: bool,
     pub can_switch_room: bool,
+    /// Windows window-capture border; `None` where the platform owns it.
+    pub capture_border: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1019,6 +1021,7 @@ pub(crate) enum RoomChoice {
     Reconnect,
     Update,
     Diagnostics,
+    CaptureBorder,
 }
 
 #[derive(Default)]
@@ -1144,6 +1147,20 @@ fn room_menu(ui: &egui::Ui, anchor: &egui::Response, me: &Me<'_>) -> Option<Room
         .clicked()
         {
             choice = Some(RoomChoice::Reconnect);
+        }
+        if let Some(border) = me.capture_border
+            && menu_row(
+                ui,
+                label(
+                    "Borda amarela ao compartilhar janela",
+                    "Yellow border when sharing a window",
+                ),
+                true,
+                Some(border),
+            )
+            .clicked()
+        {
+            choice = Some(RoomChoice::CaptureBorder);
         }
         crate::desktop_ui::display_scale(ui);
         if menu_row(ui, label("Atualizar", "Update"), true, None).clicked() {
@@ -1585,6 +1602,7 @@ fn the_you_panel_fits_the_sidebar_and_the_rail() {
                             paused: false,
                             resetting: false,
                             can_switch_room: true,
+                            capture_border: Some(true),
                         };
                         let _ = me_panel(ui, &me);
                     });

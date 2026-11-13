@@ -19,7 +19,11 @@ do próprio HyperCast. Na troca de origem, a captura de áudio muda mantendo a
 mesma faixa Opus publicada. Áudio por processo exige Windows 11/build 20348+.
 
 O vídeo de janela usa Windows Graphics Capture com frame pool sem dispatcher,
-texturas D3D11 e cópias somente na GPU. A borda de captura do Windows permanece.
+texturas D3D11 e cópias somente na GPU. A borda amarela de captura do Windows
+aparece por padrão; **Mais opções → Borda amarela ao compartilhar janela** a
+desliga (Windows 11/build 20348+), inclusive durante o compartilhamento. Ao
+fechar o HyperCast, o compartilhamento para antes de esperar o servidor e o
+processo é encerrado se a saída passar de 10 s, para a borda não ficar na tela.
 Redimensionamento recria o encoder e solicita keyframe; dimensões ímpares são
 recortadas em até um pixel na direita/base. Limite atual: 3840×2160. Conteúdo
 protegido pode aparecer preto; jogos devem expor uma janela capturável (modo

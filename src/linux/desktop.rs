@@ -203,6 +203,7 @@ impl App {
             grid: self.layout.mode == ViewMode::Grid,
             show: self.show,
             anchor: self.anchor,
+            capture_border: self.preferences.current().capture_border,
         });
     }
     fn send(&self, command: Command) {
@@ -520,6 +521,7 @@ impl App {
                 paused: self.layout.paused,
                 resetting: reception_resetting,
                 can_switch_room: self.access.authenticated(),
+                capture_border: None,
             },
         );
         if outcome.share.is_some() {
@@ -561,6 +563,7 @@ impl App {
             Some(stage_ui::RoomChoice::Reconnect) => self.restart_reception(),
             Some(stage_ui::RoomChoice::Update) => self.updates = true,
             Some(stage_ui::RoomChoice::Diagnostics) => self.debug = true,
+            Some(stage_ui::RoomChoice::CaptureBorder) => {}
             None => {}
         }
         if outcome.leave {
