@@ -155,14 +155,20 @@ int hc_presenter_frame(void* handle, void* texture, uint32_t slice, uint32_t fw,
     catch (...) { return -1; }
 }
 void hc_presenter_hide(void* handle) noexcept { if (handle) static_cast<Presenter*>(handle)->hide(); }
-int hc_presenter_cutouts(void* handle, int width, int height, const int* rects, size_t count) noexcept {
+// Each cutout is {left, top, right, bottom, radius}; a positive `corner` rounds
+// the canvas itself. Round-rect regions exclude their right and bottom edges.
+static HRGN rounded_region(int left, int top, int right, int bottom, int radius) noexcept {
+    if (radius <= 0) return CreateRectRgn(left, top, right, bottom);
+    return CreateRoundRectRgn(left, top, right + 1, bottom + 1, radius * 2, radius * 2);
+}
+int hc_presenter_cutouts(void* handle, int width, int height, int corner, const int* rects, size_t count) noexcept {
     HWND window = static_cast<Presenter*>(handle)->window;
-    if (!count) return SetWindowRgn(window, nullptr, TRUE);
-    HRGN visible = CreateRectRgn(0, 0, width, height);
+    if (!count && corner <= 0) return SetWindowRgn(window, nullptr, TRUE);
+    HRGN visible = rounded_region(0, 0, width, height, corner);
     if (!visible) return 0;
     for (size_t i = 0; i < count; ++i) {
-        const int* rect = rects + i * 4;
-        HRGN cutout = CreateRectRgn(rect[0], rect[1], rect[2], rect[3]);
+        const int* rect = rects + i * 5;
+        HRGN cutout = rounded_region(rect[0], rect[1], rect[2], rect[3], rect[4]);
         const bool combined = cutout && CombineRgn(visible, visible, cutout, RGN_DIFF) != ERROR;
         if (cutout) DeleteObject(cutout);
         if (!combined) {

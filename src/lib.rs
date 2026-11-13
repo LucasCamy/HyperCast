@@ -14,6 +14,8 @@ pub mod encoder;
 pub mod i18n;
 #[cfg(feature = "desktop")]
 pub mod invitation;
+#[cfg(feature = "desktop")]
+mod kit;
 #[cfg(feature = "livekit-network")]
 pub mod network;
 pub mod pacing;
@@ -30,6 +32,10 @@ pub mod room_transition;
 pub mod screen_capture;
 #[cfg(feature = "desktop")]
 pub mod server_status;
+#[cfg(feature = "desktop")]
+pub mod stage;
+#[cfg(all(feature = "desktop", any(windows, target_os = "linux")))]
+mod stage_ui;
 pub mod subscription;
 #[cfg(all(windows, feature = "desktop"))]
 pub mod system_audio;

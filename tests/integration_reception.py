@@ -22,7 +22,7 @@ def main():
         result=subprocess.run(['powershell','-NoProfile','-ExecutionPolicy','Bypass','-File',str(ROOT/'tests/control_room.ps1'),'-TargetPid',str(gui.pid),'-ExpectedExecutable',str(exe),'-Name',name,*flags],stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=12)
         assert result.returncode==0, result.stderr.decode(errors='replace')
         return result.stdout.decode('utf-8',errors='replace')
-    def tiles():return [s for s in control('', '-List').splitlines() if s.startswith('Transmiss')]
+    def tiles():return control('', '-List').splitlines()
     try:
         app=subprocess.Popen([str(ROOT/'.tools/ffmpeg/bin/ffplay.exe'),'-window_title','HyperCast controls generated test','-x','640','-y','360','-f','lavfi','-i','testsrc2=size=640x360:rate=60'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);children.append(app);time.sleep(2)
         log=(ROOT/'.tools/room-controls-gui.log').open('wb');logs.append(log)
@@ -35,11 +35,11 @@ def main():
         time.sleep(13)
         assert len(tiles())==3, f'Expected three grid tiles, got {tiles()}'
         screenshot(gui.pid,ROOT/'.tools/room-controls-grid.png')
-        control('Mostrar minha prévia');time.sleep(1)
+        control('Ocultar minha prévia');time.sleep(1)
         assert len(tiles())==2,'Self-preview remains visible'
         control('Mostrar minha prévia');time.sleep(1)
         assert len(tiles())==3,'Self-preview did not resume'
-        control('Mostrar minha prévia');time.sleep(1)
+        control('Ocultar minha prévia');time.sleep(1)
         def progress():
             text=(ROOT/'.tools/room-controls-gui.log').read_text(encoding='utf-8',errors='replace')
             samples=[]
@@ -62,13 +62,14 @@ def main():
         for name,owner in [('Beta','hc-screen-2'),('Alpha','hc-screen-1'),('Beta','hc-screen-2')]:
             invoke(gui,exe,f'{name}: Compartilhando tela');time.sleep(.3)
             baseline=progress().get(owner,0)
-            invoke(gui,exe,'Reconectar recepção')
+            control('Mais opções')
+            control('Reconectar recepção (F5)')
             fresh(owner,baseline)
             time.sleep(1)
             publication=(ROOT/'.tools/room-controls-gui.log').read_text(encoding='utf-8',errors='replace')
             assert len(re.findall('Published screen track',publication))==2,'Receive refresh restarted our publication'
         screenshot(gui.pid,ROOT/'.tools/reception-refreshed.png')
-        invoke(gui,exe,'Recolher menu');time.sleep(.5)
+        control('Ocultar participantes');time.sleep(.5)
         assert gui.wait(timeout=90)==0,'Owned GUI failed'
         for log in logs:log.flush()
         output=(ROOT/'.tools/room-controls-gui.log').read_text(encoding='utf-8',errors='replace')

@@ -5,6 +5,49 @@ pub enum ViewMode {
     Spotlight,
 }
 
+#[cfg(feature = "desktop")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoomLayout {
+    pub self_preview: bool,
+    pub mode: ViewMode,
+    pub focus: Option<String>,
+    pub paused: bool,
+    pub volume: u32,
+    // The room UI requests the visible videos and their audio explicitly.
+    pub(crate) playback: Option<crate::stage::Playback>,
+}
+
+#[cfg(feature = "desktop")]
+impl RoomLayout {
+    pub fn new(mode: ViewMode, volume: u32) -> Self {
+        Self {
+            self_preview: true,
+            mode,
+            focus: None,
+            paused: false,
+            volume,
+            playback: None,
+        }
+    }
+
+    #[cfg(any(windows, target_os = "linux"))]
+    pub(crate) fn camera_preview_visible(&self) -> bool {
+        self.self_preview
+            && !self.paused
+            && self
+                .playback
+                .as_ref()
+                .is_none_or(|view| view.wants_video(crate::camera_preview::LOCAL_CAMERA))
+    }
+}
+
+#[cfg(feature = "desktop")]
+impl Default for RoomLayout {
+    fn default() -> Self {
+        Self::new(ViewMode::Spotlight, 80)
+    }
+}
+
 /// A single-layer track cannot supply a cheap thumbnail. Pause it rather than
 /// silently downloading/decoding another full-resolution stream in Spotlight.
 pub fn delivery_demand(

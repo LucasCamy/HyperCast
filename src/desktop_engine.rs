@@ -1,4 +1,5 @@
 use crate::resilience::StateMutex as Mutex;
+pub use crate::subscription::RoomLayout as Layout;
 use crate::{
     camera_preview::{CameraPreview, LOCAL_CAMERA, PreviewFrame},
     encoder::{AmdProfile, Codec, HardwareEncoder},
@@ -103,14 +104,6 @@ pub struct Shared {
     pub audio_status: String,
     pub active_target: Option<CaptureTarget>,
     pub source_error: String,
-}
-#[derive(Clone)]
-pub struct Layout {
-    pub self_preview: bool,
-    pub mode: ViewMode,
-    pub focus: Option<String>,
-    pub paused: bool,
-    pub volume: u32,
 }
 #[derive(Clone, Copy, PartialEq)]
 pub struct ShareQuality {
@@ -672,13 +665,22 @@ fn update_subscriptions(
                         .into_values()
                         .any(|p| p.source() == TrackSource::Camera && p.kind() == TrackKind::Video))
         })
-        .or_else(|| screens.first().map(|(id, _)| id.as_str()));
+        .or_else(|| {
+            (layout.playback.is_none())
+                .then(|| screens.first().map(|(id, _)| id.as_str()))
+                .flatten()
+        });
     let mut count = 0;
     for (identity, publication) in &screens {
+        let wanted = if let Some(playback) = &layout.playback {
+            playback.wants_video(identity)
+        } else {
+            layout.mode == ViewMode::Grid || Some(identity.as_str()) == focus
+        };
         let enabled = !layout.paused
             && count < 6
             && !receive_monitor.held(&publication.sid().to_string())
-            && (layout.mode == ViewMode::Grid || Some(identity.as_str()) == focus);
+            && wanted;
         if count < 6 {
             crate::subscription::keep_receiver(publication, enabled);
             count += 1;
@@ -686,7 +688,15 @@ fn update_subscriptions(
             publication.set_subscribed(false);
         }
         if publication.simulcasted() && enabled {
-            publication.set_video_quality(VideoQuality::High);
+            let thumbnail = layout
+                .playback
+                .as_ref()
+                .is_some_and(|view| view.strip.contains(identity));
+            publication.set_video_quality(if thumbnail {
+                VideoQuality::Low
+            } else {
+                VideoQuality::High
+            });
         }
     }
     for participant in room.remote_participants().into_values() {
@@ -696,10 +706,12 @@ fn update_subscriptions(
             if publication.source() != TrackSource::ScreenshareAudio {
                 continue;
             }
-            let enabled = has_screen
-                && !layout.paused
-                && layout.volume > 0
-                && (layout.mode == ViewMode::Grid || Some(identity.as_str()) == focus);
+            let wanted = if let Some(playback) = &layout.playback {
+                playback.audio.contains(&identity)
+            } else {
+                layout.mode == ViewMode::Grid || Some(identity.as_str()) == focus
+            };
+            let enabled = has_screen && !layout.paused && layout.volume > 0 && wanted;
             crate::subscription::keep_receiver(&publication, enabled);
         }
     }
@@ -957,13 +969,7 @@ impl Engine {
                             .permission()
                             .is_some_and(|grant| grant.can_publish);
                     }
-                    let mut layout = Layout {
-                        self_preview: true,
-                        volume: 80,
-                        mode: ViewMode::Spotlight,
-                        focus: None,
-                        paused: false,
-                    };
+                    let mut layout = Layout::new(ViewMode::Spotlight, 80);
                     if std::env::var("HYPERCAST_VIEW_MODE").as_deref() == Ok("grid") {
                         layout.mode = ViewMode::Grid;
                     }
@@ -1165,7 +1171,7 @@ impl Engine {
                             window_hidden = hidden;
                             layout = manual_layout.clone();
                             layout.paused |= hidden;
-                            camera_preview.set_visible(layout.self_preview && !layout.paused);
+                            camera_preview.set_visible(layout.camera_preview_visible());
                             if reception_restart.is_none() {
                                 update_subscriptions(&room, &layout, &receive_monitor);
                             }
@@ -1219,8 +1225,7 @@ impl Engine {
                                     {
                                         let room = room.clone();
                                         camera_preview = CameraPreview::default();
-                                        camera_preview
-                                            .set_visible(layout.self_preview && !layout.paused);
+                                        camera_preview.set_visible(layout.camera_preview_visible());
                                         let preview = camera_preview.clone();
                                         let preview_ctx = ctx.clone();
                                         camera_start = Some(runtime.spawn(async move {
@@ -1280,8 +1285,19 @@ impl Engine {
                                     crate::diagnostics::write(
                                         "layout",
                                         &format!(
-                                            "mode={:?} paused={} volume={} self_preview={}",
-                                            next.mode, next.paused, next.volume, next.self_preview
+                                            "mode={:?} paused={} volume={} self_preview={} explicit={} live={} audio={}",
+                                            next.mode,
+                                            next.paused,
+                                            next.volume,
+                                            next.self_preview,
+                                            next.playback.is_some(),
+                                            next.playback
+                                                .as_ref()
+                                                .map_or(0, |view| view.main.len()
+                                                    + view.strip.len()),
+                                            next.playback
+                                                .as_ref()
+                                                .map_or(0, |view| view.audio.len())
                                         ),
                                         "",
                                     );
@@ -1293,8 +1309,7 @@ impl Engine {
                                     manual_layout = next;
                                     layout = manual_layout.clone();
                                     layout.paused |= window_hidden;
-                                    camera_preview
-                                        .set_visible(layout.self_preview && !layout.paused);
+                                    camera_preview.set_visible(layout.camera_preview_visible());
                                     if reception_restart.is_none() {
                                         update_subscriptions(&room, &layout, &receive_monitor);
                                     }
