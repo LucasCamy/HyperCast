@@ -1,3 +1,4 @@
+use crate::camera_preview::CameraPreview;
 use anyhow::{Result, anyhow, bail};
 use livekit::{
     options::{TrackPublishOptions, VideoCodec, VideoEncoding},
@@ -44,7 +45,11 @@ pub(crate) struct Camera {
 }
 
 impl Camera {
-    pub(crate) async fn open(room: &Room) -> Result<Self> {
+    pub(crate) async fn open(
+        room: &Room,
+        preview: CameraPreview,
+        ctx: eframe::egui::Context,
+    ) -> Result<Self> {
         let source = NativeVideoSource::new(
             VideoResolution {
                 width: WIDTH,
@@ -62,7 +67,7 @@ impl Camera {
             .name("hypercast-camera".into())
             .spawn(move || {
                 let mut ready = Some(ready_tx);
-                if let Err(error) = capture(source, &worker_cancel, &mut ready) {
+                if let Err(error) = capture(source, &worker_cancel, &mut ready, &preview, &ctx) {
                     if let Some(ready) = ready {
                         let _ = ready.send(Err(error));
                     } else {
@@ -123,6 +128,8 @@ fn capture(
     source: NativeVideoSource,
     cancel: &AtomicBool,
     ready: &mut Option<tokio::sync::oneshot::Sender<Result<()>>>,
+    preview: &CameraPreview,
+    ctx: &eframe::egui::Context,
 ) -> Result<()> {
     let mut error = 0;
     // The buffer passed to read is allocated for the fixed NV12 output format.
@@ -148,6 +155,7 @@ fn capture(
             *u = uv[0];
             *v = uv[1];
         }
+        preview.capture(&mut buffer, ctx);
         source.capture_frame(&VideoFrame::new(VideoRotation::VideoRotation0, buffer));
         if let Some(ready) = ready.take() {
             let _ = ready.send(Ok(()));

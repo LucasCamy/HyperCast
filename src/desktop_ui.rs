@@ -447,19 +447,44 @@ pub(crate) fn active_share_actions(
                 room_icon_button(ui, RoomIcon::Gear, stream_options_title(), true, false)
             })
             .inner;
-        let preview = preview.map(|visible| {
-            ui.scope(|ui| {
-                ui.spacing_mut().interact_size = Vec2::splat(34.0);
-                let label = if visible {
-                    crate::i18n::label("Ocultar minha prévia", "Hide my preview")
-                } else {
-                    crate::i18n::label("Mostrar minha prévia", "Show my preview")
-                };
-                room_icon_button(ui, RoomIcon::Preview(visible), label, true, false)
-            })
-            .inner
-        });
+        let preview = preview.map(|visible| preview_button(ui, visible));
         (stop, gear, preview)
+    })
+    .inner
+}
+
+pub(crate) fn preview_button(ui: &mut egui::Ui, visible: bool) -> egui::Response {
+    ui.scope(|ui| {
+        ui.spacing_mut().interact_size = Vec2::splat(34.0);
+        let label = if visible {
+            crate::i18n::label("Ocultar minha prévia", "Hide my preview")
+        } else {
+            crate::i18n::label("Mostrar minha prévia", "Show my preview")
+        };
+        room_icon_button(ui, RoomIcon::Preview(visible), label, true, false)
+    })
+    .inner
+}
+
+pub(crate) fn camera_actions(
+    ui: &mut egui::Ui,
+    compact: bool,
+    label: &str,
+    enabled: bool,
+    preview: Option<bool>,
+) -> (egui::Response, Option<egui::Response>) {
+    ui.horizontal(|ui| {
+        let camera = ui
+            .scope(|ui| {
+                if compact && preview.is_some() {
+                    let spacing = ui.spacing_mut();
+                    spacing.interact_size.x =
+                        (spacing.interact_size.x - 34.0 - spacing.item_spacing.x).max(0.0);
+                }
+                session_button(ui, label, enabled, false)
+            })
+            .inner;
+        (camera, preview.map(|visible| preview_button(ui, visible)))
     })
     .inner
 }
@@ -675,6 +700,34 @@ pub fn primary(ui: &mut egui::Ui, label: &str, enabled: bool, size: Vec2) -> egu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn camera_and_preview_controls_fit_in_a_compact_session() {
+        let ctx = egui::Context::default();
+        for width in [230.0, 320.0] {
+            let area = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 180.0));
+            let _ = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(area),
+                    ..Default::default()
+                },
+                |root| {
+                    session_panel(width).show(root, |ui| {
+                        session_actions(ui, |ui, compact| {
+                            session_button(ui, "Compartilhar tela", true, true);
+                            let (camera, preview) =
+                                camera_actions(ui, compact, "Desligar câmera", true, Some(true));
+                            let preview = preview.unwrap().rect;
+                            assert!(area.contains_rect(camera.rect));
+                            assert!(area.contains_rect(preview));
+                            assert!(camera.rect.right() <= preview.left());
+                            assert!(camera.rect.y_range().intersects(preview.y_range()));
+                        });
+                    });
+                },
+            );
+        }
+    }
+
     #[test]
     fn modal_closes_from_target_corners_outside_the_small_x() {
         for (offset, closes) in [

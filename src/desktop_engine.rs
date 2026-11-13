@@ -1,5 +1,6 @@
 use crate::resilience::StateMutex as Mutex;
 use crate::{
+    camera_preview::{CameraPreview, LOCAL_CAMERA, PreviewFrame},
     encoder::{AmdProfile, Codec, HardwareEncoder},
     network::{self, EncodedPublisher},
     pacing::FramePacer,
@@ -32,12 +33,14 @@ use windows::{Win32::Graphics::Direct3D11::ID3D11Texture2D, core::Interface};
 pub enum VideoFrame {
     Remote(BoxVideoFrame, Instant),
     Local(ID3D11Texture2D, u32, u32),
+    LocalCamera(PreviewFrame),
 }
 impl VideoFrame {
     pub fn dimensions(&self) -> (u32, u32) {
         match self {
             Self::Remote(frame, _) => (frame.buffer.width(), frame.buffer.height()),
             Self::Local(_, w, h) => (*w, *h),
+            Self::LocalCamera((frame, _)) => (frame.buffer.width(), frame.buffer.height()),
         }
     }
     pub fn surface(&self) -> Option<(*mut std::ffi::c_void, u32)> {
@@ -47,6 +50,7 @@ impl VideoFrame {
                 .as_native()
                 .and_then(|native| native.d3d11_texture()),
             Self::Local(texture, _, _) => Some((texture.as_raw(), 0)),
+            Self::LocalCamera(_) => None,
         }
     }
     pub fn delivered_at(&self) -> Option<Instant> {
@@ -56,7 +60,14 @@ impl VideoFrame {
         }
     }
     pub fn local(&self) -> bool {
-        matches!(self, Self::Local(..))
+        matches!(self, Self::Local(..) | Self::LocalCamera(_))
+    }
+    pub(crate) fn software_frame(&self) -> Option<(&BoxVideoFrame, Instant)> {
+        match self {
+            Self::Remote(frame, at) => Some((frame, *at)),
+            Self::LocalCamera((frame, at)) => Some((frame, *at)),
+            Self::Local(..) => None,
+        }
     }
 }
 
@@ -75,6 +86,7 @@ pub struct Shared {
     pub can_publish: bool,
     pub camera_active: bool,
     pub camera_starting: bool,
+    pub(crate) camera_preview: Option<CameraPreview>,
     pub identity: String,
     pub room: String,
     pub status: String,
@@ -652,6 +664,13 @@ fn update_subscriptions(
         .filter(|id| {
             screens.iter().any(|(owner, _)| owner == id)
                 || (local_visible && *id == room.local_participant().identity().as_str())
+                || (layout.self_preview
+                    && *id == LOCAL_CAMERA
+                    && room
+                        .local_participant()
+                        .track_publications()
+                        .into_values()
+                        .any(|p| p.source() == TrackSource::Camera && p.kind() == TrackKind::Video))
         })
         .or_else(|| screens.first().map(|(id, _)| id.as_str()));
     let mut count = 0;
@@ -953,6 +972,7 @@ impl Engine {
                     let mut window_hidden = false;
                     let mut camera: Option<crate::windows_camera::Camera> = None;
                     let mut camera_start = None;
+                    let mut camera_preview = CameraPreview::default();
                     let mut cast: Option<Cast> = None;
                     let mut recovery: Option<((CaptureTarget, Codec), Instant)> = None;
                     let mut recovery_attempts = 0u8;
@@ -1145,6 +1165,7 @@ impl Engine {
                             window_hidden = hidden;
                             layout = manual_layout.clone();
                             layout.paused |= hidden;
+                            camera_preview.set_visible(layout.self_preview && !layout.paused);
                             if reception_restart.is_none() {
                                 update_subscriptions(&room, &layout, &receive_monitor);
                             }
@@ -1185,14 +1206,30 @@ impl Engine {
                                 }
                                 Command::ToggleCamera => {
                                     if let Some(active) = camera.take() {
+                                        camera_preview.set_visible(false);
+                                        {
+                                            let mut shared = state.lock().unwrap();
+                                            shared.camera_active = false;
+                                            shared.camera_preview = None;
+                                        }
+                                        ctx.request_repaint();
                                         runtime.block_on(active.stop(&room));
-                                        state.lock().unwrap().camera_active = false;
                                     } else if camera_start.is_none()
                                         && state.lock().unwrap().can_publish
                                     {
                                         let room = room.clone();
+                                        camera_preview = CameraPreview::default();
+                                        camera_preview
+                                            .set_visible(layout.self_preview && !layout.paused);
+                                        let preview = camera_preview.clone();
+                                        let preview_ctx = ctx.clone();
                                         camera_start = Some(runtime.spawn(async move {
-                                            crate::windows_camera::Camera::open(&room).await
+                                            crate::windows_camera::Camera::open(
+                                                &room,
+                                                preview,
+                                                preview_ctx,
+                                            )
+                                            .await
                                         }));
                                         state.lock().unwrap().camera_starting = true;
                                         ctx.request_repaint();
@@ -1256,6 +1293,8 @@ impl Engine {
                                     manual_layout = next;
                                     layout = manual_layout.clone();
                                     layout.paused |= window_hidden;
+                                    camera_preview
+                                        .set_visible(layout.self_preview && !layout.paused);
                                     if reception_restart.is_none() {
                                         update_subscriptions(&room, &layout, &receive_monitor);
                                     }
@@ -2153,6 +2192,7 @@ impl Engine {
                                     Ok(Ok(active)) => {
                                         camera = Some(active);
                                         shared.camera_active = true;
+                                        shared.camera_preview = Some(camera_preview.clone());
                                     }
                                     Ok(Err(error)) => shared.status = error.to_string(),
                                     Err(error) => shared.status = error.to_string(),
@@ -2161,13 +2201,17 @@ impl Engine {
                             }
                         }
                         if let Some(error) = camera.as_ref().and_then(|active| active.failure()) {
+                            camera_preview.set_visible(false);
+                            {
+                                let mut shared = state.lock().unwrap();
+                                shared.camera_active = false;
+                                shared.camera_preview = None;
+                                shared.status = error;
+                            }
+                            ctx.request_repaint();
                             if let Some(active) = camera.take() {
                                 runtime.block_on(active.stop(&room));
                             }
-                            let mut shared = state.lock().unwrap();
-                            shared.camera_active = false;
-                            shared.status = error;
-                            ctx.request_repaint();
                         }
                         let fps = cast
                             .as_ref()
@@ -2180,6 +2224,7 @@ impl Engine {
                     if let Some(value) = cast {
                         value.stop(&runtime);
                     }
+                    camera_preview.set_visible(false);
                     if let Some(task) = camera_start {
                         task.abort();
                         if let Ok(Ok(active)) = runtime.block_on(task) {
@@ -2215,6 +2260,7 @@ impl Engine {
                 state.can_publish = false;
                 state.camera_starting = false;
                 state.camera_active = false;
+                state.camera_preview = None;
                 state.publishing = false;
                 state.frames.clear();
                 state.frozen.clear();
