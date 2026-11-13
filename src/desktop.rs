@@ -355,6 +355,11 @@ impl App {
         {
             prefs.rate_mode = crate::adaptive_upload::Mode::Automatic;
         }
+        crate::video_capture::set_capture_border(
+            prefs.capture_border
+                && !(std::env::var_os("HYPERCAST_SMOKE_SECONDS").is_some()
+                    && std::env::var("HYPERCAST_SMOKE_CAPTURE_BORDER").as_deref() == Ok("0")),
+        );
         Self {
             preferences: crate::preferences::Store::new(prefs),
             engine: None,
@@ -479,6 +484,7 @@ impl App {
             grid: self.mode == ViewMode::Grid,
             show: self.show,
             anchor: self.anchor,
+            capture_border: crate::video_capture::capture_border(),
         });
     }
     fn restore_preferences(&mut self) {
@@ -497,6 +503,7 @@ impl App {
         };
         self.show = p.show;
         self.anchor = p.anchor;
+        crate::video_capture::set_capture_border(p.capture_border);
         self.codec = crate::encoder::Codec::H265;
         self.amd_profile = crate::encoder::AmdProfile::Fast;
     }
@@ -1026,6 +1033,7 @@ impl App {
                 paused: self.paused,
                 resetting,
                 can_switch_room: self.server_access.authenticated(),
+                capture_border: Some(crate::video_capture::capture_border()),
             },
         );
         if let Some(opener) = out.share {
@@ -1076,6 +1084,9 @@ impl App {
                 self.updater.check(ui.ctx().clone());
             }
             Some(crate::stage_ui::RoomChoice::Diagnostics) => self.debug_open = true,
+            Some(crate::stage_ui::RoomChoice::CaptureBorder) => {
+                crate::video_capture::set_capture_border(!crate::video_capture::capture_border());
+            }
             None => {}
         }
         if out.leave {
@@ -1414,7 +1425,33 @@ impl Drop for App {
         }
     }
 }
+/// Longest the app may spend tearing down after its window closes.
+const EXIT_GRACE: Duration = Duration::from_secs(10);
+/// Windows keeps a window capture (and its yellow border) alive for as long as
+/// this process lives. A teardown stuck on the network must not leave a hidden
+/// process holding it, so exit anyway once the grace period runs out.
+fn arm_exit_watchdog() {
+    let _ = std::thread::Builder::new()
+        .name("hypercast-exit-watchdog".into())
+        .spawn(|| {
+            std::thread::sleep(EXIT_GRACE);
+            crate::diagnostics::write(
+                "shutdown",
+                &format!("Teardown exceeded {}s; forcing exit", EXIT_GRACE.as_secs()),
+                "",
+            );
+            std::process::exit(2);
+        });
+}
 impl eframe::App for App {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        arm_exit_watchdog();
+        // Release the capture before anything that may wait on the server.
+        if let Some(engine) = &self.engine {
+            let _ = engine.commands.send(Command::StopShare);
+            engine.request_exit();
+        }
+    }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if let Some((draft, mut result)) = self.pending_share.take() {
             match result.try_recv() {

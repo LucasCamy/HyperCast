@@ -8,8 +8,10 @@
 #include <windows.graphics.capture.interop.h>
 #include <windows.graphics.directx.direct3d11.interop.h>
 #include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Metadata.h>
 #include <winrt/Windows.Graphics.Capture.h>
 #include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
+#include <winrt/Windows.Security.Authorization.AppCapabilityAccess.h>
 #include <atomic>
 #include <memory>
 #include <optional>
@@ -53,14 +55,34 @@ struct WindowCapture {
         check_hresult(interop->CreateForWindow(hwnd,guid_of<GraphicsCaptureItem>(),put_abi(item)));
         size=item.Size(); validate_size(size);
     }
-    void start() {
+    bool start(bool border) {
         validate();
         auto flag=closed;
         closed_token=item.Closed([flag](auto const&,auto const&){flag->store(true);});
         pool=Direct3D11CaptureFramePool::CreateFreeThreaded(runtime_device,DirectXPixelFormat::B8G8R8A8UIntNormalized,2,size);
         session=pool.CreateCaptureSession(item);
-        // Keep the Windows capture indicator; do not silently capture other windows.
+        // The Windows indicator stays on unless the user turned it off; only the
+        // window they picked is captured either way.
+        const bool applied=set_border(border);
         session.StartCapture();
+        return applied;
+    }
+    // Returns whether the session now matches the request. Older Windows builds
+    // (before 20348) always draw the border.
+    bool set_border(bool required) noexcept {
+        try {
+            using winrt::Windows::Foundation::Metadata::ApiInformation;
+            if (!session) return false;
+            if (!ApiInformation::IsPropertyPresent(L"Windows.Graphics.Capture.GraphicsCaptureSession",L"IsBorderRequired"))
+                return required;
+            if (!required && GraphicsCaptureAccess::RequestAccessAsync(GraphicsCaptureAccessKind::Borderless).get()
+                    != winrt::Windows::Security::Authorization::AppCapabilityAccess::AppCapabilityAccessStatus::Allowed)
+                return false;
+            session.IsBorderRequired(required);
+            return true;
+        } catch (...) {
+            return false;
+        }
     }
     HRESULT close() noexcept {
         HRESULT status = S_OK;
@@ -122,10 +144,13 @@ void* hc_window_open(size_t hwnd, unsigned pid, unsigned adapter, char* error,si
     try{return new WindowCapture(reinterpret_cast<HWND>(hwnd),pid,adapter);}catch(hresult_error const& e){report(error,capacity,to_string(e.message()).c_str());}catch(std::exception const& e){report(error,capacity,e.what());}catch(...){report(error,capacity,"Window capture failed");}
     return nullptr;
 }
-int hc_window_start(void* handle, char* error, size_t capacity) noexcept {
+int hc_window_set_border(void* handle, int border) noexcept {
+    return static_cast<WindowCapture*>(handle)->set_border(border != 0) ? 0 : -1;
+}
+int hc_window_start(void* handle, int border, char* error, size_t capacity) noexcept {
     try {
-        static_cast<WindowCapture*>(handle)->start();
-        return 0;
+        // 1: capturing, but Windows kept its border.
+        return static_cast<WindowCapture*>(handle)->start(border != 0) ? 0 : 1;
     } catch(hresult_error const& e){report(error,capacity,to_string(e.message()).c_str());}catch(std::exception const& e){report(error,capacity,e.what());}catch(...){report(error,capacity,"Window capture failed");}
     return -1;
 }

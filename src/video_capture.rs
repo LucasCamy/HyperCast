@@ -6,6 +6,7 @@ use std::{
     marker::PhantomData,
     ptr::NonNull,
     rc::Rc,
+    sync::atomic::{AtomicBool, Ordering},
 };
 use windows::{
     Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D},
@@ -44,7 +45,13 @@ unsafe extern "C" {
         error: *mut c_char,
         capacity: usize,
     ) -> *mut c_void;
-    fn hc_window_start(handle: *mut c_void, error: *mut c_char, capacity: usize) -> i32;
+    fn hc_window_start(
+        handle: *mut c_void,
+        border: i32,
+        error: *mut c_char,
+        capacity: usize,
+    ) -> i32;
+    fn hc_window_set_border(handle: *mut c_void, border: i32) -> i32;
     fn hc_window_device(handle: *mut c_void) -> *mut c_void;
     fn hc_window_size(handle: *mut c_void, width: *mut u32, height: *mut u32);
     fn hc_window_frame(
@@ -120,9 +127,20 @@ pub fn windows() -> Vec<ApplicationWindow> {
     list.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
     list
 }
+/// Whether Windows draws its yellow capture border around a shared window.
+/// The UI owns the choice; capture threads apply it at start and on change.
+static CAPTURE_BORDER: AtomicBool = AtomicBool::new(true);
+pub fn set_capture_border(border: bool) {
+    CAPTURE_BORDER.store(border, Ordering::Relaxed);
+}
+pub fn capture_border() -> bool {
+    CAPTURE_BORDER.load(Ordering::Relaxed)
+}
 pub struct WindowCapture {
     handle: NonNull<c_void>,
     device: ID3D11Device,
+    /// Border state last requested from Windows for this session.
+    border: Option<bool>,
     _affinity: PhantomData<Rc<()>>,
 }
 impl WindowCapture {
@@ -143,19 +161,51 @@ impl WindowCapture {
         Ok(Self {
             handle,
             device,
+            border: None,
             _affinity: PhantomData,
         })
     }
     fn start(&mut self) -> Result<()> {
         let mut error = [0; 1024];
-        let status =
-            unsafe { hc_window_start(self.handle.as_ptr(), error.as_mut_ptr(), error.len()) };
+        let border = capture_border();
+        let status = unsafe {
+            hc_window_start(
+                self.handle.as_ptr(),
+                i32::from(border),
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        };
         ensure!(
-            status == 0,
+            status >= 0,
             "{}",
             unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy()
         );
+        if status == 1 {
+            crate::diagnostics::write(
+                "capture_border",
+                &format!("Windows kept its capture border (requested {border})"),
+                "",
+            );
+        }
+        self.border = Some(border);
         Ok(())
+    }
+    /// Applies a border change to the running session; tries once per change.
+    fn sync_border(&mut self) {
+        let wanted = capture_border();
+        if self.border.is_none_or(|current| current == wanted) {
+            return;
+        }
+        self.border = Some(wanted);
+        // SAFETY: owns a live, started handle on its capture thread.
+        if unsafe { hc_window_set_border(self.handle.as_ptr(), i32::from(wanted)) } != 0 {
+            crate::diagnostics::write(
+                "capture_border",
+                &format!("Windows kept its capture border (requested {wanted})"),
+                "",
+            );
+        }
     }
     fn acquire(&mut self) -> Result<Option<ID3D11Texture2D>> {
         let mut texture = std::ptr::null_mut();
@@ -260,7 +310,10 @@ impl VideoCapture {
     pub fn acquire(&mut self) -> Result<Option<CaptureFrame<'_>>> {
         match self {
             Self::Monitor(c) => Ok(c.acquire()?.map(CaptureFrame::Monitor)),
-            Self::Window(c) => Ok(c.acquire()?.map(CaptureFrame::Window)),
+            Self::Window(c) => {
+                c.sync_border();
+                Ok(c.acquire()?.map(CaptureFrame::Window))
+            }
         }
     }
 }
