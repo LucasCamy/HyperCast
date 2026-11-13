@@ -671,8 +671,11 @@ pub(crate) fn stage_header(
             participants
         })
         .inner;
-    ui.add(egui::Label::new(RichText::new(status).size(13.0).color(MUTED)).truncate())
-        .on_hover_text(status);
+    // Windows shows room state, errors and progress as notices instead.
+    if !cfg!(windows) {
+        ui.add(egui::Label::new(RichText::new(status).size(13.0).color(MUTED)).truncate())
+            .on_hover_text(status);
+    }
     ui.add_space(6.0);
     participants
 }
@@ -1425,6 +1428,8 @@ pub(crate) struct RailPerson<'a> {
     pub status: &'a str,
     pub live: bool,
     pub focused: bool,
+    /// `Some(true)` for a camera, `Some(false)` for a screen.
+    pub camera: Option<bool>,
 }
 
 pub(crate) fn participant_status(live: Option<bool>, focused: Option<bool>) -> &'static str {
@@ -1441,7 +1446,7 @@ pub(crate) fn participant_status(live: Option<bool>, focused: Option<bool>) -> &
 pub(crate) fn participant_card(ui: &mut egui::Ui, person: &RailPerson<'_>) -> egui::Response {
     let response = ui
         .add_enabled_ui(person.live, |ui| {
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 60.0), egui::Sense::click())
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 52.0), egui::Sense::click())
                 .1
         })
         .inner;
@@ -1486,27 +1491,46 @@ pub(crate) fn participant_card(ui: &mut egui::Ui, person: &RailPerson<'_>) -> eg
         painter.circle_filled(dot, 5.0, PANEL);
         painter.circle_filled(dot, 3.0, crate::desktop_ui::ACCENT);
     }
-    let left = rect.left() + 52.0;
-    let right = rect.right() - 8.0;
-    let top = rect.top();
-    let line = |y, height| {
-        egui::Rect::from_min_max(
-            egui::pos2(left, top + y),
-            egui::pos2(right, top + y + height),
-        )
-    };
-    crate::desktop_ui::paint_video_label(ui, line(9.0, 22.0), person.name, 14.0, TEXT);
-    crate::desktop_ui::paint_video_label(ui, line(31.0, 20.0), person.status, 11.0, tint);
+    // What they share is a glyph on the right; the words stay in the tooltip.
+    let glyph = person.camera.map(|camera| {
+        if camera {
+            RoomIcon::Camera(true)
+        } else {
+            RoomIcon::Share
+        }
+    });
+    let right = rect.right() - if glyph.is_some() { 40.0 } else { 10.0 };
+    let name = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + 52.0, rect.top()),
+        egui::pos2(right, rect.bottom()),
+    );
+    crate::desktop_ui::paint_video_label(ui, name, person.name, 14.0, TEXT);
+    if let Some(glyph) = glyph {
+        crate::desktop_ui::paint_room_icon(
+            ui.painter(),
+            egui::pos2(rect.right() - 22.0, rect.center().y),
+            egui::Stroke::new(1.5, tint),
+            glyph,
+        );
+    }
     response.on_hover_text(format!("{}\n{}", person.name, person.status))
 }
 
 /// Participants as avatars in the collapsed panel. Returns the one pressed.
 pub(crate) fn rail_people(ui: &mut egui::Ui, people: &[RailPerson<'_>]) -> Option<usize> {
     let mut chosen = None;
+    ui.vertical_centered(|ui| {
+        ui.add_space(4.0);
+        crate::desktop_ui::brand_mark(ui, 28.0).on_hover_text("HyperCast");
+        ui.add_space(6.0);
+        ui.separator();
+    });
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.vertical_centered(|ui| {
+                // Room for the focus ring and live dot of the first avatar.
+                ui.add_space(4.0);
                 ui.spacing_mut().item_spacing = Vec2::new(0.0, 8.0);
                 for (index, person) in people.iter().enumerate() {
                     let initial = person.name.chars().next().unwrap_or('P');

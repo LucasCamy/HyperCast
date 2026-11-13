@@ -27,6 +27,13 @@ pub struct Catalog {
     receiver: Option<mpsc::Receiver<(String, String, Result<Vec<SavedRoom>>)>>,
 }
 impl Catalog {
+    /// Latest loading or error message of the room list.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn status(&self) -> &str {
+        &self.status
+    }
+}
+impl Catalog {
     pub fn open(&mut self, address: String, session: String, ctx: egui::Context) {
         self.open = true;
         self.request(address, session, None, ctx);
@@ -232,7 +239,8 @@ impl Catalog {
                     .min_scrolled_height(list_height)
                     .max_height(list_height)
                     .show(ui, |ui| {
-                        if !self.status.is_empty() {
+                        // Windows shows the status as a notice.
+                        if !cfg!(windows) && !self.status.is_empty() {
                             ui.add(egui::Label::new(&self.status).truncate())
                                 .on_hover_text(&self.status);
                         }
