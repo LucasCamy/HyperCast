@@ -20,7 +20,7 @@ mesma faixa Opus publicada. Áudio por processo exige Windows 11/build 20348+.
 
 O vídeo de janela usa Windows Graphics Capture com frame pool sem dispatcher,
 texturas D3D11 e cópias somente na GPU. A borda amarela de captura do Windows
-aparece por padrão; **Mais opções → Borda amarela ao compartilhar janela** a
+aparece por padrão; **Mais opções → Borda amarela na janela** a
 desliga (Windows 11/build 20348+), inclusive durante o compartilhamento. Ao
 fechar o HyperCast, o compartilhamento para antes de esperar o servidor e o
 processo é encerrado se a saída passar de 10 s, para a borda não ficar na tela.
