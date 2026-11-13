@@ -1817,16 +1817,14 @@ impl eframe::App for App {
         let rail = !self.sidebar_open || width < crate::stage_ui::RAIL_BELOW;
         if (connected || reconnecting) && !self.fullscreen {
             crate::stage_ui::sidebar(width, rail).show(ui, |ui| {
-                crate::stage_ui::sidebar_actions(ui, |ui| {
-                    self.me_panel(
-                        ui,
-                        rail,
-                        (connected, can_publish, publishing),
-                        active_target,
-                        &room,
-                        &identity,
-                    );
-                });
+                self.me_panel(
+                    ui,
+                    rail,
+                    (connected, can_publish, publishing),
+                    active_target,
+                    &room,
+                    &identity,
+                );
                 people.sort_by(|a, b| {
                     screens
                         .contains(&b.0)

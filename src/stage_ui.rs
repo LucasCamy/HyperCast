@@ -32,23 +32,6 @@ pub(crate) fn sidebar(width: f32, rail: bool) -> egui::Panel {
         )
 }
 
-pub(crate) fn sidebar_actions(ui: &mut egui::Ui, actions: impl FnOnce(&mut egui::Ui)) {
-    let height = (ui.available_height() - 48.0).max(40.0);
-    egui::Panel::bottom("room_me")
-        .frame(egui::Frame::new().inner_margin(egui::Margin {
-            top: 8,
-            ..Default::default()
-        }))
-        .resizable(false)
-        .show(ui, |ui| {
-            egui::ScrollArea::vertical()
-                .id_salt("room_actions")
-                .auto_shrink([false, true])
-                .max_height(height)
-                .show(ui, actions);
-        });
-}
-
 pub(crate) struct StageOverlay {
     position: Option<egui::Pos2>,
     velocity: Vec2,
@@ -1187,7 +1170,57 @@ fn icon(
 }
 
 /// The "you" card (or rail) at the foot of the participants panel.
+const ME_CARD_PADDING: i8 = 10;
+const ME_ROW_GAP: f32 = 8.0;
+const ME_RAIL_GAP: f32 = 6.0;
+
 pub(crate) fn me_panel(ui: &mut egui::Ui, me: &Me<'_>) -> MeOutcome {
+    const TOP_MARGIN: i8 = 8;
+
+    let show_share = me.can_publish || me.publishing || me.selecting;
+    let show_gear = me.publishing && !me.selecting;
+    let show_camera = me.can_publish || me.camera_active;
+    let show_preview = me.self_video.is_some();
+    let desired = if me.rail {
+        let buttons = 2 + [show_share, show_gear, show_camera, show_preview]
+            .into_iter()
+            .filter(|show| *show)
+            .count();
+        buttons as f32 * HIT + (buttons - 1) as f32 * ME_RAIL_GAP
+    } else {
+        let rows = 2 + usize::from(show_share);
+        rows as f32 * HIT
+            + (rows - 1) as f32 * ME_ROW_GAP
+            + 2.0 * (f32::from(ME_CARD_PADDING) + 1.0)
+    };
+    let available = (ui.available_height() - 48.0).max(46.0);
+    let height = (desired + f32::from(TOP_MARGIN)).min(available);
+    egui::Panel::bottom("room_me")
+        .exact_size(height)
+        .frame(egui::Frame::new().inner_margin(egui::Margin {
+            top: TOP_MARGIN,
+            ..Default::default()
+        }))
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, true])
+                .max_height(ui.available_height())
+                .show(ui, |ui| {
+                    me_controls(ui, me, show_share, show_gear, show_camera, show_preview)
+                })
+                .inner
+        })
+        .inner
+}
+
+fn me_controls(
+    ui: &mut egui::Ui,
+    me: &Me<'_>,
+    show_share: bool,
+    show_gear: bool,
+    show_camera: bool,
+    show_preview: bool,
+) -> MeOutcome {
     use crate::i18n::label;
     let mut out = MeOutcome::default();
     let share_label = if me.selecting {
@@ -1207,13 +1240,12 @@ pub(crate) fn me_panel(ui: &mut egui::Ui, me: &Me<'_>) -> MeOutcome {
     } else {
         label("Mostrar minha prévia", "Show my preview")
     };
-    let show_preview = me.self_video.is_some();
     let leave_label = label("Sair da sala", "Leave room");
     let more_label = label("Mais opções", "More options");
     if me.rail {
         ui.vertical_centered(|ui| {
-            ui.spacing_mut().item_spacing = Vec2::new(0.0, 6.0);
-            if me.can_publish || destructive_share {
+            ui.spacing_mut().item_spacing = Vec2::new(0.0, ME_RAIL_GAP);
+            if show_share {
                 let share = icon(
                     ui,
                     if destructive_share {
@@ -1233,7 +1265,7 @@ pub(crate) fn me_panel(ui: &mut egui::Ui, me: &Me<'_>) -> MeOutcome {
                     out.share = Some(share.id);
                 }
             }
-            if me.publishing && !me.selecting {
+            if show_gear {
                 let gear = icon(
                     ui,
                     RoomIcon::Gear,
@@ -1245,7 +1277,7 @@ pub(crate) fn me_panel(ui: &mut egui::Ui, me: &Me<'_>) -> MeOutcome {
                     out.gear = Some(gear.id);
                 }
             }
-            if me.can_publish || me.camera_active {
+            if show_camera {
                 out.camera = icon(
                     ui,
                     RoomIcon::Camera(me.camera_active),
@@ -1279,15 +1311,15 @@ pub(crate) fn me_panel(ui: &mut egui::Ui, me: &Me<'_>) -> MeOutcome {
         .fill(crate::desktop_ui::SURFACE)
         .stroke(egui::Stroke::new(1.0, BORDER))
         .corner_radius(crate::kit::PANEL_RADIUS)
-        .inner_margin(egui::Margin::same(10))
+        .inner_margin(egui::Margin::same(ME_CARD_PADDING))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing = Vec2::new(6.0, 8.0);
+            ui.spacing_mut().item_spacing = Vec2::new(6.0, ME_ROW_GAP);
             ui.horizontal(|ui| {
                 let initial = me.name.chars().next().unwrap_or('V');
                 let you = avatar(ui, initial, 36.0, me.publishing || me.camera_active, false);
                 if let Some(video) = me.self_video.filter(|_| me.preview) {
-                    let hint = crate::i18n_format!("Colocar {} no palco", "Put {} on stage", video);
+                    let hint = crate::i18n_format!("Ver {} no palco", "Watch {} on stage", video);
                     you.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &hint)
                     });
@@ -1308,9 +1340,8 @@ pub(crate) fn me_panel(ui: &mut egui::Ui, me: &Me<'_>) -> MeOutcome {
                     .on_hover_text(me.status);
                 });
             });
-            if me.can_publish || destructive_share {
+            if show_share {
                 ui.horizontal(|ui| {
-                    let show_gear = me.publishing && !me.selecting;
                     let gear_width = if show_gear {
                         HIT + ui.spacing().item_spacing.x
                     } else {
@@ -1352,7 +1383,7 @@ pub(crate) fn me_panel(ui: &mut egui::Ui, me: &Me<'_>) -> MeOutcome {
                 });
             }
             ui.horizontal(|ui| {
-                if me.can_publish || me.camera_active {
+                if show_camera {
                     out.camera = icon(
                         ui,
                         RoomIcon::Camera(me.camera_active),
@@ -1554,6 +1585,10 @@ fn the_you_panel_fits_the_sidebar_and_the_rail() {
             assert!(b.width() >= 35.9 && b.height() >= 35.9, "{width}: {b:?}");
             assert!(
                 b.x0 >= 0.0 && b.x1 <= f64::from(width) + 0.01,
+                "{width}: {b:?}"
+            );
+            assert!(
+                b.y0 >= 0.0 && b.y1 <= f64::from(area.bottom()) + 0.01,
                 "{width}: {b:?}"
             );
             for other in &buttons[i + 1..] {

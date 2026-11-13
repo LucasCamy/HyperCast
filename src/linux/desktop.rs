@@ -452,7 +452,7 @@ impl App {
             .zip(people.iter().map(|(id, _)| target(id)))
             .collect();
         stage_ui::sidebar(width, rail).show(root, |ui| {
-            stage_ui::sidebar_actions(ui, |ui| self.me_panel(ui, rail, room));
+            self.me_panel(ui, rail, room);
             let chosen = if rail {
                 let avatars: Vec<_> = people.iter().map(|(person, _)| *person).collect();
                 stage_ui::rail_people(ui, &avatars)
