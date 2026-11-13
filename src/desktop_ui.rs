@@ -345,10 +345,27 @@ pub(crate) fn dialog_body<R>(
     reserve_height: f32,
     content: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
+    let height = (ui.ctx().content_rect().height() - reserve_height).max(40.0);
+    // A centered modal starts each pass with its previous size. Allow newly
+    // loaded content to use the window budget while still shrinking to fit.
     egui::ScrollArea::vertical()
-        .max_height((ui.ctx().content_rect().height() - reserve_height).max(40.0))
+        .min_scrolled_height(height)
+        .max_height(height)
         .show(ui, content)
         .inner
+}
+
+pub(crate) fn update_dialog<R>(
+    ctx: &egui::Context,
+    content: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::ModalResponse<R> {
+    scrolling_dialog(
+        ctx,
+        crate::i18n::label("Atualização", "Update"),
+        "update_window",
+        440.0,
+        content,
+    )
 }
 
 pub(crate) fn scrolling_dialog<R>(
@@ -700,6 +717,80 @@ pub fn primary(ui: &mut egui::Ui, label: &str, enabled: bool, size: Vec2) -> egu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scrolling_dialog_grows_when_update_check_adds_actions() {
+        for size in [egui::vec2(1320.0, 820.0), egui::vec2(230.0, 180.0)] {
+            let ctx = egui::Context::default();
+            let area = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            let draw = |finished, events| {
+                ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(area),
+                        events,
+                        ..Default::default()
+                    },
+                    |root| {
+                        update_dialog(root.ctx(), |ui| {
+                            ui.label("Current version: 0.9.5");
+                            ui.small("Installed");
+                            if finished {
+                                ui.label("You are up to date");
+                                action(ui, "Check again", true, false);
+                                action(ui, "Downloads", true, false);
+                            } else {
+                                ui.label("Checking for updates…");
+                            }
+                        });
+                    },
+                )
+            };
+            for _ in 0..3 {
+                let _ = draw(false, Vec::new());
+            }
+            for _ in 0..3 {
+                let _ = draw(true, Vec::new());
+            }
+            let output = draw(true, Vec::new());
+            let visible = |output: &egui::FullOutput, text: &str| {
+                output.shapes.iter().any(|shape| {
+                    matches!(&shape.shape, egui::Shape::Text(label)
+                        if label.galley.text() == text && shape.clip_rect.contains_rect(label.visual_bounding_rect())
+                            && area.contains_rect(label.visual_bounding_rect()))
+                })
+            };
+            assert!(
+                visible(&output, "Check again"),
+                "Update action clipped at {size:?}"
+            );
+            if size.y > 180.0 {
+                assert!(
+                    visible(&output, "Downloads"),
+                    "Downloads action clipped at {size:?}"
+                );
+            } else {
+                let mut output = draw(
+                    true,
+                    vec![
+                        egui::Event::PointerMoved(area.center()),
+                        egui::Event::MouseWheel {
+                            unit: egui::MouseWheelUnit::Point,
+                            delta: egui::vec2(0.0, -300.0),
+                            modifiers: Default::default(),
+                            phase: egui::TouchPhase::Move,
+                        },
+                    ],
+                );
+                for _ in 0..12 {
+                    output = draw(true, Vec::new());
+                }
+                assert!(
+                    visible(&output, "Downloads"),
+                    "Downloads must be reachable by scrolling"
+                );
+            }
+        }
+    }
+
     #[test]
     fn camera_and_preview_controls_fit_in_a_compact_session() {
         let ctx = egui::Context::default();
@@ -1586,6 +1677,18 @@ pub(crate) fn session_leave(ui: &mut egui::Ui, enabled: bool) -> egui::Response 
     )
 }
 
+pub(crate) fn server_logout_button(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
+    ui.scope(|ui| {
+        ui.spacing_mut().interact_size = Vec2::new(ui.available_width(), 40.0);
+        session_stop(
+            ui,
+            crate::i18n::label("Sair do servidor", "Sign out of server"),
+            enabled,
+        )
+    })
+    .inner
+}
+
 pub(crate) fn session_menu(
     ui: &mut egui::Ui,
     content: impl FnOnce(&mut egui::Ui),
@@ -1742,38 +1845,57 @@ pub(crate) fn home_panel(ui: &mut egui::Ui, status: &str, content: impl FnOnce(&
 }
 
 pub(crate) fn confirm_leave(ctx: &egui::Context) -> Option<bool> {
-    let modal = dialog(
+    confirm_exit(
         ctx,
         crate::i18n::label("Sair da sala?", "Leave the room?"),
         "confirm_leave",
-        360.0,
-        |ui| {
-            ui.label(crate::i18n::label(
-                "Seu compartilhamento será encerrado ao sair.",
-                "Your sharing will end when you leave.",
-            ));
-            ui.add_space(12.0);
-            ui.horizontal_wrapped(|ui| {
-                if session_button(
-                    ui,
-                    crate::i18n::label("Continuar na sala", "Stay in the room"),
-                    true,
-                    false,
-                )
-                .clicked()
-                {
-                    return Some(false);
-                }
-                if session_stop(ui, crate::i18n::label("Sair da sala", "Leave room"), true)
-                    .clicked()
-                {
-                    return Some(true);
-                }
+        crate::i18n::label(
+            "Seu compartilhamento será encerrado ao sair.",
+            "Your sharing will end when you leave.",
+        ),
+        crate::i18n::label("Continuar na sala", "Stay in the room"),
+        crate::i18n::label("Sair da sala", "Leave room"),
+    )
+}
+
+pub(crate) fn confirm_server_logout(ctx: &egui::Context) -> Option<bool> {
+    confirm_exit(
+        ctx,
+        crate::i18n::label("Sair do servidor?", "Sign out of the server?"),
+        "confirm_server_logout",
+        crate::i18n::label(
+            "Você precisará informar a chave de acesso novamente para entrar no servidor.",
+            "You will need to enter your access key again to sign in to the server.",
+        ),
+        crate::i18n::label("Cancelar", "Cancel"),
+        crate::i18n::label("Sair do servidor", "Sign out of server"),
+    )
+}
+
+fn confirm_exit(
+    ctx: &egui::Context,
+    title: &str,
+    id: &'static str,
+    message: &str,
+    cancel: &str,
+    confirm: &str,
+) -> Option<bool> {
+    let modal = dialog(ctx, title, id, 360.0, |ui| {
+        ui.label(message);
+        ui.add_space(12.0);
+        ui.horizontal_wrapped(|ui| {
+            let cancelled = session_button(ui, cancel, true, false).clicked();
+            let confirmed = session_stop(ui, confirm, true).clicked();
+            if confirmed {
+                Some(true)
+            } else if cancelled {
+                Some(false)
+            } else {
                 None
-            })
-            .inner
-        },
-    );
+            }
+        })
+        .inner
+    });
     modal
         .inner
         .or_else(|| modal.should_close().then_some(false))
