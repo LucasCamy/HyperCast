@@ -34,7 +34,7 @@ pub mod screen_capture;
 pub mod server_status;
 #[cfg(feature = "desktop")]
 pub mod stage;
-#[cfg(all(windows, feature = "desktop"))]
+#[cfg(all(feature = "desktop", any(windows, target_os = "linux")))]
 mod stage_ui;
 pub mod subscription;
 #[cfg(all(windows, feature = "desktop"))]

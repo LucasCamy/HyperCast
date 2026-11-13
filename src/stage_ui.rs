@@ -1,4 +1,4 @@
-//! Windows stage controls: the view menu, the controls drawn over the video,
+//! Room stage controls: the view menu, the controls drawn over the video,
 //! the strip's chips and the empty states.
 use crate::desktop_ui::{
     BORDER, MUTED, PANEL, RoomIcon, TEXT, paint_stage_icon, room_icon_button_sized, session_button,
@@ -9,6 +9,263 @@ use crate::kit::{
     popup, popup_frame,
 };
 use eframe::egui::{self, Color32, RichText, Vec2};
+use std::time::{Duration, Instant};
+
+pub(crate) const RAIL_BELOW: f32 = 640.0;
+
+pub(crate) fn sidebar(width: f32, rail: bool) -> egui::Panel {
+    egui::Panel::left("room_sidebar")
+        .exact_size(if rail {
+            60.0
+        } else {
+            crate::desktop_ui::sidebar_width(width)
+        })
+        .resizable(false)
+        .frame(
+            egui::Frame::new()
+                .fill(PANEL)
+                .inner_margin(egui::Margin::same(if rail {
+                    10
+                } else {
+                    crate::desktop_ui::room_margin(width, false)
+                })),
+        )
+}
+
+pub(crate) fn sidebar_actions(ui: &mut egui::Ui, actions: impl FnOnce(&mut egui::Ui)) {
+    let height = (ui.available_height() - 48.0).max(40.0);
+    egui::Panel::bottom("room_me")
+        .frame(egui::Frame::new().inner_margin(egui::Margin {
+            top: 8,
+            ..Default::default()
+        }))
+        .resizable(false)
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("room_actions")
+                .auto_shrink([false, true])
+                .max_height(height)
+                .show(ui, actions);
+        });
+}
+
+pub(crate) struct StageOverlay {
+    position: Option<egui::Pos2>,
+    velocity: Vec2,
+    grab: Option<Vec2>,
+    last_motion: Instant,
+    last_pointer: Option<egui::Pos2>,
+    controls: Vec<(egui::Rect, f32)>,
+    bar: Option<egui::Rect>,
+}
+
+impl Default for StageOverlay {
+    fn default() -> Self {
+        Self {
+            position: None,
+            velocity: Vec2::ZERO,
+            grab: None,
+            last_motion: Instant::now(),
+            last_pointer: None,
+            controls: Vec::new(),
+            bar: None,
+        }
+    }
+}
+
+impl StageOverlay {
+    pub fn controls_visible(
+        &mut self,
+        ctx: &egui::Context,
+        stage: egui::Rect,
+        empty: bool,
+        fullscreen: bool,
+    ) -> bool {
+        const LINGER: Duration = Duration::from_secs(2);
+        let pointer = ctx.pointer_hover_pos();
+        if pointer != self.last_pointer
+            || ctx.input(|i| i.pointer.any_down() || !i.keys_down.is_empty())
+        {
+            self.last_motion = Instant::now();
+            self.last_pointer = pointer;
+        }
+        let idle = self.last_motion.elapsed();
+        let visible = empty
+            || idle < LINGER
+            || self.grab.is_some()
+            || egui::Popup::is_any_open(ctx)
+            || pointer.is_some_and(|p| self.controls.iter().any(|(rect, _)| rect.contains(p)));
+        if idle < LINGER {
+            ctx.request_repaint_after(LINGER - idle);
+        }
+        if !visible && fullscreen && pointer.is_some_and(|p| stage.contains(p)) {
+            ctx.set_cursor_icon(egui::CursorIcon::None);
+        }
+        visible
+    }
+
+    pub fn set_controls(&mut self, outcome: Option<&ControlsOutcome>) {
+        self.bar = outcome.map(|outcome| outcome.bar);
+        self.controls.clear();
+        if let Some(outcome) = outcome {
+            self.controls.extend_from_slice(&outcome.rects);
+        }
+    }
+
+    pub fn reset_strip(&mut self) {
+        self.position = None;
+        self.grab = None;
+        self.velocity = Vec2::ZERO;
+    }
+
+    pub fn strip(
+        &mut self,
+        ui: &egui::Ui,
+        stage: egui::Rect,
+        count: usize,
+        anchor: &mut crate::stage::Anchor,
+        controls_visible: bool,
+    ) -> Strip {
+        use crate::stage::{self, GAP, MARGIN};
+        if count == 0 {
+            self.reset_strip();
+            return Strip::default();
+        }
+        if stage::too_small_for_cards(stage) {
+            self.reset_strip();
+            let width = (stage.width() - 2.0 * MARGIN).clamp(0.0, 176.0);
+            let bottom = self
+                .bar
+                .filter(|_| controls_visible)
+                .map_or(stage.bottom(), |bar| bar.top());
+            let pill = (width >= 70.0 && bottom - stage.top() >= 46.0).then(|| {
+                egui::Rect::from_min_size(
+                    egui::pos2(stage.right() - MARGIN - width, bottom - 46.0),
+                    egui::vec2(width, 34.0),
+                )
+            });
+            return Strip {
+                pill,
+                ..Default::default()
+            };
+        }
+
+        let ctx = ui.ctx();
+        let layout = stage::strip_layout(stage, count, *anchor);
+        let size = layout.size();
+        let resting = stage::anchor_origin(stage, size, *anchor, 0.0);
+        let reserve = self
+            .bar
+            .filter(|bar| {
+                controls_visible
+                    && anchor.bottom()
+                    && egui::Rect::from_min_size(resting, size).intersects(bar.expand(GAP))
+            })
+            .map_or(0.0, |bar| resting.y + size.y - (bar.top() - GAP));
+        let target = stage::anchor_origin(stage, size, *anchor, reserve);
+        let dt = ctx.input(|i| i.stable_dt).clamp(1.0 / 240.0, 0.1);
+        let mut position = stage::clamp_origin(stage, size, self.position.unwrap_or(target));
+        let handle = ui
+            .interact(
+                egui::Rect::from_min_size(position, size),
+                ui.id().with("stage-strip"),
+                egui::Sense::drag(),
+            )
+            .on_hover_cursor(egui::CursorIcon::Grab);
+        if handle.drag_started()
+            && let Some(start) = ctx.input(|i| i.pointer.press_origin())
+        {
+            self.grab = Some(start - position);
+        }
+        if let (true, Some(grab), Some(pointer)) =
+            (handle.dragged(), self.grab, ctx.pointer_latest_pos())
+        {
+            let next = stage::clamp_origin(stage, size, pointer - grab);
+            self.velocity = (next - position) / dt;
+            position = next;
+            ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+        }
+        if handle.drag_stopped() {
+            *anchor = stage::nearest_anchor(stage, position + size / 2.0);
+            self.velocity *= 0.4;
+            ctx.request_repaint();
+        } else if !handle.dragged() {
+            if stage::at_rest(position, self.velocity, target) {
+                position = target;
+                self.velocity = Vec2::ZERO;
+            } else {
+                (position, self.velocity) = stage::spring_step(position, self.velocity, target, dt);
+                position = stage::clamp_origin(stage, size, position);
+                ctx.request_repaint();
+            }
+        }
+        if !handle.dragged() {
+            self.grab = None;
+        }
+        self.position = Some(position);
+        let mut slots = layout.slots_at(position);
+        let overflow = if layout.overflow > 0 {
+            slots.pop()
+        } else {
+            None
+        };
+        Strip {
+            slots,
+            overflow,
+            pill: None,
+            dragging: handle.dragged(),
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct Strip {
+    pub slots: Vec<egui::Rect>,
+    pub overflow: Option<egui::Rect>,
+    pub pill: Option<egui::Rect>,
+    pub dragging: bool,
+}
+
+impl Strip {
+    #[cfg(windows)]
+    pub fn cutouts(&self) -> Vec<(egui::Rect, f32)> {
+        self.slots
+            .iter()
+            .map(|rect| (*rect, 8.0))
+            .chain(
+                self.overflow
+                    .into_iter()
+                    .chain(self.pill)
+                    .map(|rect| (rect, rect.height().min(rect.width()) / 2.0)),
+            )
+            .collect()
+    }
+}
+
+pub(crate) fn video_click(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    id: &str,
+    label: &str,
+    on_stage: bool,
+) -> egui::Response {
+    let response = ui
+        .interact(rect, ui.id().with(("video", id)), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            true,
+            if on_stage {
+                crate::i18n_format!("No palco: {}", "On stage: {}", label)
+            } else {
+                crate::i18n_format!("Colocar {} no palco", "Put {} on stage", label)
+            },
+        )
+    });
+    focus_ring(ui, &response, 8.0);
+    response
+}
 
 /// One video the viewer can put on the main stage.
 #[derive(Clone, Debug)]
@@ -236,7 +493,7 @@ fn stage_picker(
 
 /// Shown instead of the strip when the stage is too small for cards: lists
 /// the other videos to choose the one on the stage.
-pub(crate) fn strip_pill(
+fn strip_pill(
     ui: &egui::Ui,
     rect: egui::Rect,
     text: &str,
@@ -277,6 +534,7 @@ pub(crate) fn strip_pill(
 pub(crate) fn strip_card(
     ui: &egui::Ui,
     slot: egui::Rect,
+    id: &str,
     label: &str,
     label_height: f32,
     dragging: bool,
@@ -286,11 +544,7 @@ pub(crate) fn strip_card(
         egui::pos2(slot.right() - 2.0, slot.bottom() - label_height),
     );
     let response = ui
-        .interact(
-            slot,
-            egui::Id::new(("strip-card", label)),
-            egui::Sense::click(),
-        )
+        .interact(slot, ui.id().with(("strip-card", id)), egui::Sense::click())
         .on_hover_cursor(if dragging {
             egui::CursorIcon::Grabbing
         } else {
@@ -343,11 +597,7 @@ pub(crate) fn strip_card(
 }
 
 /// "+N" next to the cards for videos that did not fit.
-pub(crate) fn overflow_chip(
-    ui: &egui::Ui,
-    rect: egui::Rect,
-    choices: &[(String, String)],
-) -> Option<String> {
+fn overflow_chip(ui: &egui::Ui, rect: egui::Rect, choices: &[(String, String)]) -> Option<String> {
     let text = format!("+{}", choices.len());
     let label = crate::i18n_format!("{} vídeo(s) a mais", "{} more video(s)", choices.len());
     let response = chip_response(ui, rect, egui::Id::new("cards-overflow"), &label);
@@ -362,35 +612,72 @@ pub(crate) fn overflow_chip(
     stage_picker(ui, &response, choices)
 }
 
+pub(crate) fn strip_choice(
+    ui: &egui::Ui,
+    strip: &Strip,
+    ids: &[String],
+    video: impl Fn(&str) -> Option<(String, bool)>,
+) -> Option<String> {
+    let choices = |ids: &[String]| -> Vec<_> {
+        ids.iter()
+            .filter_map(|id| video(id).map(|(label, _)| (id.clone(), label)))
+            .collect()
+    };
+    if let Some(chip) = strip.overflow {
+        return overflow_chip(ui, chip, &choices(&ids[strip.slots.len()..]));
+    }
+    let pill = strip.pill?;
+    let text = if ids
+        .iter()
+        .all(|id| video(id).is_some_and(|(_, camera)| camera))
+    {
+        crate::i18n_format!("{} câmera(s)", "{} camera(s)", ids.len())
+    } else {
+        crate::i18n_format!("{} vídeo(s)", "{} video(s)", ids.len())
+    };
+    strip_pill(ui, pill, &text, &choices(ids))
+}
+
 /// Room title, status and the participants toggle. View, audio and full
 /// screen controls live over the video instead.
 pub(crate) fn stage_header(
     ui: &mut egui::Ui,
     title: &str,
     status: &str,
-    sidebar_open: bool,
-) -> egui::Response {
+    sidebar_open: Option<bool>,
+) -> bool {
     use crate::i18n::label;
     let narrow = ui.available_width() < 340.0;
     ui.spacing_mut().item_spacing = Vec2::new(8.0, 4.0);
     let participants = ui
         .horizontal(|ui| {
-            let toggle = if sidebar_open {
-                label("Ocultar participantes", "Hide participants")
-            } else {
-                label("Mostrar participantes", "Show participants")
-            };
-            let participants = if narrow {
-                room_icon_button_sized(ui, RoomIcon::Panel, toggle, true, sidebar_open, HIT)
-            } else {
-                crate::kit::segment(
-                    ui,
-                    label("Participantes", "Participants"),
-                    sidebar_open,
-                    None,
-                )
-                .on_hover_text(toggle)
-            };
+            let participants = sidebar_open.is_some_and(|sidebar_open| {
+                let toggle = if sidebar_open {
+                    label("Ocultar participantes", "Hide participants")
+                } else {
+                    label("Mostrar participantes", "Show participants")
+                };
+                if narrow {
+                    room_icon_button_sized(ui, RoomIcon::Panel, toggle, true, sidebar_open, HIT)
+                        .clicked()
+                } else {
+                    crate::kit::labeled_button(
+                        ui,
+                        label("Participantes", "Participants"),
+                        toggle,
+                        if sidebar_open {
+                            Tone::Selected
+                        } else {
+                            Tone::Secondary
+                        },
+                        true,
+                        None,
+                        HIT,
+                    )
+                    .on_hover_text(toggle)
+                    .clicked()
+                }
+            });
             let size = if ui.available_width() < 360.0 {
                 18.0
             } else {
@@ -423,6 +710,7 @@ pub(crate) struct StageControls<'a> {
     pub side_by_side: bool,
     pub fullscreen: bool,
     pub can_reconnect: bool,
+    pub can_pause: bool,
     pub paused: bool,
 }
 
@@ -441,10 +729,11 @@ fn seg_button(ui: &mut egui::Ui, text: &str, selected: bool) -> egui::Response {
 }
 
 /// Small name tag over a stage tile.
-fn name_tag(ctx: &egui::Context, id: egui::Id, at: egui::Pos2, text: &str) -> egui::Rect {
+fn name_tag(ctx: &egui::Context, id: egui::Id, tile: egui::Rect, text: &str) -> egui::Rect {
     egui::Area::new(id)
         .order(egui::Order::Foreground)
-        .fixed_pos(at)
+        .fixed_pos(tile.min + egui::vec2(10.0, 10.0))
+        .constrain_to(tile)
         .interactable(false)
         .show(ctx, |ui| {
             egui::Frame::new()
@@ -453,7 +742,7 @@ fn name_tag(ctx: &egui::Context, id: egui::Id, at: egui::Pos2, text: &str) -> eg
                 .corner_radius(crate::kit::RADIUS)
                 .inner_margin(egui::Margin::symmetric(10, 5))
                 .show(ui, |ui| {
-                    ui.set_max_width(320.0);
+                    ui.set_max_width((tile.width() - 40.0).clamp(20.0, 320.0));
                     ui.add(
                         egui::Label::new(RichText::new(text).size(13.0).color(TEXT))
                             .truncate()
@@ -498,13 +787,14 @@ fn volume_popover(ui: &mut egui::Ui, volume: &mut u32, muted: &mut bool) -> bool
 fn controls_row(
     ui: &mut egui::Ui,
     compact: bool,
+    stacked: bool,
     controls: &StageControls<'_>,
     volume: &mut u32,
     muted: &mut bool,
 ) -> (Option<ControlAction>, bool) {
     use crate::{i18n::label, stage::Show, subscription::ViewMode};
     let mut action = None;
-    ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
+    ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
     if compact {
         if let (_, Some(choice)) = view_menu(ui, controls.menu, HIT, true) {
             action = Some(ControlAction::View(choice));
@@ -525,12 +815,20 @@ fn controls_row(
             }
         }
     }
-    if controls.side_by_side
-        && seg_button(ui, label("Lado a lado", "Side by side"), false).clicked()
-    {
-        action = Some(ControlAction::SideBySide);
+    if controls.side_by_side {
+        let side_by_side = label("Lado a lado", "Side by side");
+        let response = if compact {
+            room_icon_button_sized(ui, RoomIcon::Grid, side_by_side, true, false, HIT)
+        } else {
+            seg_button(ui, side_by_side, false)
+        };
+        if response.clicked() {
+            action = Some(ControlAction::SideBySide);
+        }
     }
-    group_separator(ui);
+    if !compact {
+        group_separator(ui);
+    }
     let audio_changed = if compact {
         volume_popover(ui, volume, muted)
     } else {
@@ -541,7 +839,12 @@ fn controls_row(
         volume_percent(ui, percent);
         toggled || changed
     };
-    group_separator(ui);
+    if !compact {
+        group_separator(ui);
+    }
+    if stacked {
+        ui.end_row();
+    }
     if room_icon_button_sized(
         ui,
         RoomIcon::Playback(controls.paused),
@@ -550,7 +853,7 @@ fn controls_row(
         } else {
             label("Pausar recepção", "Pause playback")
         },
-        controls.can_reconnect,
+        controls.can_pause,
         controls.paused,
         HIT,
     )
@@ -602,30 +905,29 @@ pub(crate) fn stage_controls(
     let mut rects = Vec::new();
     for (index, (tile, text)) in tags.iter().enumerate() {
         rects.push((
-            name_tag(
-                ctx,
-                egui::Id::new(("stage-tag", index)),
-                tile.min + egui::vec2(10.0, 10.0),
-                text,
-            ),
+            name_tag(ctx, egui::Id::new(("stage-tag", index)), *tile, text),
             8.0,
         ));
     }
     let compact = stage.width() < 760.0;
+    let stacked = stage.width() < 276.0;
     let shown = egui::Area::new(egui::Id::new("stage-controls"))
         .order(egui::Order::Foreground)
         .pivot(egui::Align2::CENTER_BOTTOM)
         .fixed_pos(stage.center_bottom() - egui::vec2(0.0, 12.0))
         .constrain_to(stage)
         .show(ctx, |ui| {
+            ui.set_max_width(stage.width());
             egui::Frame::new()
                 .fill(PANEL)
                 .stroke(egui::Stroke::new(1.0, crate::kit::OUTLINE))
                 .corner_radius(crate::kit::PANEL_RADIUS)
                 .inner_margin(egui::Margin::same(6))
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| controls_row(ui, compact, controls, volume, muted))
-                        .inner
+                    ui.horizontal_wrapped(|ui| {
+                        controls_row(ui, compact, stacked, controls, volume, muted)
+                    })
+                    .inner
                 })
                 .inner
         });
@@ -644,7 +946,7 @@ pub(crate) fn stage_controls(
 #[test]
 fn stage_controls_keep_separate_targets_inside_the_stage() {
     use crate::{stage::Show, subscription::ViewMode};
-    for width in [1600.0, 900.0, 600.0, 420.0] {
+    for width in [1600.0, 900.0, 600.0, 420.0, 210.0, 155.0] {
         let ctx = egui::Context::default();
         let area = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 500.0));
         let entries = [StageEntry {
@@ -662,6 +964,7 @@ fn stage_controls_keep_separate_targets_inside_the_stage() {
             side_by_side: true,
             fullscreen: false,
             can_reconnect: true,
+            can_pause: true,
             paused: false,
         };
         let mut outcome = None;
@@ -712,6 +1015,9 @@ pub(crate) struct Me<'a> {
     pub connected: bool,
     pub can_publish: bool,
     pub publishing: bool,
+    pub selecting: bool,
+    pub share_pending: bool,
+    pub self_video: Option<&'a str>,
     pub camera_active: bool,
     pub camera_starting: bool,
     pub preview: bool,
@@ -725,6 +1031,7 @@ pub(crate) enum RoomChoice {
     SwitchRoom,
     Pause,
     Reconnect,
+    Update,
     Diagnostics,
 }
 
@@ -737,11 +1044,27 @@ pub(crate) struct MeOutcome {
     pub preview: bool,
     pub leave: bool,
     pub menu: Option<RoomChoice>,
-    /// The avatar was pressed while sharing: watch your own screen.
+    /// The avatar was pressed while a local preview is available.
     pub focus_self: bool,
 }
 
 const RAIL_ICON: f32 = HIT;
+
+pub(crate) fn me_status(
+    connected: bool,
+    can_publish: bool,
+    sharing: bool,
+    camera: bool,
+) -> &'static str {
+    use crate::i18n::label;
+    match (sharing, camera) {
+        (true, true) => label("Transmitindo · câmera ligada", "Sharing · camera on"),
+        (true, false) => label("Transmitindo sua tela", "Sharing your screen"),
+        (false, true) => label("Câmera ligada", "Camera on"),
+        _ if connected && !can_publish => label("Só assistindo", "Watching only"),
+        _ => label("Assistindo", "Watching"),
+    }
+}
 
 fn camera_label(me: &Me<'_>) -> &'static str {
     if me.camera_starting {
@@ -837,6 +1160,9 @@ fn room_menu(ui: &egui::Ui, anchor: &egui::Response, me: &Me<'_>) -> Option<Room
             choice = Some(RoomChoice::Reconnect);
         }
         crate::desktop_ui::display_scale(ui);
+        if menu_row(ui, label("Atualizar", "Update"), true, None).clicked() {
+            choice = Some(RoomChoice::Update);
+        }
         if menu_row(ui, label("Diagnóstico", "Diagnostics"), true, None).clicked() {
             choice = Some(RoomChoice::Diagnostics);
         }
@@ -864,35 +1190,40 @@ fn icon(
 pub(crate) fn me_panel(ui: &mut egui::Ui, me: &Me<'_>) -> MeOutcome {
     use crate::i18n::label;
     let mut out = MeOutcome::default();
-    let share_label = if me.publishing {
+    let share_label = if me.selecting {
+        label("Cancelar seleção", "Cancel selection")
+    } else if me.publishing {
         label("Parar compartilhamento", "Stop screen sharing")
     } else {
         label("Compartilhar tela", "Share screen")
     };
-    let share_enabled = me.connected && me.can_publish;
+    let share_enabled =
+        me.selecting || me.publishing || (me.connected && me.can_publish && !me.share_pending);
+    let gear_enabled = me.connected && me.can_publish && !me.selecting && !me.share_pending;
+    let destructive_share = me.publishing || me.selecting;
     let camera_enabled = me.connected && me.can_publish && !me.camera_starting;
     let preview_label = if me.preview {
         label("Ocultar minha prévia", "Hide my preview")
     } else {
         label("Mostrar minha prévia", "Show my preview")
     };
-    let show_preview = me.publishing || me.camera_active;
+    let show_preview = me.self_video.is_some();
     let leave_label = label("Sair da sala", "Leave room");
     let more_label = label("Mais opções", "More options");
     if me.rail {
         ui.vertical_centered(|ui| {
             ui.spacing_mut().item_spacing = Vec2::new(0.0, 6.0);
-            if me.can_publish || me.publishing {
+            if me.can_publish || destructive_share {
                 let share = icon(
                     ui,
-                    if me.publishing {
+                    if destructive_share {
                         RoomIcon::Stop
                     } else {
                         RoomIcon::Share
                     },
                     share_label,
-                    share_enabled || me.publishing,
-                    if me.publishing {
+                    share_enabled,
+                    if destructive_share {
                         Tone::Danger
                     } else {
                         Tone::Primary
@@ -902,12 +1233,12 @@ pub(crate) fn me_panel(ui: &mut egui::Ui, me: &Me<'_>) -> MeOutcome {
                     out.share = Some(share.id);
                 }
             }
-            if me.publishing {
+            if me.publishing && !me.selecting {
                 let gear = icon(
                     ui,
                     RoomIcon::Gear,
                     crate::desktop_ui::stream_options_title(),
-                    true,
+                    gear_enabled,
                     Tone::Secondary,
                 );
                 if gear.clicked() {
@@ -954,10 +1285,13 @@ pub(crate) fn me_panel(ui: &mut egui::Ui, me: &Me<'_>) -> MeOutcome {
             ui.spacing_mut().item_spacing = Vec2::new(6.0, 8.0);
             ui.horizontal(|ui| {
                 let initial = me.name.chars().next().unwrap_or('V');
-                let you = avatar(ui, initial, 36.0, me.publishing, false)
-                    .on_hover_text(label("Ver minha tela no palco", "Watch my screen on stage"));
-                if me.publishing && you.clicked() {
-                    out.focus_self = true;
+                let you = avatar(ui, initial, 36.0, me.publishing || me.camera_active, false);
+                if let Some(video) = me.self_video.filter(|_| me.preview) {
+                    let hint = crate::i18n_format!("Colocar {} no palco", "Put {} on stage", video);
+                    you.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &hint)
+                    });
+                    out.focus_self = you.on_hover_text(hint).clicked();
                 }
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 1.0;
@@ -974,9 +1308,10 @@ pub(crate) fn me_panel(ui: &mut egui::Ui, me: &Me<'_>) -> MeOutcome {
                     .on_hover_text(me.status);
                 });
             });
-            if me.can_publish || me.publishing {
+            if me.can_publish || destructive_share {
                 ui.horizontal(|ui| {
-                    let gear_width = if me.publishing {
+                    let show_gear = me.publishing && !me.selecting;
+                    let gear_width = if show_gear {
                         HIT + ui.spacing().item_spacing.x
                     } else {
                         0.0
@@ -984,30 +1319,30 @@ pub(crate) fn me_panel(ui: &mut egui::Ui, me: &Me<'_>) -> MeOutcome {
                     let width = (ui.available_width() - gear_width).max(HIT);
                     let share = crate::kit::labeled_button(
                         ui,
-                        if me.publishing {
+                        if show_gear {
                             label("Parar", "Stop")
                         } else {
                             share_label
                         },
                         share_label,
-                        if me.publishing {
+                        if destructive_share {
                             Tone::Danger
                         } else {
                             Tone::Primary
                         },
-                        share_enabled || me.publishing,
+                        share_enabled,
                         Some(width),
                         HIT,
                     );
                     if share.clicked() {
                         out.share = Some(share.id);
                     }
-                    if me.publishing {
+                    if show_gear {
                         let gear = icon(
                             ui,
                             RoomIcon::Gear,
                             crate::desktop_ui::stream_options_title(),
-                            true,
+                            gear_enabled,
                             Tone::Secondary,
                         );
                         if gear.clicked() {
@@ -1053,11 +1388,85 @@ pub(crate) fn me_panel(ui: &mut egui::Ui, me: &Me<'_>) -> MeOutcome {
 }
 
 /// One participant in the collapsed rail.
+#[derive(Clone, Copy)]
 pub(crate) struct RailPerson<'a> {
     pub name: &'a str,
     pub status: &'a str,
     pub live: bool,
     pub focused: bool,
+}
+
+pub(crate) fn participant_status(live: Option<bool>, focused: Option<bool>) -> &'static str {
+    use crate::i18n::label;
+    match (live, focused) {
+        (_, Some(true)) => label("Em destaque · câmera", "Focused · camera"),
+        (_, Some(false)) => label("Em destaque · compartilhando", "Focused · sharing"),
+        (Some(true), None) => label("Câmera ligada", "Camera on"),
+        (Some(false), None) => label("Compartilhando tela", "Sharing screen"),
+        (None, None) => label("Assistindo à sala", "Watching the room"),
+    }
+}
+
+pub(crate) fn participant_card(ui: &mut egui::Ui, person: &RailPerson<'_>) -> egui::Response {
+    let response = ui
+        .add_enabled_ui(person.live, |ui| {
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 60.0), egui::Sense::click())
+                .1
+        })
+        .inner;
+    let radius = f32::from(crate::kit::RADIUS);
+    paint_frame(
+        ui,
+        &response,
+        if person.focused {
+            Tone::Selected
+        } else {
+            Tone::Secondary
+        },
+        radius,
+    );
+    focus_ring(ui, &response, radius);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            person.live,
+            format!("{}: {}", person.name, person.status),
+        )
+    });
+    let rect = response.rect;
+    let painter = ui.painter();
+    let center = rect.left_center() + egui::vec2(27.0, 0.0);
+    let initial = person.name.chars().next().unwrap_or('P');
+    let tint = if person.focused {
+        crate::desktop_ui::ACCENT
+    } else {
+        MUTED
+    };
+    painter.circle_filled(center, 16.0, tint.gamma_multiply(0.14));
+    painter.text(
+        center,
+        egui::Align2::CENTER_CENTER,
+        initial.to_uppercase().to_string(),
+        egui::FontId::proportional(15.0),
+        tint,
+    );
+    if person.live {
+        let dot = center + Vec2::splat(11.0);
+        painter.circle_filled(dot, 5.0, PANEL);
+        painter.circle_filled(dot, 3.0, crate::desktop_ui::ACCENT);
+    }
+    let left = rect.left() + 52.0;
+    let right = rect.right() - 8.0;
+    let top = rect.top();
+    let line = |y, height| {
+        egui::Rect::from_min_max(
+            egui::pos2(left, top + y),
+            egui::pos2(right, top + y + height),
+        )
+    };
+    crate::desktop_ui::paint_video_label(ui, line(9.0, 22.0), person.name, 14.0, TEXT);
+    crate::desktop_ui::paint_video_label(ui, line(31.0, 20.0), person.status, 11.0, tint);
+    response.on_hover_text(format!("{}\n{}", person.name, person.status))
 }
 
 /// Participants as avatars in the collapsed panel. Returns the one pressed.
@@ -1112,6 +1521,9 @@ fn the_you_panel_fits_the_sidebar_and_the_rail() {
                             connected: true,
                             can_publish: true,
                             publishing: true,
+                            selecting: false,
+                            share_pending: false,
+                            self_video: Some("Minha tela"),
                             camera_active: true,
                             camera_starting: false,
                             preview: true,
@@ -1133,8 +1545,11 @@ fn the_you_panel_fits_the_sidebar_and_the_rail() {
             .filter(|(_, node)| node.role() == egui::accesskit::Role::Button)
             .filter_map(|(_, node)| node.bounds())
             .collect();
-        // Stop, settings, camera, preview, more options and leave.
-        assert_eq!(buttons.len(), 6, "{width}: {buttons:?}");
+        assert_eq!(
+            buttons.len(),
+            if rail { 6 } else { 7 },
+            "{width}: {buttons:?}"
+        );
         for (i, b) in buttons.iter().enumerate() {
             assert!(b.width() >= 35.9 && b.height() >= 35.9, "{width}: {b:?}");
             assert!(

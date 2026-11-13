@@ -1,4 +1,5 @@
 use crate::resilience::StateMutex as Mutex;
+pub use crate::subscription::RoomLayout as Layout;
 use crate::{
     camera_preview::{CameraPreview, LOCAL_CAMERA, PreviewFrame},
     encoder::{AmdProfile, Codec, HardwareEncoder},
@@ -103,35 +104,6 @@ pub struct Shared {
     pub audio_status: String,
     pub active_target: Option<CaptureTarget>,
     pub source_error: String,
-}
-#[derive(Clone)]
-pub struct Layout {
-    pub self_preview: bool,
-    pub mode: ViewMode,
-    pub focus: Option<String>,
-    pub paused: bool,
-    pub volume: u32,
-    /// Set by the room UI: only `focus` and `live` are received, with no
-    /// fallback to the first screen, and only `audio` owners are heard.
-    pub explicit: bool,
-    /// Videos kept live besides `focus`, such as floating camera cards.
-    pub live: Vec<String>,
-    /// Participants whose screen-share audio stays on.
-    pub audio: Vec<String>,
-}
-impl Layout {
-    pub fn new(mode: ViewMode, volume: u32) -> Self {
-        Self {
-            self_preview: true,
-            mode,
-            focus: None,
-            paused: false,
-            volume,
-            explicit: false,
-            live: Vec::new(),
-            audio: Vec::new(),
-        }
-    }
 }
 #[derive(Clone, Copy, PartialEq)]
 pub struct ShareQuality {
@@ -694,14 +666,14 @@ fn update_subscriptions(
                         .any(|p| p.source() == TrackSource::Camera && p.kind() == TrackKind::Video))
         })
         .or_else(|| {
-            (!layout.explicit)
+            (layout.playback.is_none())
                 .then(|| screens.first().map(|(id, _)| id.as_str()))
                 .flatten()
         });
     let mut count = 0;
     for (identity, publication) in &screens {
-        let wanted = if layout.explicit {
-            Some(identity.as_str()) == focus || layout.live.contains(identity)
+        let wanted = if let Some(playback) = &layout.playback {
+            playback.wants_video(identity)
         } else {
             layout.mode == ViewMode::Grid || Some(identity.as_str()) == focus
         };
@@ -716,7 +688,15 @@ fn update_subscriptions(
             publication.set_subscribed(false);
         }
         if publication.simulcasted() && enabled {
-            publication.set_video_quality(VideoQuality::High);
+            let thumbnail = layout
+                .playback
+                .as_ref()
+                .is_some_and(|view| view.strip.contains(identity));
+            publication.set_video_quality(if thumbnail {
+                VideoQuality::Low
+            } else {
+                VideoQuality::High
+            });
         }
     }
     for participant in room.remote_participants().into_values() {
@@ -726,8 +706,8 @@ fn update_subscriptions(
             if publication.source() != TrackSource::ScreenshareAudio {
                 continue;
             }
-            let wanted = if layout.explicit {
-                layout.audio.contains(&identity)
+            let wanted = if let Some(playback) = &layout.playback {
+                playback.audio.contains(&identity)
             } else {
                 layout.mode == ViewMode::Grid || Some(identity.as_str()) == focus
             };
@@ -1191,7 +1171,7 @@ impl Engine {
                             window_hidden = hidden;
                             layout = manual_layout.clone();
                             layout.paused |= hidden;
-                            camera_preview.set_visible(layout.self_preview && !layout.paused);
+                            camera_preview.set_visible(layout.camera_preview_visible());
                             if reception_restart.is_none() {
                                 update_subscriptions(&room, &layout, &receive_monitor);
                             }
@@ -1245,8 +1225,7 @@ impl Engine {
                                     {
                                         let room = room.clone();
                                         camera_preview = CameraPreview::default();
-                                        camera_preview
-                                            .set_visible(layout.self_preview && !layout.paused);
+                                        camera_preview.set_visible(layout.camera_preview_visible());
                                         let preview = camera_preview.clone();
                                         let preview_ctx = ctx.clone();
                                         camera_start = Some(runtime.spawn(async move {
@@ -1311,9 +1290,14 @@ impl Engine {
                                             next.paused,
                                             next.volume,
                                             next.self_preview,
-                                            next.explicit,
-                                            next.live.len() + usize::from(next.focus.is_some()),
-                                            next.audio.len()
+                                            next.playback.is_some(),
+                                            next.playback
+                                                .as_ref()
+                                                .map_or(0, |view| view.main.len()
+                                                    + view.strip.len()),
+                                            next.playback
+                                                .as_ref()
+                                                .map_or(0, |view| view.audio.len())
                                         ),
                                         "",
                                     );
@@ -1325,8 +1309,7 @@ impl Engine {
                                     manual_layout = next;
                                     layout = manual_layout.clone();
                                     layout.paused |= window_hidden;
-                                    camera_preview
-                                        .set_visible(layout.self_preview && !layout.paused);
+                                    camera_preview.set_visible(layout.camera_preview_visible());
                                     if reception_restart.is_none() {
                                         update_subscriptions(&room, &layout, &receive_monitor);
                                     }

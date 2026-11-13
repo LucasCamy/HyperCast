@@ -8,7 +8,7 @@ GStreamer ou codecs manualmente para executar o AppImage.
 
 ## Abrir no Bazzite
 
-Baixe `HyperCast-0.9.0-linux-x86_64.AppImage` na página de versões e abra pelo
+Baixe o `HyperCast-*-linux-x86_64.AppImage` na página de versões e abra pelo
 Gear Lever. Se preferir abrir diretamente, habilite a permissão de execução nas
 propriedades do arquivo. Sem suporte a FUSE, use `--appimage-extract-and-run`.
 
@@ -20,10 +20,11 @@ ainda não há integração com o cofre de credenciais do desktop.
 
 Seu nome é salvo em `$XDG_STATE_HOME/hypercast/display-name` ou
 `~/.local/state/hypercast/display-name` e preenchido na próxima abertura.
-**Recolher menu** amplia a área de vídeo; **Abrir menu** restaura os controles.
-Duplo clique na transmissão ou no participante que transmite seleciona uma única
-tela; **Grid** volta a mostrar várias. A versão Linux já não renderiza prévia local.
-A marca **Transmitindo** indica quem envia, independentemente da tela em destaque.
+**Participantes** alterna o painel entre cartões e uma coluna de ícones. As
+ações de compartilhar, ligar a câmera e sair ficam na parte inferior do painel.
+Clique num participante ou num vídeo para colocá-lo no palco. As telas podem
+dividir o palco, e os demais vídeos ficam numa faixa arrastável. A prévia da
+própria câmera aparece quando o olho estiver ligado. Veja [controles da sala](room-controls.md).
 
 Para trocar, abra **Escolher sala** durante a sessão e entre em outra. O aplicativo
 encerra o envio e a conexão anteriores em segundo plano antes de conectar à nova
@@ -58,7 +59,7 @@ Formato de vídeo e volume ficam em seções recolhíveis, com o mesmo padrão d
 botões e controles do Windows. Atualização e Diagnóstico usam janelas com bordas
 e espaçamento comuns. No Linux, Atualização abre o download do AppImage; não
 instala um pacote nem declara automaticamente que há uma versão mais recente.
-A barra da sala mostra [indicadores medidos](video-quality.md#indicadores-na-interface).
+**Diagnóstico** mostra os [indicadores medidos](video-quality.md#indicadores-na-interface).
 
 O encerramento após escolher uma tela no Bazzite ainda precisa do log do PC
 afetado; as mudanças visuais de 0.8.6 não constituem uma correção dessa falha.

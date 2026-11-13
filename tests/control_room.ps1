@@ -1,4 +1,4 @@
-﻿param([int]$TargetPid,[string]$ExpectedExecutable,[string]$Name,[switch]$Double,[switch]$Read,[switch]$List,[string]$FocusSequence,[switch]$Toggle)
+﻿param([int]$TargetPid,[string]$ExpectedExecutable,[string]$Name,[switch]$Double,[switch]$Read,[switch]$List,[switch]$Fullscreen,[string]$FocusSequence,[switch]$Toggle)
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false)
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
@@ -6,7 +6,15 @@ $hcProcess=Get-Process -Id $TargetPid
 if([IO.Path]::GetFullPath($hcProcess.Path) -ne [IO.Path]::GetFullPath($ExpectedExecutable)){throw 'Unexpected executable'}
 $hcRoot=[System.Windows.Automation.AutomationElement]::FromHandle($hcProcess.MainWindowHandle)
 if($List){
-$hcRoot.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition) | ForEach-Object {if($_.Current.Name -like 'Transmissão de *'){$_.Current.Name}};exit
+    $hcRoot.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition) | ForEach-Object {
+        if($_.Current.Name -like 'Colocar * no palco' -or $_.Current.Name -like 'No palco: *'){$_.Current.Name}
+    }
+    exit
+}
+if($Fullscreen){
+    $condition=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,'Mais opções')
+    if($hcRoot.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition)){throw 'Room sidebar is still present'}
+    exit
 }
 if($FocusSequence){
     foreach($hcLabel in $FocusSequence.Split(',')){

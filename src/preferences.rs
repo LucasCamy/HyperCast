@@ -140,9 +140,7 @@ impl Default for Settings {
             muted: false,
             sidebar: true,
             self_preview: true,
-            // Windows opens on the stage with floating cameras; Linux keeps
-            // its single-stream spotlight and grid behaviour unchanged.
-            grid: !cfg!(windows),
+            grid: false,
             show: Default::default(),
             anchor: Default::default(),
         }
@@ -218,9 +216,8 @@ impl Settings {
             muted: v["muted"].as_bool()?,
             sidebar: v["sidebar"].as_bool()?,
             self_preview: v["self_preview"].as_bool()?,
-            // Before 0.9.7 the grid was the only header layout on Windows;
-            // open those profiles on the stage so floating cameras show up.
-            grid: v["grid"].as_bool()? && (!cfg!(windows) || v.get("show").is_some()),
+            // Open profiles from before the stage on the new default layout.
+            grid: v["grid"].as_bool()? && v.get("show").is_some(),
             show,
             anchor,
         })
@@ -533,11 +530,7 @@ mod settings_tests {
         let old = Settings::decode(before_stage.to_string().as_bytes()).unwrap();
         assert_eq!(old.show, crate::stage::Show::All);
         assert_eq!(old.anchor, crate::stage::Anchor::BottomRight);
-        assert_eq!(
-            old.grid,
-            !cfg!(windows),
-            "Windows profiles open on the stage once"
-        );
+        assert!(!old.grid, "Older profiles open on the stage");
         for (field, bad) in [
             ("show", serde_json::json!("everything")),
             ("strip", serde_json::json!(3)),

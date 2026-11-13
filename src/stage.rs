@@ -1,6 +1,5 @@
 //! Viewer-side arrangement of the room: the videos on the stage and the strip
 //! of the others floating over it. Pure policy and geometry, no rendering.
-#![cfg_attr(not(windows), allow(dead_code))] // Linux reads only the saved keys.
 use eframe::egui::{Pos2, Rect, Vec2, pos2, vec2};
 
 /// What the viewer wants to see. Applies to every participant, including the
@@ -119,24 +118,117 @@ pub struct Arrangement {
     pub strip: Vec<String>,
 }
 
+#[derive(Default)]
+pub(crate) struct RoomVideos {
+    pub arrival: Vec<String>,
+    previous: Vec<(String, String)>,
+}
+
+impl RoomVideos {
+    pub fn arrange(
+        &mut self,
+        sources: &[Source<'_>],
+        show: Show,
+        focus: &mut Option<String>,
+    ) -> Arrangement {
+        let source = |id: &str| sources.iter().find(|source| source.id == id);
+        self.arrival.retain(|id| source(id).is_some());
+        for source in sources {
+            if !self.arrival.iter().any(|id| id == source.id) {
+                self.arrival.push(source.id.to_owned());
+            }
+        }
+        if let Some(id) = focus.as_deref()
+            && source(id).is_none()
+            && let Some((_, owner)) = self.previous.iter().find(|(previous, _)| previous == id)
+        {
+            *focus = sources
+                .iter()
+                .find(|s| s.owner == owner && show.allows(s.camera))
+                .map(|s| s.id.to_owned());
+        }
+        let ordered: Vec<_> = self
+            .arrival
+            .iter()
+            .filter_map(|id| source(id).copied())
+            .collect();
+        let arrangement = arrange(&ordered, show, focus.as_deref(), &self.previous);
+        self.previous = arrangement
+            .stage
+            .iter()
+            .filter_map(|id| source(id).map(|s| (id.clone(), s.owner.to_owned())))
+            .collect();
+        arrangement
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Playback {
+    pub main: Vec<String>,
+    pub strip: Vec<String>,
+    pub audio: Vec<String>,
+}
+
+impl Playback {
+    pub fn wants_video(&self, id: &str) -> bool {
+        self.main.iter().chain(&self.strip).any(|video| video == id)
+    }
+}
+
+impl Arrangement {
+    pub(crate) fn playback(
+        &self,
+        sources: &[Source<'_>],
+        show: Show,
+        mode: crate::subscription::ViewMode,
+        rect: Rect,
+        anchor: Anchor,
+    ) -> Playback {
+        use crate::subscription::ViewMode;
+        let remote_screens = sources.iter().filter(|s| !s.camera && !s.local);
+        if mode == ViewMode::Grid {
+            return Playback {
+                main: sources
+                    .iter()
+                    .filter(|s| show.allows(s.camera))
+                    .map(|s| s.id.to_owned())
+                    .collect(),
+                audio: remote_screens.map(|s| s.owner.to_owned()).collect(),
+                ..Default::default()
+            };
+        }
+        let shown = if rect.is_positive() && !too_small_for_cards(rect) && !self.strip.is_empty() {
+            strip_layout(rect, self.strip.len(), anchor).shown
+        } else {
+            0
+        };
+        // With a camera on stage, keep screen audio audible.
+        let stage_audio: Vec<_> = remote_screens
+            .clone()
+            .filter(|s| self.stage.iter().any(|id| id == s.id))
+            .map(|s| s.owner.to_owned())
+            .collect();
+        Playback {
+            main: self.stage.clone(),
+            strip: self.strip[..shown].to_vec(),
+            audio: if stage_audio.is_empty() {
+                remote_screens.map(|s| s.owner.to_owned()).collect()
+            } else {
+                stage_audio
+            },
+        }
+    }
+}
+
 /// Screens that share the stage before the rest go to the strip.
 pub const MAX_TILED: usize = 4;
 
-/// The owner of a video that may already have left `sources`: a screen key
-/// is its owner's identity, a camera key is `owner/camera`.
-fn owner_of<'a>(sources: &[Source<'a>], id: &'a str) -> &'a str {
-    sources
-        .iter()
-        .find(|s| s.id == id)
-        .map_or_else(|| id.strip_suffix("/camera").unwrap_or(id), |s| s.owner)
-}
-
 /// `manual` is the viewer's explicit choice; `previous` what the stage held.
-pub fn arrange(
+fn arrange(
     sources: &[Source<'_>],
     show: Show,
     manual: Option<&str>,
-    previous: &[String],
+    previous: &[(String, String)],
 ) -> Arrangement {
     let visible: Vec<&Source<'_>> = sources.iter().filter(|s| show.allows(s.camera)).collect();
     // Remote videos first: watching yourself is a fallback.
@@ -153,14 +245,13 @@ pub fn arrange(
             cameras
                 .iter()
                 .copied()
-                .find(|s| previous.iter().any(|p| p == s.id))
+                .find(|s| previous.iter().any(|(id, _)| id == s.id))
                 .or_else(|| {
                     // A shared screen ended: keep watching the same person.
-                    cameras.iter().copied().find(|s| {
-                        previous
-                            .iter()
-                            .any(|p| owner_of(sources, p.as_str()) == s.owner)
-                    })
+                    cameras
+                        .iter()
+                        .copied()
+                        .find(|s| previous.iter().any(|(_, owner)| owner == s.owner))
                 })
                 .or_else(|| cameras.first().copied())
                 .into_iter()
@@ -181,7 +272,10 @@ pub fn arrange(
 /// Tiles for the videos sharing the stage: 1 full, 2 side by side, 3-4 in a
 /// 2 × 2 grid. Wide stages keep 2 videos in a row; tall ones stack them.
 pub fn stage_tiles(stage: Rect, count: usize, gap: f32) -> Vec<Rect> {
-    if count <= 1 {
+    if count == 0 {
+        return Vec::new();
+    }
+    if count == 1 {
         return vec![stage];
     }
     let (columns, rows) = match count {
@@ -417,7 +511,12 @@ mod tests {
             screen("bia"),
             camera("bia/camera", "bia"),
         ];
-        let a = arrange(&sources, Show::All, None, &ids(&["ana/camera"]));
+        let a = arrange(
+            &sources,
+            Show::All,
+            None,
+            &[("ana/camera".into(), "ana".into())],
+        );
         assert_eq!(a.stage, ids(&["ana", "bia"]));
         assert_eq!(a.strip, ids(&["ana/camera", "bia/camera"]));
     }
@@ -431,16 +530,63 @@ mod tests {
         let b = arrange(&sources, Show::All, Some("bia"), &[]);
         assert_eq!(b.stage, ids(&["bia"]));
         assert_eq!(b.strip, ids(&["ana", "ana/camera"]));
-        let tiled = arrange(&sources, Show::All, None, &ids(&["bia"]));
+        let tiled = arrange(&sources, Show::All, None, &[("bia".into(), "bia".into())]);
         assert_eq!(tiled.stage, ids(&["ana", "bia"]));
     }
 
     #[test]
     fn a_stopped_screen_hands_the_stage_to_the_sharers_camera() {
-        let sources = [camera("bia/camera", "bia"), camera("ana/camera", "ana")];
-        let a = arrange(&sources, Show::All, None, &ids(&["ana"]));
-        assert_eq!(a.stage, ids(&["ana/camera"]));
-        assert_eq!(a.strip, ids(&["bia/camera"]));
+        let mut videos = RoomVideos::default();
+        let mut focus = Some("screen-track".into());
+        let shared = Source {
+            id: "screen-track",
+            ..screen("ana")
+        };
+        let cameras = [camera("camera-b", "bia"), camera("camera-a", "ana")];
+        videos.arrange(&[shared, cameras[0], cameras[1]], Show::All, &mut focus);
+        let a = videos.arrange(
+            &[screen("bia"), cameras[0], cameras[1]],
+            Show::All,
+            &mut focus,
+        );
+        assert_eq!(a.stage, ids(&["camera-a"]));
+        assert_eq!(a.strip, ids(&["bia", "camera-b"]));
+        assert_eq!(focus.as_deref(), Some("camera-a"));
+    }
+
+    #[test]
+    fn playback_requests_only_visible_videos_and_keeps_screen_audio_on_cameras() {
+        use crate::subscription::ViewMode;
+        let sources = [screen("ana"), screen("bia"), camera("camera-a", "ana")];
+        let wide = Rect::from_min_size(Pos2::ZERO, vec2(960.0, 540.0));
+        let compact = Rect::from_min_size(Pos2::ZERO, vec2(400.0, 240.0));
+        let arrangement = arrange(&sources, Show::All, Some("ana"), &[]);
+        let playback = arrangement.playback(
+            &sources,
+            Show::All,
+            ViewMode::Spotlight,
+            wide,
+            Anchor::BottomRight,
+        );
+        assert_eq!(playback.main, ids(&["ana"]));
+        assert_eq!(playback.strip, ids(&["bia", "camera-a"]));
+        assert_eq!(playback.audio, ids(&["ana"]));
+        let playback = arrangement.playback(
+            &sources,
+            Show::All,
+            ViewMode::Spotlight,
+            compact,
+            Anchor::BottomRight,
+        );
+        assert!(playback.strip.is_empty());
+        assert!(!playback.wants_video("camera-a"));
+        let arrangement = arrange(&sources, Show::Cameras, None, &[]);
+        for mode in [ViewMode::Spotlight, ViewMode::Grid] {
+            let playback =
+                arrangement.playback(&sources, Show::Cameras, mode, wide, Anchor::BottomRight);
+            assert_eq!(playback.main, ids(&["camera-a"]));
+            assert_eq!(playback.audio, ids(&["ana", "bia"]));
+        }
     }
 
     #[test]
@@ -462,7 +608,12 @@ mod tests {
         let screens = arrange(&sources, Show::Screens, None, &[]);
         assert_eq!(screens.stage, ids(&["ana"]));
         assert!(screens.strip.is_empty());
-        let cameras = arrange(&sources, Show::Cameras, None, &ids(&["ana"]));
+        let cameras = arrange(
+            &sources,
+            Show::Cameras,
+            None,
+            &[("ana".into(), "ana".into())],
+        );
         assert_eq!(cameras.stage, ids(&["ana/camera"]));
         assert!(cameras.strip.is_empty());
         let none = arrange(&sources[1..], Show::Screens, None, &[]);

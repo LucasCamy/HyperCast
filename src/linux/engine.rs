@@ -1,9 +1,10 @@
 use super::media::{AudioCapture, Capture, Codec, Encoder, Playout, Source};
 use crate::resilience::StateMutex as Mutex;
+pub use crate::subscription::RoomLayout as Layout;
 use crate::{
-    camera_preview::{CameraPreview, LOCAL_CAMERA},
+    camera_preview::CameraPreview,
     network::{self, EncodedPublisher},
-    subscription::{Demand, ViewMode, delivery_demand},
+    subscription::{Demand, delivery_demand},
 };
 use anyhow::Result;
 use eframe::egui;
@@ -34,6 +35,7 @@ pub struct Screen {
     pub sid: String,
     pub owner: String,
     pub name: String,
+    pub camera: bool,
 }
 #[derive(Default, Clone)]
 pub struct State {
@@ -57,25 +59,6 @@ pub struct State {
     pub sent: u64,
     pub received: u64,
     pub audio_received: u64,
-}
-#[derive(Clone)]
-pub struct Layout {
-    pub self_preview: bool,
-    pub mode: ViewMode,
-    pub focus: Option<String>,
-    pub paused: bool,
-    pub volume: u32,
-}
-impl Default for Layout {
-    fn default() -> Self {
-        Self {
-            self_preview: true,
-            mode: ViewMode::Spotlight,
-            focus: None,
-            paused: false,
-            volume: 80,
-        }
-    }
 }
 pub enum Command {
     ToggleCamera,
@@ -307,21 +290,29 @@ fn refresh(
     shared: &Arc<Mutex<State>>,
     mute_playback: bool,
     recovery: &crate::reception_recovery::runtime::Monitor,
-) -> HashMap<String, String> {
+) {
     let mut screens: Vec<_> = room
         .remote_participants()
         .into_values()
         .flat_map(|p| {
             let owner = p.identity().to_string();
-            let name = p.name().to_owned();
+            let name = if p.name().is_empty() {
+                owner.clone()
+            } else {
+                p.name().to_owned()
+            };
             p.track_publications()
                 .into_values()
-                .filter(|t| matches!(t.source(), TrackSource::Screenshare | TrackSource::Camera))
+                .filter(|t| {
+                    t.kind() == TrackKind::Video
+                        && matches!(t.source(), TrackSource::Screenshare | TrackSource::Camera)
+                })
                 .map(move |publication| {
                     (
                         Screen {
                             sid: publication.sid().to_string(),
                             owner: owner.clone(),
+                            camera: publication.source() == TrackSource::Camera,
                             name: format!(
                                 "{name} · {}",
                                 if publication.source() == TrackSource::Camera {
@@ -336,14 +327,13 @@ fn refresh(
                 })
         })
         .collect();
-    screens.sort_by_key(|(screen, publication)| {
-        (
-            publication.source() == TrackSource::Camera,
-            screen.owner.clone(),
-        )
-    });
+    screens
+        .sort_by(|(a, _), (b, _)| (a.camera, &a.owner, &a.sid).cmp(&(b.camera, &b.owner, &b.sid)));
     screens.truncate(6);
-    let focus = if layout.self_preview && layout.focus.as_deref() == Some(LOCAL_CAMERA) {
+    let focus = if layout.playback.is_some()
+        || (layout.self_preview
+            && layout.focus.as_deref() == Some(crate::camera_preview::LOCAL_CAMERA))
+    {
         None
     } else {
         layout
@@ -353,18 +343,30 @@ fn refresh(
             .or_else(|| screens.first())
             .map(|s| s.0.sid.as_str())
     };
-    let mut active = HashMap::new();
+    let mut active_screens = Vec::new();
     for (screen, publication) in &screens {
-        let wanted = delivery_demand(
-            layout.mode,
-            !layout.paused,
-            Some(screen.sid.as_str()) == focus,
-            publication.simulcasted(),
-        );
+        let wanted = if let Some(playback) = &layout.playback {
+            if layout.paused || !playback.wants_video(&screen.sid) {
+                Demand::Paused
+            } else if publication.simulcasted() && playback.strip.contains(&screen.sid) {
+                Demand::Thumbnail
+            } else {
+                Demand::Full
+            }
+        } else {
+            delivery_demand(
+                layout.mode,
+                !layout.paused,
+                Some(screen.sid.as_str()) == focus,
+                publication.simulcasted(),
+            )
+        };
         let enabled = wanted != Demand::Paused;
         crate::subscription::keep_receiver(publication, enabled && !recovery.held(&screen.sid));
         if enabled {
-            active.insert(screen.sid.clone(), screen.owner.clone());
+            if !screen.camera {
+                active_screens.push(screen.owner.as_str());
+            }
             if publication.simulcasted() {
                 publication.set_video_quality(if wanted == Demand::Thumbnail {
                     VideoQuality::Low
@@ -380,14 +382,11 @@ fn refresh(
             if publication.source() != TrackSource::ScreenshareAudio {
                 continue;
             }
-            let enabled = !mute_playback
-                && !layout.paused
-                && layout.volume > 0
-                && screens.iter().any(|(screen, video)| {
-                    screen.owner == owner
-                        && video.source() == TrackSource::Screenshare
-                        && active.contains_key(&screen.sid)
-                });
+            let wanted = layout.playback.as_ref().map_or_else(
+                || active_screens.contains(&owner.as_str()),
+                |playback| playback.audio.contains(&owner),
+            );
+            let enabled = !mute_playback && !layout.paused && layout.volume > 0 && wanted;
             crate::subscription::keep_receiver(&publication, enabled);
         }
     }
@@ -401,7 +400,6 @@ fn refresh(
     state.participants.sort_by(|a, b| a.0.cmp(&b.0));
     let present: Vec<String> = state.screens.iter().map(|s| s.sid.clone()).collect();
     state.frames.retain(|sid, _| present.contains(sid));
-    active
 }
 struct AudioCast {
     capture: AudioCapture,
@@ -599,7 +597,7 @@ async fn session(
                         {
                             let room = room.clone();
                             camera_preview = CameraPreview::default();
-                            camera_preview.set_visible(layout.self_preview && !layout.paused);
+                            camera_preview.set_visible(layout.camera_preview_visible());
                             let preview = camera_preview.clone();
                             let preview_ctx = ctx.clone();
                             camera_start = Some(tokio::spawn(async move {
@@ -622,7 +620,7 @@ async fn session(
                     },
                     Command::Layout(value)=>{
                         layout = value;
-                        camera_preview.set_visible(layout.self_preview && !layout.paused);
+                        camera_preview.set_visible(layout.camera_preview_visible());
                         volume.store(layout.volume, Ordering::Relaxed);
                         last_refresh = Instant::now() - Duration::from_secs(1);
                     },
@@ -774,7 +772,7 @@ async fn session(
                             eprintln!("Linux reception: stage=recovery action={:?} reason={:?} total={}",repair.action,repair.reason,recovery.summary.actions);
                         }
                         {let mut s=shared.lock().unwrap();s.quality.network=recovery.network;s.quality.automatic_recovery=recovery.summary;s.recovering=recovery.recovering().into_iter().map(|(sid,_,exhausted)|(sid,exhausted)).collect();}
-                        let _=refresh(&room,&layout,&shared,audio.is_some(),&recovery);
+                        refresh(&room,&layout,&shared,audio.is_some(),&recovery);
                         for participant in room.remote_participants().into_values(){
                             for p in participant.track_publications().into_values(){
                                 if !p.is_desired(){continue;}
@@ -848,7 +846,7 @@ async fn session(
                     }
                     if wants_audio && publisher.is_some()&&audio.is_none(){
                         volume.store(0,Ordering::Relaxed);audio_sinks.clear();
-                        if reception_restart.is_none(){let _=refresh(&room,&layout,&shared,true,&recovery);}
+                        if reception_restart.is_none(){refresh(&room,&layout,&shared,true,&recovery);}
                         match AudioCast::open(&room).await{Ok(a)=>{audio=Some(a);volume.store(0,Ordering::Relaxed);audio_sinks.clear();},Err(e)=>{shared.lock().unwrap().status=e.to_string();wants_audio=false;}}
                     }
                     if let Some(a)=&mut audio {if let Err(e)=a.tick().await{shared.lock().unwrap().status=e.to_string();if let Some(a)=audio.take(){a.stop(&room).await;}wants_audio=false;}}
