@@ -1,9 +1,12 @@
 //! Windows stage controls: the view menu, the controls drawn over the video,
 //! the strip's chips and the empty states.
 use crate::desktop_ui::{
-    ACCENT, BORDER, MUTED, PANEL, RoomIcon, SURFACE, TEXT, paint_stage_icon, popup_style,
-    room_button, room_icon_button_sized, session_button, speaker_toggle, utility_frame,
-    volume_slider,
+    BORDER, MUTED, PANEL, RoomIcon, TEXT, paint_stage_icon, room_icon_button_sized, session_button,
+    speaker_toggle, volume_slider,
+};
+use crate::kit::{
+    HEIGHT as HIT, Tone, focus_ring, keep_popup_above_video, menu_heading, menu_row, paint_frame,
+    popup, popup_frame,
 };
 use eframe::egui::{self, Color32, RichText, Vec2};
 
@@ -28,14 +31,6 @@ pub(crate) struct ViewMenu<'a> {
     pub entries: &'a [StageEntry],
 }
 
-/// Native video windows sit above egui; popups over video need a cutout.
-pub(crate) fn keep_popup_above_video(ctx: &egui::Context, rect: egui::Rect) {
-    ctx.data_mut(|data| {
-        data.get_temp_mut_or_default::<Vec<(egui::Rect, f32)>>(egui::Id::new("video_popups"))
-            .push((rect, 12.0));
-    });
-}
-
 fn view_label(menu: &ViewMenu<'_>) -> String {
     if menu.mode == crate::subscription::ViewMode::Grid {
         crate::i18n_format!("Grade · {}", "Grid · {}", menu.show.label())
@@ -55,118 +50,8 @@ fn view_button(
     if icon_only {
         return room_icon_button_sized(ui, RoomIcon::Stage, &hint, true, false, height);
     }
-    let galley = egui::WidgetText::from(RichText::new(&label).size(13.0).color(TEXT)).into_galley(
-        ui,
-        Some(egui::TextWrapMode::Extend),
-        f32::INFINITY,
-        egui::TextStyle::Button,
-    );
-    let width = 12.0 + 18.0 + 8.0 + galley.size().x + 8.0 + 10.0 + 12.0;
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &hint));
-    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
-    let fill = if open {
-        Color32::from_rgb(40, 51, 40)
-    } else if response.hovered() {
-        Color32::from_rgb(39, 48, 44)
-    } else {
-        SURFACE
-    };
-    let painter = ui.painter();
-    painter.rect(
-        rect,
-        8.0,
-        fill,
-        egui::Stroke::new(
-            1.0,
-            if open {
-                ACCENT.gamma_multiply(0.5)
-            } else {
-                BORDER
-            },
-        ),
-        egui::StrokeKind::Inside,
-    );
-    let icon = egui::pos2(rect.left() + 21.0, rect.center().y);
-    paint_stage_icon(painter, icon, TEXT);
-    painter.galley(
-        egui::pos2(icon.x + 17.0, rect.center().y - galley.size().y / 2.0),
-        galley,
-        TEXT,
-    );
-    let stroke = egui::Stroke::new(1.5, TEXT);
-    let chevron = egui::pos2(rect.right() - 17.0, rect.center().y);
-    painter.line_segment(
-        [
-            chevron + egui::vec2(-4.0, -2.0),
-            chevron + egui::vec2(0.0, 2.0),
-        ],
-        stroke,
-    );
-    painter.line_segment(
-        [
-            chevron + egui::vec2(0.0, 2.0),
-            chevron + egui::vec2(4.0, -2.0),
-        ],
-        stroke,
-    );
-    if response.has_focus() {
-        painter.rect_stroke(
-            rect.expand(2.0),
-            9.0,
-            egui::Stroke::new(2.0, TEXT),
-            egui::StrokeKind::Outside,
-        );
-    }
-    response.on_hover_text(hint)
-}
-
-fn menu_heading(ui: &mut egui::Ui, text: &str) {
-    ui.add_space(4.0);
-    ui.label(RichText::new(text).size(11.0).strong().color(MUTED));
-}
-
-fn menu_radio(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
-    let response = ui
-        .scope(|ui| {
-            ui.spacing_mut().button_padding = egui::vec2(10.0, 5.0);
-            ui.visuals_mut().widgets.hovered.bg_stroke = egui::Stroke::NONE;
-            ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::NONE;
-            ui.add(
-                egui::Button::new(RichText::new(label).size(13.0).color(if selected {
-                    ACCENT
-                } else {
-                    TEXT
-                }))
-                .right_text(egui::Atom::grow())
-                .frame_when_inactive(selected)
-                .fill(if selected {
-                    ACCENT.gamma_multiply(0.12)
-                } else {
-                    SURFACE
-                })
-                .corner_radius(7)
-                .wrap_mode(egui::TextWrapMode::Truncate)
-                .min_size(egui::vec2(ui.available_width(), 34.0)),
-            )
-        })
-        .inner;
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, selected, label)
-    });
-    if selected {
-        let c = egui::pos2(response.rect.right() - 16.0, response.rect.center().y);
-        let stroke = egui::Stroke::new(2.0, ACCENT);
-        ui.painter().line_segment(
-            [c + egui::vec2(-5.0, 0.0), c + egui::vec2(-1.5, 3.5)],
-            stroke,
-        );
-        ui.painter().line_segment(
-            [c + egui::vec2(-1.5, 3.5), c + egui::vec2(5.0, -4.0)],
-            stroke,
-        );
-    }
-    response
+    crate::kit::dropdown_button(ui, &label, &hint, None, Some(&paint_stage_icon))
+        .on_hover_text(hint)
 }
 
 /// The single view control used in the room header and in full screen.
@@ -178,52 +63,40 @@ pub(crate) fn view_menu(
 ) -> (egui::Response, Option<ViewChoice>) {
     use crate::{i18n::label, stage::Show, subscription::ViewMode};
     let button = view_button(ui, menu, height, icon_only);
-    let area = ui.ctx().content_rect();
-    let mut choice = None;
-    let popup = egui::Popup::menu(&button)
-        .width((area.width() - 24.0).clamp(160.0, 260.0))
-        .frame(
-            utility_frame(ui.style()).stroke(egui::Stroke::new(1.5, Color32::from_rgb(74, 86, 82))),
-        )
-        .show(|ui| {
-            popup_style(ui);
-            ui.spacing_mut().item_spacing = egui::vec2(4.0, 2.0);
-            egui::ScrollArea::vertical()
-                .max_height((area.height() - 60.0).max(80.0))
-                .show(ui, |ui| {
-                    menu_heading(ui, label("Exibir", "Show"));
-                    for show in [Show::All, Show::Screens, Show::Cameras] {
-                        if menu_radio(ui, show.label(), menu.show == show).clicked() {
-                            choice = Some(ViewChoice::Show(show));
-                            ui.close();
-                        }
-                    }
-                    ui.separator();
-                    menu_heading(ui, label("Organizar", "Arrange"));
-                    for (mode, text) in [
-                        (ViewMode::Spotlight, label("Destaque", "Stage")),
-                        (ViewMode::Grid, label("Grade", "Grid")),
-                    ] {
-                        if menu_radio(ui, text, menu.mode == mode).clicked() {
-                            choice = Some(ViewChoice::Mode(mode));
-                            ui.close();
-                        }
-                    }
-                    if menu.mode == ViewMode::Spotlight && !menu.entries.is_empty() {
-                        ui.separator();
-                        menu_heading(ui, label("No palco", "On stage"));
-                        for entry in menu.entries {
-                            if menu_radio(ui, &entry.label, entry.on_stage).clicked() {
-                                choice = Some(ViewChoice::Stage(entry.id.clone()));
-                                ui.close();
-                            }
-                        }
-                    }
-                });
-        });
-    if let Some(popup) = popup {
-        keep_popup_above_video(ui.ctx(), popup.response.rect);
-    }
+    let width = (ui.ctx().content_rect().width() - 24.0).clamp(160.0, 260.0);
+    let choice = popup(ui, &button, width, |ui| {
+        let mut choice = None;
+        menu_heading(ui, label("Exibir", "Show"));
+        for show in [Show::All, Show::Screens, Show::Cameras] {
+            if menu_row(ui, show.label(), true, Some(menu.show == show)).clicked() {
+                choice = Some(ViewChoice::Show(show));
+                ui.close();
+            }
+        }
+        ui.separator();
+        menu_heading(ui, label("Organizar", "Arrange"));
+        for (mode, text) in [
+            (ViewMode::Spotlight, label("Palco", "Stage")),
+            (ViewMode::Grid, label("Grade", "Grid")),
+        ] {
+            if menu_row(ui, text, true, Some(menu.mode == mode)).clicked() {
+                choice = Some(ViewChoice::Mode(mode));
+                ui.close();
+            }
+        }
+        if menu.mode == ViewMode::Spotlight && !menu.entries.is_empty() {
+            ui.separator();
+            menu_heading(ui, label("No palco", "On stage"));
+            for entry in menu.entries {
+                if menu_row(ui, &entry.label, true, Some(entry.on_stage)).clicked() {
+                    choice = Some(ViewChoice::Stage(entry.id.clone()));
+                    ui.close();
+                }
+            }
+        }
+        choice
+    })
+    .flatten();
     (button, choice)
 }
 
@@ -237,74 +110,23 @@ fn paint_exit_fullscreen(painter: &egui::Painter, center: egui::Pos2, stroke: eg
     }
 }
 
-const HIT: f32 = 36.0;
-
 fn group_separator(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, 20.0), egui::Sense::hover());
     ui.painter().rect_filled(rect, 0.0, BORDER);
 }
 
-fn exit_fullscreen_button(ui: &mut egui::Ui, icon_only: bool) -> egui::Response {
-    let galley = egui::WidgetText::from(
-        RichText::new(crate::i18n::label("Sair", "Exit"))
-            .size(13.0)
-            .color(TEXT),
-    )
-    .into_galley(
+fn exit_fullscreen_button(ui: &mut egui::Ui) -> egui::Response {
+    crate::kit::icon_button(
         ui,
-        Some(egui::TextWrapMode::Extend),
-        f32::INFINITY,
-        egui::TextStyle::Button,
-    );
-    let width = if icon_only {
-        HIT
-    } else {
-        HIT + galley.size().x + 12.0
-    };
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, HIT), egui::Sense::click());
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(
-            egui::WidgetType::Button,
-            true,
-            crate::i18n::label("Sair da tela cheia", "Exit full screen"),
-        )
-    });
-    let hovered = response.hovered() || response.has_focus();
-    let painter = ui.painter();
-    painter.rect(
-        rect,
-        8.0,
-        if hovered {
-            Color32::from_rgb(39, 48, 44)
-        } else {
-            SURFACE
-        },
-        egui::Stroke::new(1.0, BORDER),
-        egui::StrokeKind::Inside,
-    );
-    let stroke = egui::Stroke::new(1.5, TEXT);
-    paint_exit_fullscreen(
-        painter,
-        egui::pos2(rect.left() + HIT / 2.0, rect.center().y),
-        stroke,
-    );
-    if !icon_only {
-        painter.galley(
-            egui::pos2(
-                rect.left() + HIT - 2.0,
-                rect.center().y - galley.size().y / 2.0,
-            ),
-            galley,
-            TEXT,
-        );
-    }
-    if response.has_focus() {
-        painter.rect_stroke(rect.shrink(2.0), 7.0, stroke, egui::StrokeKind::Inside);
-    }
-    response.on_hover_text(crate::i18n::label(
-        "Sair da tela cheia · Esc / F11",
-        "Exit full screen · Esc / F11",
-    ))
+        crate::i18n::label(
+            "Sair da tela cheia · Esc / F11",
+            "Exit full screen · Esc / F11",
+        ),
+        true,
+        false,
+        HIT,
+        paint_exit_fullscreen,
+    )
 }
 
 fn volume_percent(ui: &mut egui::Ui, value: u32) {
@@ -387,26 +209,9 @@ fn chip_response(ui: &egui::Ui, rect: egui::Rect, id: egui::Id, label: &str) -> 
         .interact(rect, id, egui::Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
-    let painter = ui.painter();
-    painter.rect(
-        rect,
-        rect.height() / 2.0,
-        if response.hovered() {
-            Color32::from_rgb(39, 48, 44)
-        } else {
-            PANEL
-        },
-        egui::Stroke::new(1.0, MUTED),
-        egui::StrokeKind::Inside,
-    );
-    if response.has_focus() {
-        painter.rect_stroke(
-            rect.expand(2.0),
-            rect.height() / 2.0 + 2.0,
-            egui::Stroke::new(2.0, TEXT),
-            egui::StrokeKind::Outside,
-        );
-    }
+    let radius = rect.height() / 2.0;
+    paint_frame(ui, &response, Tone::Secondary, radius);
+    focus_ring(ui, &response, radius);
     response
 }
 
@@ -415,25 +220,18 @@ fn stage_picker(
     response: &egui::Response,
     choices: &[(String, String)],
 ) -> Option<String> {
-    let mut picked = None;
-    let popup = egui::Popup::menu(response)
-        .width(220.0)
-        .frame(utility_frame(ui.style()))
-        .show(|ui| {
-            popup_style(ui);
-            ui.spacing_mut().item_spacing = egui::vec2(4.0, 2.0);
-            menu_heading(ui, crate::i18n::label("Colocar no palco", "Put on stage"));
-            for (id, label) in choices {
-                if menu_radio(ui, label, false).clicked() {
-                    picked = Some(id.clone());
-                    ui.close();
-                }
+    popup(ui, response, 220.0, |ui| {
+        let mut picked = None;
+        menu_heading(ui, crate::i18n::label("Colocar no palco", "Put on stage"));
+        for (id, label) in choices {
+            if menu_row(ui, label, true, None).clicked() {
+                picked = Some(id.clone());
+                ui.close();
             }
-        });
-    if let Some(popup) = popup {
-        keep_popup_above_video(ui.ctx(), popup.response.rect);
-    }
-    picked
+        }
+        picked
+    })
+    .flatten()
 }
 
 /// Shown instead of the strip when the stage is too small for cards: lists
@@ -583,12 +381,14 @@ pub(crate) fn stage_header(
                 label("Mostrar participantes", "Show participants")
             };
             let participants = if narrow {
-                room_icon_button_sized(ui, RoomIcon::Panel, toggle, true, sidebar_open, 34.0)
+                room_icon_button_sized(ui, RoomIcon::Panel, toggle, true, sidebar_open, HIT)
             } else {
-                ui.add(room_button(
+                crate::kit::segment(
+                    ui,
                     label("Participantes", "Participants"),
                     sidebar_open,
-                ))
+                    None,
+                )
                 .on_hover_text(toggle)
             };
             let size = if ui.available_width() < 360.0 {
@@ -635,10 +435,7 @@ pub(crate) struct ControlsOutcome {
 }
 
 fn seg_button(ui: &mut egui::Ui, text: &str, selected: bool) -> egui::Response {
-    let response = ui.add(room_button(text, selected).min_size(Vec2::new(0.0, HIT)));
-    response
-        .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, text));
-    response
+    crate::kit::segment(ui, text, selected, None)
 }
 
 /// Small name tag over a stage tile.
@@ -651,7 +448,7 @@ fn name_tag(ctx: &egui::Context, id: egui::Id, at: egui::Pos2, text: &str) -> eg
             egui::Frame::new()
                 .fill(PANEL)
                 .stroke(egui::Stroke::new(1.0, BORDER))
-                .corner_radius(8)
+                .corner_radius(crate::kit::RADIUS)
                 .inner_margin(egui::Margin::symmetric(10, 5))
                 .show(ui, |ui| {
                     ui.set_max_width(320.0);
@@ -678,7 +475,7 @@ fn volume_popover(ui: &mut egui::Ui, volume: &mut u32, muted: &mut bool) -> bool
         HIT,
     );
     let popup = egui::Popup::menu(&speaker)
-        .frame(utility_frame(ui.style()))
+        .frame(popup_frame(ui.style()))
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
             ui.horizontal(|ui| {
@@ -756,7 +553,7 @@ fn controls_row(
         action = Some(ControlAction::Reconnect);
     }
     let fullscreen = if controls.fullscreen {
-        exit_fullscreen_button(ui, true)
+        exit_fullscreen_button(ui)
     } else {
         room_icon_button_sized(
             ui,
@@ -805,8 +602,8 @@ pub(crate) fn stage_controls(
         .show(ctx, |ui| {
             egui::Frame::new()
                 .fill(PANEL)
-                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(74, 86, 82)))
-                .corner_radius(12)
+                .stroke(egui::Stroke::new(1.0, crate::kit::OUTLINE))
+                .corner_radius(crate::kit::PANEL_RADIUS)
                 .inner_margin(egui::Margin::same(6))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| controls_row(ui, compact, controls, volume, muted))

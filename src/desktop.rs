@@ -25,7 +25,13 @@ fn compact_action(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Respon
 }
 
 fn update_action(ui: &mut egui::Ui, label: &str, primary: bool) -> egui::Response {
-    crate::desktop_ui::action(ui, label, true, primary)
+    let tone = if primary {
+        crate::kit::Tone::Primary
+    } else {
+        crate::kit::Tone::Secondary
+    };
+    let width = ui.available_width();
+    crate::kit::button_with(ui, label, tone, true, Some(width), crate::kit::HEIGHT)
 }
 
 fn monitor_symbol(painter: &egui::Painter, center: egui::Pos2, color: Color32, size: f32) {
@@ -61,25 +67,23 @@ fn choice_card(
     enabled: bool,
     avatar: Option<char>,
 ) -> egui::Response {
-    let response = ui.add_enabled(
-        enabled,
-        egui::Button::new("")
-            .min_size(Vec2::new(ui.available_width(), 66.0))
-            .corner_radius(9)
-            .fill(if selected {
-                Color32::from_rgb(40, 51, 40)
-            } else {
-                SURFACE
-            })
-            .stroke(egui::Stroke::new(
-                1.0,
-                if selected {
-                    ACCENT.gamma_multiply(0.65)
-                } else {
-                    BORDER
-                },
-            )),
+    let response = ui
+        .add_enabled_ui(enabled, |ui| {
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), 66.0), egui::Sense::click())
+                .1
+        })
+        .inner;
+    crate::kit::paint_frame(
+        ui,
+        &response,
+        if selected {
+            crate::kit::Tone::Selected
+        } else {
+            crate::kit::Tone::Secondary
+        },
+        f32::from(crate::kit::RADIUS),
     );
+    crate::kit::focus_ring(ui, &response, f32::from(crate::kit::RADIUS));
     response.widget_info(|| {
         egui::WidgetInfo::labeled(
             egui::WidgetType::Button,
@@ -305,6 +309,8 @@ struct App {
     last_pointer: Option<egui::Pos2>,
     control_rects: Vec<Overlay>,
     control_bar: Option<egui::Rect>,
+    /// A dialog covers the room: every video, native or painted, steps back.
+    videos_hidden: bool,
     live: Vec<String>,
     audio: Vec<String>,
     /// `HYPERCAST_TRACE_STAGE=1`: frames shown per video, printed every 2 s.
@@ -428,6 +434,7 @@ impl App {
             last_pointer: None,
             control_rects: Vec::new(),
             control_bar: None,
+            videos_hidden: false,
             live: Vec::new(),
             audio: Vec::new(),
             stage_trace: (std::env::var("HYPERCAST_TRACE_STAGE").as_deref() == Ok("1"))
@@ -648,42 +655,17 @@ impl App {
         if publishing {
             ui.colored_label(ACCENT, crate::i18n::label("Ao vivo", "Live"));
         }
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().button_padding = Vec2::new(8.0, 4.0);
-            let width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
-            for (window, label) in [
-                (false, "Monitor"),
-                (
-                    true,
-                    crate::i18n::label("Janela de aplicativo", "App window"),
-                ),
-            ] {
-                let selected = self.window_mode == window;
-                if ui
-                    .add(
-                        egui::Button::new(RichText::new(label).color(if selected {
-                            ACCENT
-                        } else {
-                            TEXT
-                        }))
-                        .min_size(Vec2::new(width, 38.0))
-                        .corner_radius(8)
-                        .fill(if selected {
-                            Color32::from_rgb(40, 51, 40)
-                        } else {
-                            SURFACE
-                        })
-                        .selected(selected),
-                    )
-                    .clicked()
-                {
-                    if publishing && window && !self.window_mode {
-                        self.selected_window = None;
-                    }
-                    self.window_mode = window;
-                }
+        let labels = [
+            "Monitor",
+            crate::i18n::label("Janela de aplicativo", "App window"),
+        ];
+        if let Some(index) = crate::kit::segments(ui, &labels, usize::from(self.window_mode)) {
+            let window = index == 1;
+            if publishing && window && !self.window_mode {
+                self.selected_window = None;
             }
-        });
+            self.window_mode = window;
+        }
         ui.scope(|ui| {
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
             if self.window_mode {
@@ -712,23 +694,22 @@ impl App {
                 );
                 let response = crate::desktop_ui::select_menu(ui, "display_picker", title, |ui| {
                     for (index, display) in self.displays.iter().enumerate() {
-                        if ui
-                            .selectable_label(
-                                index == self.selected_display,
-                                format!(
-                                    "Monitor {} · {} × {}",
-                                    index + 1,
-                                    display.width,
-                                    display.height
-                                ),
-                            )
-                            .on_hover_text(format!(
-                                "{}\n{}",
-                                display.display_name, display.gpu_name
-                            ))
-                            .clicked()
+                        if crate::kit::menu_row(
+                            ui,
+                            &format!(
+                                "Monitor {} · {} × {}",
+                                index + 1,
+                                display.width,
+                                display.height
+                            ),
+                            true,
+                            Some(index == self.selected_display),
+                        )
+                        .on_hover_text(format!("{}\n{}", display.display_name, display.gpu_name))
+                        .clicked()
                         {
                             self.selected_display = index;
+                            ui.close();
                         }
                     }
                 });
@@ -774,20 +755,18 @@ impl App {
         crate::desktop_ui::upload_selector(ui, &mut self.upload, true);
         let allow_automatic = self.selected_encode_caps(self.codec).dynamic_bitrate != 2;
         crate::desktop_ui::rate_mode_selector(ui, &mut self.rate_mode, true, allow_automatic);
+        let width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
         ui.horizontal(|ui| {
-            let width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
             for (codec, title) in [
                 (crate::encoder::Codec::H265, "HEVC / H.265"),
                 (crate::encoder::Codec::Av1, "AV1"),
             ] {
-                let selected = self.codec == codec;
+                let supported = self.selected_encode_caps(codec).support != 2;
                 if ui
-                    .add_enabled(
-                        self.selected_encode_caps(codec).support != 2,
-                        egui::Button::new(title)
-                            .selected(selected)
-                            .min_size(Vec2::new(width, 38.0)),
-                    )
+                    .add_enabled_ui(supported, |ui| {
+                        crate::kit::segment(ui, title, self.codec == codec, Some(width))
+                    })
+                    .inner
                     .clicked()
                 {
                     self.codec = codec;
@@ -856,7 +835,7 @@ impl App {
                     crate::encoder::AmdProfile::Text,
                     crate::encoder::AmdProfile::Compatibility,
                 ] {
-                    ui.selectable_value(&mut self.amd_profile, profile, profile.label());
+                    crate::kit::choice(ui, &mut self.amd_profile, profile, profile.label());
                 }
             });
         });
@@ -1286,7 +1265,7 @@ impl App {
         cutouts: Vec<Overlay>,
         native_videos: &mut Vec<NativeVideo<'a>>,
     ) {
-        if !canvas.is_positive() {
+        if !canvas.is_positive() || self.videos_hidden {
             return;
         }
         if frame.surface().is_some() {
@@ -2275,18 +2254,15 @@ impl eframe::App for App {
                                             .as_ref()
                                             .is_some_and(|engine| engine.finished()))
                                     && !self.creator.busy;
-                                if ui
-                                    .add_enabled(
-                                        ready,
-                                        egui::Button::new(crate::i18n::label(
-                                            "Entrar em uma sala",
-                                            "Join a room",
-                                        ))
-                                        .fill(ACCENT.gamma_multiply(0.16))
-                                        .min_size(Vec2::new(width, 44.0))
-                                        .corner_radius(9),
-                                    )
-                                    .clicked()
+                                if crate::kit::button_with(
+                                    ui,
+                                    crate::i18n::label("Entrar em uma sala", "Join a room"),
+                                    crate::kit::Tone::Primary,
+                                    ready,
+                                    Some(width),
+                                    crate::kit::LARGE,
+                                )
+                                .clicked()
                                 {
                                     self.creator.open = false;
                                     self.catalog.open(
@@ -2295,24 +2271,22 @@ impl eframe::App for App {
                                         ctx.clone(),
                                     );
                                 }
-                                if ui
-                                    .add_enabled(
-                                        self.departure.is_none()
-                                            && self.server_access.authenticated()
-                                            && !self.creator.busy
-                                            && (self.engine.is_none()
-                                                || !status.starts_with(crate::i18n::label(
-                                                    "Conectando",
-                                                    "Connecting",
-                                                ))),
-                                        egui::Button::new(crate::i18n::label(
-                                            "Criar sala",
-                                            "Create room",
-                                        ))
-                                        .min_size(Vec2::new(width, 44.0))
-                                        .corner_radius(9),
-                                    )
-                                    .clicked()
+                                if crate::kit::button_with(
+                                    ui,
+                                    crate::i18n::label("Criar sala", "Create room"),
+                                    crate::kit::Tone::Secondary,
+                                    self.departure.is_none()
+                                        && self.server_access.authenticated()
+                                        && !self.creator.busy
+                                        && (self.engine.is_none()
+                                            || !status.starts_with(crate::i18n::label(
+                                                "Conectando",
+                                                "Connecting",
+                                            ))),
+                                    Some(width),
+                                    crate::kit::LARGE,
+                                )
+                                .clicked()
                                 {
                                     self.window_picker_open = false;
                                     egui::Popup::close_all(&ctx);
@@ -2504,6 +2478,7 @@ impl eframe::App for App {
                             || self.catalog.open
                             || self.debug_open
                             || self.updater.open));
+                self.videos_hidden = hide_native_video;
                 self.stage_rect = rect;
                 // Controls over the video show for 2 s after the mouse moves and
                 // while they are in use.
@@ -2802,7 +2777,7 @@ impl eframe::App for App {
                 }
                 self.control_rects.clear();
                 self.control_bar = None;
-                if controls_visible && !empty {
+                if controls_visible && !empty && !hide_native_video && self.source_draft.is_none() {
                     let screens_visible = visible.iter().filter(|id| !is_camera_key(id)).count();
                     let controls = crate::stage_ui::StageControls {
                         menu: &menu,

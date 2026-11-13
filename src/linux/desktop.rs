@@ -451,8 +451,8 @@ impl App {
                     hardware_label
                 },
                 |ui| {
-                    ui.selectable_value(&mut self.encoder, Encoder::Auto, hardware_label);
-                    ui.selectable_value(&mut self.encoder, Encoder::Software, software_label);
+                    crate::kit::choice(ui, &mut self.encoder, Encoder::Auto, hardware_label);
+                    crate::kit::choice(ui, &mut self.encoder, Encoder::Software, software_label);
                 },
             );
         });

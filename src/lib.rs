@@ -14,6 +14,8 @@ pub mod encoder;
 pub mod i18n;
 #[cfg(feature = "desktop")]
 pub mod invitation;
+#[cfg(feature = "desktop")]
+mod kit;
 #[cfg(feature = "livekit-network")]
 pub mod network;
 pub mod pacing;

@@ -8,51 +8,22 @@ pub const SURFACE: Color32 = Color32::from_rgb(28, 35, 36);
 pub const TEXT: Color32 = Color32::from_rgb(234, 239, 234);
 fn modal_header(ui: &mut egui::Ui, title: &str) {
     ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), 32.0),
+        egui::vec2(ui.available_width(), crate::kit::HEIGHT),
         egui::Layout::right_to_left(egui::Align::Center),
         |ui| {
-            let response = ui
-                .scope(|ui| {
-                    ui.spacing_mut().button_padding = Vec2::ZERO;
-                    ui.spacing_mut().interact_size = Vec2::splat(32.0);
-                    ui.add_sized(
-                        [32.0, 32.0],
-                        egui::Button::new("")
-                            .corner_radius(8)
-                            .fill(if ui.is_enabled() {
-                                SURFACE
-                            } else {
-                                Color32::TRANSPARENT
-                            })
-                            .stroke(egui::Stroke::NONE),
-                    )
-                })
-                .inner;
-            response.widget_info(|| {
-                egui::WidgetInfo::labeled(
-                    egui::WidgetType::Button,
-                    true,
-                    crate::i18n_format!("Fechar {title}", "Close {title}"),
-                )
-            });
-            let stroke = egui::Stroke::new(
-                1.5,
-                if response.hovered() || response.has_focus() {
-                    TEXT
-                } else {
-                    MUTED
+            let response = crate::kit::icon_button(
+                ui,
+                &crate::i18n_format!("Fechar {title}", "Close {title}"),
+                true,
+                false,
+                crate::kit::HEIGHT,
+                |painter, center, stroke| {
+                    for direction in [-1.0, 1.0] {
+                        let offset = Vec2::new(5.0, 5.0 * direction);
+                        painter.line_segment([center - offset, center + offset], stroke);
+                    }
                 },
             );
-            for direction in [-1.0, 1.0] {
-                let offset = Vec2::new(5.0, 5.0 * direction);
-                ui.painter().line_segment(
-                    [
-                        response.rect.center() - offset,
-                        response.rect.center() + offset,
-                    ],
-                    stroke,
-                );
-            }
             if response.clicked() {
                 ui.close_kind(egui::UiKind::Modal);
             }
@@ -71,56 +42,28 @@ pub(crate) fn popup_style(ui: &mut egui::Ui) {
     let visuals = ui.visuals_mut();
     visuals.window_fill = PANEL;
     visuals.window_stroke = egui::Stroke::new(1.0, BORDER);
-    visuals.window_corner_radius = egui::CornerRadius::same(10);
+    visuals.window_corner_radius = egui::CornerRadius::same(crate::kit::PANEL_RADIUS);
     for widget in [
         &mut visuals.widgets.inactive,
         &mut visuals.widgets.hovered,
         &mut visuals.widgets.active,
     ] {
-        widget.corner_radius = egui::CornerRadius::same(8);
+        widget.corner_radius = egui::CornerRadius::same(crate::kit::RADIUS);
     }
     visuals.widgets.inactive.bg_fill = SURFACE;
     visuals.widgets.inactive.weak_bg_fill = SURFACE;
     visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, BORDER);
 }
 
+/// The standard dropdown; `choices` should use `crate::kit::choice` rows.
 pub(crate) fn select_menu<R>(
     ui: &mut egui::Ui,
     id: &'static str,
     selected: impl Into<egui::WidgetText>,
     choices: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::InnerResponse<Option<R>> {
-    #[cfg(windows)]
-    let mut popup_layer = None;
-    let response = ui
-        .scope(|ui| {
-            popup_style(ui);
-            ui.spacing_mut().interact_size.y = 36.0;
-            ui.spacing_mut().button_padding = egui::vec2(10.0, 5.0);
-            egui::ComboBox::from_id_salt(id)
-                .width(ui.available_width())
-                .height((ui.ctx().content_rect().height() * 0.45).clamp(64.0, 300.0))
-                .truncate()
-                .selected_text(selected)
-                .show_ui(ui, |ui| {
-                    #[cfg(windows)]
-                    {
-                        popup_layer = Some(ui.layer_id());
-                    }
-                    choices(ui)
-                })
-        })
-        .inner;
-    #[cfg(windows)]
-    if let Some(rect) =
-        popup_layer.and_then(|layer| ui.ctx().memory(|memory| memory.area_rect(layer.id)))
-    {
-        ui.ctx().data_mut(|data| {
-            data.get_temp_mut_or_default::<Vec<(egui::Rect, f32)>>(egui::Id::new("video_popups"))
-                .push((rect, 8.0));
-        });
-    }
-    response
+    let selected: egui::WidgetText = selected.into();
+    crate::kit::dropdown(ui, id, selected.text(), choices)
 }
 
 #[cfg(windows)]
@@ -143,7 +86,7 @@ pub fn upload_selector(
         );
         select_menu(ui, "upload_profile", profile.label(), |ui| {
             for choice in crate::bandwidth::UploadProfile::ALL {
-                ui.selectable_value(profile, choice, choice.label());
+                crate::kit::choice(ui, profile, choice, choice.label());
             }
         });
         ui.label(
@@ -187,7 +130,7 @@ pub fn rate_mode_selector(
                 ui.add_enabled_ui(
                     choice != crate::adaptive_upload::Mode::Automatic || allow_automatic,
                     |ui| {
-                        ui.selectable_value(mode, choice, choice.label());
+                        crate::kit::choice(ui, mode, choice, choice.label());
                     },
                 );
             }
@@ -419,25 +362,16 @@ pub(crate) enum ShareTab {
 }
 
 pub(crate) fn share_tabs(ui: &mut egui::Ui, tab: &mut ShareTab) {
-    ui.columns(2, |columns| {
-        for (column, (value, label)) in columns.iter_mut().zip([
-            (ShareTab::Source, crate::i18n::label("Fonte", "Source")),
-            (
-                ShareTab::Quality,
-                crate::i18n::label("Qualidade", "Quality"),
-            ),
-        ]) {
-            if column
-                .add_sized(
-                    [column.available_width(), 34.0],
-                    room_button(label, *tab == value),
-                )
-                .clicked()
-            {
-                *tab = value;
-            }
-        }
-    });
+    let labels = [
+        crate::i18n::label("Fonte", "Source"),
+        crate::i18n::label("Qualidade", "Quality"),
+    ];
+    let selected = usize::from(*tab == ShareTab::Quality);
+    match crate::kit::segments(ui, &labels, selected) {
+        Some(0) => *tab = ShareTab::Source,
+        Some(_) => *tab = ShareTab::Quality,
+        None => {}
+    }
 }
 
 pub(crate) fn share_confirmation(ui: &mut egui::Ui, label: &str, enabled: bool) -> (bool, bool) {
@@ -471,7 +405,7 @@ pub(crate) fn active_share_actions(
         let stop = ui
             .scope(|ui| {
                 if compact {
-                    let icon_width = 34.0 + ui.spacing().item_spacing.x;
+                    let icon_width = crate::kit::HEIGHT + ui.spacing().item_spacing.x;
                     ui.spacing_mut().interact_size.x =
                         (width - icon_width * if preview.is_some() { 2.0 } else { 1.0 }).max(0.0);
                 }
@@ -487,12 +421,7 @@ pub(crate) fn active_share_actions(
                 .on_hover_text(label)
             })
             .inner;
-        let gear = ui
-            .scope(|ui| {
-                ui.spacing_mut().interact_size = egui::vec2(34.0, 34.0);
-                room_icon_button(ui, RoomIcon::Gear, stream_options_title(), true, false)
-            })
-            .inner;
+        let gear = room_icon_button(ui, RoomIcon::Gear, stream_options_title(), true, false);
         let preview = preview.map(|visible| preview_button(ui, visible));
         (stop, gear, preview)
     })
@@ -500,16 +429,12 @@ pub(crate) fn active_share_actions(
 }
 
 pub(crate) fn preview_button(ui: &mut egui::Ui, visible: bool) -> egui::Response {
-    ui.scope(|ui| {
-        ui.spacing_mut().interact_size = Vec2::splat(34.0);
-        let label = if visible {
-            crate::i18n::label("Ocultar minha prévia", "Hide my preview")
-        } else {
-            crate::i18n::label("Mostrar minha prévia", "Show my preview")
-        };
-        room_icon_button(ui, RoomIcon::Preview(visible), label, true, false)
-    })
-    .inner
+    let label = if visible {
+        crate::i18n::label("Ocultar minha prévia", "Hide my preview")
+    } else {
+        crate::i18n::label("Mostrar minha prévia", "Show my preview")
+    };
+    room_icon_button(ui, RoomIcon::Preview(visible), label, true, false)
 }
 
 pub(crate) fn camera_actions(
@@ -525,7 +450,8 @@ pub(crate) fn camera_actions(
                 if compact && preview.is_some() {
                     let spacing = ui.spacing_mut();
                     spacing.interact_size.x =
-                        (spacing.interact_size.x - 34.0 - spacing.item_spacing.x).max(0.0);
+                        (spacing.interact_size.x - crate::kit::HEIGHT - spacing.item_spacing.x)
+                            .max(0.0);
                 }
                 session_button(ui, label, enabled, false)
             })
@@ -551,36 +477,16 @@ fn action_with_wrap(
     ui: &mut egui::Ui,
     label: &str,
     enabled: bool,
-    primary: bool,
-    wrap_mode: egui::TextWrapMode,
+    selected: bool,
+    _wrap_mode: egui::TextWrapMode,
 ) -> egui::Response {
     let width = ui.available_width();
-    ui.add_enabled_ui(enabled, |ui| {
-        ui.add_sized(
-            [width, 40.0],
-            egui::Button::new(RichText::new(label).size(13.0).color(if primary {
-                ACCENT
-            } else {
-                TEXT
-            }))
-            .wrap_mode(wrap_mode)
-            .corner_radius(8)
-            .fill(if primary {
-                ACCENT.gamma_multiply(0.16)
-            } else {
-                SURFACE
-            })
-            .stroke(egui::Stroke::new(
-                1.0,
-                if primary {
-                    ACCENT.gamma_multiply(0.45)
-                } else {
-                    BORDER
-                },
-            )),
-        )
-    })
-    .inner
+    let tone = if selected {
+        crate::kit::Tone::Selected
+    } else {
+        crate::kit::Tone::Secondary
+    };
+    crate::kit::button_with(ui, label, tone, enabled, Some(width), crate::kit::HEIGHT)
 }
 pub fn exit_fullscreen(ui: &mut egui::Ui) -> egui::Response {
     let response = ui
@@ -697,20 +603,7 @@ pub fn input(
     .inner
 }
 pub fn compact(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
-    ui.scope(|ui| {
-        ui.spacing_mut().button_padding = Vec2::new(10.0, 4.0);
-        ui.spacing_mut().interact_size.y = 26.0;
-        ui.add_enabled(
-            enabled,
-            egui::Button::new(RichText::new(label).size(11.0).color(MUTED))
-                .wrap_mode(egui::TextWrapMode::Extend)
-                .min_size(Vec2::new(0.0, 26.0))
-                .corner_radius(9)
-                .fill(SURFACE)
-                .stroke(egui::Stroke::new(1.0, BORDER)),
-        )
-    })
-    .inner
+    crate::kit::small(ui, label, enabled)
 }
 
 pub(crate) fn sidebar_update(ui: &mut egui::Ui) -> egui::Response {
@@ -729,18 +622,14 @@ pub(crate) fn sidebar_update(ui: &mut egui::Ui) -> egui::Response {
     .inner
 }
 pub fn primary(ui: &mut egui::Ui, label: &str, enabled: bool, size: Vec2) -> egui::Response {
-    ui.add_enabled_ui(enabled, |ui| {
-        ui.spacing_mut().button_padding = Vec2::new(8.0, 6.0);
-        ui.add_sized(
-            size,
-            egui::Button::new(RichText::new(label).size(13.0).color(ACCENT))
-                .wrap_mode(egui::TextWrapMode::Extend)
-                .corner_radius(8)
-                .fill(ACCENT.gamma_multiply(0.16))
-                .stroke(egui::Stroke::new(1.0, ACCENT.gamma_multiply(0.45))),
-        )
-    })
-    .inner
+    crate::kit::button_with(
+        ui,
+        label,
+        crate::kit::Tone::Primary,
+        enabled,
+        Some(size.x),
+        crate::kit::HEIGHT,
+    )
 }
 
 #[cfg(test)]
@@ -995,7 +884,7 @@ pub fn stream_settings(
                         crate::resolution::OutputSize::FullHd,
                         crate::resolution::OutputSize::QuadHd,
                     ] {
-                        ui.selectable_value(&mut value.size, size, size.label());
+                        crate::kit::choice(ui, &mut value.size, size, size.label());
                     }
                 },
             );
@@ -1010,7 +899,7 @@ pub fn stream_settings(
                 format!("{} FPS", value.fps),
                 |ui| {
                     for fps in [30, 60, 120].into_iter().filter(|fps| *fps <= max_fps) {
-                        ui.selectable_value(&mut value.fps, fps, format!("{fps} FPS"));
+                        crate::kit::choice(ui, &mut value.fps, fps, format!("{fps} FPS"));
                     }
                 },
             );
@@ -1684,19 +1573,16 @@ pub(crate) fn session_button(
         ui,
         label,
         enabled,
-        if primary { PANEL } else { TEXT },
-        if primary { ACCENT } else { SURFACE },
+        if primary {
+            crate::kit::Tone::Primary
+        } else {
+            crate::kit::Tone::Secondary
+        },
     )
 }
 
 pub(crate) fn session_stop(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
-    session_action(
-        ui,
-        label,
-        enabled,
-        Color32::from_rgb(255, 178, 170),
-        Color32::from_rgb(59, 34, 34),
-    )
+    session_action(ui, label, enabled, crate::kit::Tone::Danger)
 }
 
 pub(crate) fn session_leave(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
@@ -1704,14 +1590,13 @@ pub(crate) fn session_leave(ui: &mut egui::Ui, enabled: bool) -> egui::Response 
         ui,
         crate::i18n::label("Sair da sala", "Leave room"),
         enabled,
-        Color32::from_rgb(255, 178, 170),
-        SURFACE,
+        crate::kit::Tone::Danger,
     )
 }
 
 pub(crate) fn server_logout_button(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
     ui.scope(|ui| {
-        ui.spacing_mut().interact_size = Vec2::new(ui.available_width(), 40.0);
+        ui.spacing_mut().interact_size = Vec2::new(ui.available_width(), crate::kit::HEIGHT);
         session_stop(
             ui,
             crate::i18n::label("Sair do servidor", "Sign out of server"),
@@ -1734,9 +1619,7 @@ pub(crate) fn session_menu(
     let area = ui.ctx().content_rect();
     egui::Popup::menu(&more)
         .width((area.width() - 28.0).clamp(96.0, 254.0))
-        .frame(
-            utility_frame(ui.style()).stroke(egui::Stroke::new(1.5, Color32::from_rgb(74, 86, 82))),
-        )
+        .frame(crate::kit::popup_frame(ui.style()))
         .show(|ui| {
             popup_style(ui);
             ui.spacing_mut().button_padding = Vec2::new(8.0, 4.0);
@@ -1749,84 +1632,42 @@ pub(crate) fn session_menu(
 }
 
 pub(crate) fn menu_action(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
-    ui.scope(|ui| {
-        ui.spacing_mut().button_padding = egui::vec2(9.0, 5.0);
-        ui.visuals_mut().widgets.hovered.bg_stroke = egui::Stroke::NONE;
-        ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::NONE;
-        ui.add_enabled(
-            enabled,
-            egui::Button::new(label)
-                .right_text(egui::Atom::grow())
-                .frame_when_inactive(false)
-                .corner_radius(7)
-                .wrap_mode(egui::TextWrapMode::Wrap)
-                .min_size(egui::vec2(ui.available_width(), 32.0)),
-        )
-    })
-    .inner
+    crate::kit::menu_row(ui, label, enabled, None)
 }
 
 pub(crate) fn display_scale(ui: &mut egui::Ui) {
-    ui.label(crate::i18n::label("Escala da interface", "Interface scale"));
-    ui.horizontal_wrapped(|ui| {
-        let current = ui.ctx().zoom_factor();
-        for (factor, label) in [(1.0, "100%"), (1.5, "150%"), (2.0, "200%")] {
-            if ui
-                .selectable_label((current - factor).abs() < 0.01, label)
-                .clicked()
-            {
-                ui.ctx().set_zoom_factor(factor);
-                ui.close();
-            }
-        }
-    });
+    crate::kit::menu_heading(
+        ui,
+        crate::i18n::label("Escala da interface", "Interface scale"),
+    );
+    let current = ui.ctx().zoom_factor();
+    let factors = [1.0, 1.5, 2.0];
+    let selected = factors
+        .iter()
+        .position(|factor| (current - factor).abs() < 0.01)
+        .unwrap_or(usize::MAX);
+    if let Some(index) = crate::kit::segments(ui, &["100%", "150%", "200%"], selected) {
+        ui.ctx().set_zoom_factor(factors[index]);
+        ui.close();
+    }
 }
 
 fn session_action(
     ui: &mut egui::Ui,
     label: &str,
     enabled: bool,
-    color: Color32,
-    fill: Color32,
+    tone: crate::kit::Tone,
 ) -> egui::Response {
-    let text = egui::WidgetText::from(RichText::new(label).size(14.0).color(color));
     let width = ui.spacing().interact_size.x;
-    let (text, elided) = if width > 64.0 {
-        let galley = text.into_galley(
-            ui,
-            Some(egui::TextWrapMode::Truncate),
-            width - 2.0 * ui.spacing().button_padding.x,
-            egui::TextStyle::Button,
-        );
-        let elided = galley.elided;
-        (egui::WidgetText::from(galley), elided)
-    } else {
-        (text, false)
-    };
-    let response = ui.add_enabled(
+    crate::kit::button_with(
+        ui,
+        label,
+        tone,
         enabled,
-        egui::Button::new(text)
-            .fill(fill)
-            .wrap_mode(egui::TextWrapMode::Wrap)
-            .min_size(Vec2::new(
-                ui.spacing().interact_size.x,
-                ui.spacing().interact_size.y.max(30.0),
-            ))
-            .corner_radius(8),
-    );
-    if response.has_focus() {
-        ui.painter().rect_stroke(
-            response.rect.expand(2.0),
-            9.0,
-            egui::Stroke::new(2.0, TEXT),
-            egui::StrokeKind::Outside,
-        );
-    }
-    if elided {
-        response.on_hover_text(label)
-    } else {
-        response
-    }
+        // Callers that size the row set a width; egui's default (40) means "fit".
+        (width >= 48.0).then_some(width),
+        crate::kit::HEIGHT,
+    )
 }
 
 pub(crate) fn server_indicator(ui: &mut egui::Ui, server: &crate::server_status::ServerStatus) {
@@ -1934,13 +1775,18 @@ fn confirm_exit(
 }
 
 pub(crate) fn room_button(label: &str, active: bool) -> egui::Button<'_> {
+    let tone = if active {
+        crate::kit::Tone::Selected
+    } else {
+        crate::kit::Tone::Secondary
+    };
     egui::Button::new(
         RichText::new(label)
-            .size(13.0)
-            .color(if active { ACCENT } else { TEXT }),
+            .size(crate::kit::TEXT_SIZE)
+            .color(tone.text()),
     )
     .fill(if active {
-        Color32::from_rgb(40, 51, 40)
+        crate::kit::SELECTED
     } else {
         SURFACE
     })
@@ -1953,11 +1799,12 @@ pub(crate) fn room_button(label: &str, active: bool) -> egui::Button<'_> {
         },
     ))
     .wrap_mode(egui::TextWrapMode::Extend)
-    .min_size(Vec2::new(0.0, 34.0))
-    .corner_radius(8)
+    .min_size(Vec2::new(0.0, crate::kit::HEIGHT))
+    .corner_radius(crate::kit::RADIUS)
     .selected(active)
 }
 
+#[derive(Clone, Copy)]
 pub(crate) enum RoomIcon {
     Panel,
     #[cfg_attr(windows, allow(dead_code))] // Linux room header.
@@ -1979,7 +1826,7 @@ fn room_icon_button(
     enabled: bool,
     selected: bool,
 ) -> egui::Response {
-    room_icon_button_sized(ui, icon, label, enabled, selected, 34.0)
+    room_icon_button_sized(ui, icon, label, enabled, selected, crate::kit::HEIGHT)
 }
 
 pub(crate) fn room_icon_button_sized(
@@ -1990,25 +1837,22 @@ pub(crate) fn room_icon_button_sized(
     selected: bool,
     size: f32,
 ) -> egui::Response {
-    let response = ui.add_enabled(
+    crate::kit::icon_button(
+        ui,
+        label,
         enabled,
-        room_button("", selected).min_size(Vec2::splat(size)),
-    );
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, selected, label)
-    });
-    let center = response.rect.center();
-    let painter = ui.painter();
-    let stroke = egui::Stroke::new(
-        1.5,
-        if !response.enabled() {
-            MUTED
-        } else if selected {
-            ACCENT
-        } else {
-            TEXT
-        },
-    );
+        selected,
+        size,
+        |painter, center, stroke| paint_room_icon(painter, center, stroke, icon),
+    )
+}
+
+fn paint_room_icon(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    stroke: egui::Stroke,
+    icon: RoomIcon,
+) {
     match icon {
         RoomIcon::Panel => {
             let bounds = egui::Rect::from_center_size(center, egui::vec2(17.0, 13.0));
@@ -2146,15 +1990,6 @@ pub(crate) fn room_icon_button_sized(
             painter.line_segment([tip, tip + egui::vec2(0.0, -5.0)], stroke);
         }
     }
-    if response.has_focus() {
-        painter.rect_stroke(
-            response.rect.shrink(2.0),
-            7.0,
-            stroke,
-            egui::StrokeKind::Inside,
-        );
-    }
-    response.on_hover_text(label)
 }
 
 /// Share the visible room name so someone with access can find it in the catalog.
