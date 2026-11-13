@@ -257,6 +257,7 @@ struct App {
     pending_share: Option<(SourceDraft, tokio::sync::oneshot::Receiver<()>)>,
     source_opener: Option<egui::Id>,
     confirm_leave: bool,
+    confirm_server_logout: bool,
     left_room: bool,
     cap_probe: crate::encoder::CapabilityProbe,
     window_mode: bool,
@@ -366,6 +367,7 @@ impl App {
             pending_share: None,
             source_opener: None,
             confirm_leave: false,
+            confirm_server_logout: false,
             left_room: false,
             cap_probe: Default::default(),
             window_mode: false,
@@ -1515,6 +1517,7 @@ impl eframe::App for App {
         }
         if self.source_draft.is_none()
             && !self.confirm_leave
+            && !self.confirm_server_logout
             && (self.fullscreen || connected && !videos.is_empty())
             && ctx.input(|i| i.key_pressed(egui::Key::F11))
         {
@@ -2087,18 +2090,10 @@ impl eframe::App for App {
                                         .color(MUTED),
                                 );
                             }
-                            if compact_action(
-                                ui,
-                                crate::i18n::label(
-                                    "Trocar acesso ao servidor",
-                                    "Change server access",
-                                ),
-                                !self.server_access.busy,
-                            )
-                            .clicked()
+                            if crate::desktop_ui::server_logout_button(ui, !self.server_access.busy)
+                                .clicked()
                             {
-                                self.leave_room(&ctx, false);
-                                self.server_access.logout(&self.address);
+                                self.confirm_server_logout = true;
                             }
                         }
                         if self.departure.is_none()
@@ -2237,6 +2232,7 @@ impl eframe::App for App {
                 ui.painter().rect_filled(rect, 12.0, PANEL);
                 // Native video child windows sit above egui, including the modal backdrop.
                 hide_native_video = self.confirm_leave
+                    || self.confirm_server_logout
                     || (!self.fullscreen
                         && (self.creator.open
                             || self.catalog.open
@@ -2523,6 +2519,15 @@ impl eframe::App for App {
                 }
                 Some(false) => self.confirm_leave = false,
                 None => {}
+            }
+        }
+        if self.confirm_server_logout
+            && let Some(confirmed) = crate::desktop_ui::confirm_server_logout(&ctx)
+        {
+            self.confirm_server_logout = false;
+            if confirmed {
+                self.leave_room(&ctx, false);
+                self.server_access.logout(&self.address);
             }
         }
         let mut overlays: Vec<_> = menu_rect.into_iter().collect();
@@ -2936,105 +2941,97 @@ impl eframe::App for App {
         }
         if !self.fullscreen && self.updater.open {
             let mut install = false;
-            let modal = crate::desktop_ui::scrolling_dialog(
-                &ctx,
-                crate::i18n::label("Atualização", "Update"),
-                "update_window",
-                320.0,
-                |ui| {
-                    ui.label(crate::i18n_format!(
-                        "Versão atual: {}",
-                        "Current version: {}",
-                        env!("CARGO_PKG_VERSION")
-                    ));
+            let modal = crate::desktop_ui::update_dialog(&ctx, |ui| {
+                ui.label(crate::i18n_format!(
+                    "Versão atual: {}",
+                    "Current version: {}",
+                    env!("CARGO_PKG_VERSION")
+                ));
+                ui.label(
+                    RichText::new(match &self.updater.installation {
+                        crate::updater::Installation::Installed(_) => crate::i18n::label(
+                            "Instalada · atualização pelo aplicativo",
+                            "Installed · in-app updates",
+                        ),
+                        _ => crate::i18n::label(
+                            "Portátil · download pelo navegador",
+                            "Portable · download in browser",
+                        ),
+                    })
+                    .size(11.0)
+                    .color(MUTED),
+                );
+                ui.label(&self.updater.status);
+                if let Some((progress, label)) = self.updater.progress() {
+                    ui.add(egui::ProgressBar::new(progress).text(label));
+                }
+                if let crate::updater::Installation::Unknown(message) = &self.updater.installation {
                     ui.label(
-                        RichText::new(match &self.updater.installation {
-                            crate::updater::Installation::Installed(_) => crate::i18n::label(
-                                "Instalada · atualização pelo aplicativo",
-                                "Installed · in-app updates",
-                            ),
-                            _ => crate::i18n::label(
-                                "Portátil · download pelo navegador",
-                                "Portable · download in browser",
-                            ),
-                        })
+                        RichText::new(crate::i18n::label(
+                            "Não foi possível reconhecer a instalação",
+                            "Could not identify the installation",
+                        ))
                         .size(11.0)
                         .color(MUTED),
-                    );
-                    ui.label(&self.updater.status);
-                    if let Some((progress, label)) = self.updater.progress() {
-                        ui.add(egui::ProgressBar::new(progress).text(label));
-                    }
-                    if let crate::updater::Installation::Unknown(message) =
-                        &self.updater.installation
-                    {
-                        ui.label(
-                            RichText::new(crate::i18n::label(
-                                "Não foi possível reconhecer a instalação",
-                                "Could not identify the installation",
-                            ))
-                            .size(11.0)
-                            .color(MUTED),
+                    )
+                    .on_hover_text(message);
+                }
+                if !self.updater.busy {
+                    if self.updater.installer.is_some() {
+                        ui.label(RichText::new(crate::i18n::label("O HyperCast será fechado para instalar. A sessão atual será encerrada.","HyperCast will close to install the update. The current session will end.")).size(12.0).color(MUTED));
+                        if update_action(
+                            ui,
+                            crate::i18n::label("Instalar e reiniciar", "Install and restart"),
+                            true,
                         )
-                        .on_hover_text(message);
-                    }
-                    if !self.updater.busy {
-                        if self.updater.installer.is_some() {
-                            ui.label(RichText::new(crate::i18n::label("O HyperCast será fechado para instalar. A sessão atual será encerrada.","HyperCast will close to install the update. The current session will end.")).size(12.0).color(MUTED));
+                        .clicked()
+                        {
+                            install = true;
+                        }
+                    } else if let Some(release) = self.updater.release.clone() {
+                        if matches!(
+                            self.updater.installation,
+                            crate::updater::Installation::Installed(_)
+                        ) {
                             if update_action(
                                 ui,
-                                crate::i18n::label("Instalar e reiniciar", "Install and restart"),
+                                crate::i18n::label("Baixar atualização", "Download update"),
                                 true,
                             )
                             .clicked()
                             {
-                                install = true;
+                                self.updater.download(ctx.clone());
                             }
-                        } else if let Some(release) = self.updater.release.clone() {
-                            if matches!(
-                                self.updater.installation,
-                                crate::updater::Installation::Installed(_)
-                            ) {
-                                if update_action(
-                                    ui,
-                                    crate::i18n::label("Baixar atualização", "Download update"),
-                                    true,
-                                )
-                                .clicked()
-                                {
-                                    self.updater.download(ctx.clone());
-                                }
-                            } else if update_action(
-                                ui,
-                                crate::i18n::label("Baixar no navegador", "Download in browser"),
-                                true,
-                            )
-                            .clicked()
-                            {
-                                ctx.open_url(egui::OpenUrl::new_tab(release.page));
-                            }
-                        }
-                        if update_action(
+                        } else if update_action(
                             ui,
-                            crate::i18n::label("Verificar atualização", "Check for updates"),
-                            false,
+                            crate::i18n::label("Baixar no navegador", "Download in browser"),
+                            true,
                         )
                         .clicked()
                         {
-                            self.updater.check(ctx.clone());
-                        }
-                        if update_action(
-                            ui,
-                            crate::i18n::label("Abrir página de downloads", "Open downloads page"),
-                            false,
-                        )
-                        .clicked()
-                        {
-                            ctx.open_url(egui::OpenUrl::new_tab(crate::updater::RELEASES));
+                            ctx.open_url(egui::OpenUrl::new_tab(release.page));
                         }
                     }
-                },
-            );
+                    if update_action(
+                        ui,
+                        crate::i18n::label("Verificar atualização", "Check for updates"),
+                        false,
+                    )
+                    .clicked()
+                    {
+                        self.updater.check(ctx.clone());
+                    }
+                    if update_action(
+                        ui,
+                        crate::i18n::label("Abrir página de downloads", "Open downloads page"),
+                        false,
+                    )
+                    .clicked()
+                    {
+                        ctx.open_url(egui::OpenUrl::new_tab(crate::updater::RELEASES));
+                    }
+                }
+            });
             self.updater.open = !modal.should_close();
             if install {
                 self.engine = None;

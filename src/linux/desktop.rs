@@ -20,9 +20,6 @@ const ACCENT: Color32 = Color32::from_rgb(191, 239, 121);
 fn button(ui: &mut egui::Ui, label: &str, enabled: bool, primary: bool) -> egui::Response {
     crate::desktop_ui::action(ui, label, enabled, primary)
 }
-fn small(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    crate::desktop_ui::compact(ui, label, true)
-}
 fn input(
     ui: &mut egui::Ui,
     value: &mut String,
@@ -56,6 +53,7 @@ struct App {
     sidebar_open: bool,
     invite: String,
     confirm_leave: bool,
+    confirm_server_logout: bool,
     share_draft: Option<ShareDraft>,
     pending_share: Option<(ShareDraft, tokio::sync::oneshot::Receiver<()>)>,
     share_source: Source,
@@ -110,6 +108,7 @@ impl App {
             name: crate::preferences::load_name(),
             sidebar_open: prefs.sidebar,
             confirm_leave: false,
+            confirm_server_logout: false,
             share_draft: None,
             pending_share: None,
             share_source: Source::Portal,
@@ -636,6 +635,7 @@ impl App {
             self.restart_reception();
         }
         if !self.confirm_leave
+            && !self.confirm_server_logout
             && self.share_draft.is_none()
             && (self.fullscreen || connected && !screens.is_empty())
             && ctx.input(|i| i.key_pressed(egui::Key::F11))
@@ -989,17 +989,10 @@ impl App {
                                     }
                                 },
                             );
-                            if small(
-                                ui,
-                                crate::i18n::label(
-                                    "Trocar acesso ao servidor",
-                                    "Change server access",
-                                ),
-                            )
-                            .clicked()
+                            if crate::desktop_ui::server_logout_button(ui, !self.access.busy)
+                                .clicked()
                             {
-                                self.leave_room(ctx, false);
-                                self.access.logout(&self.address);
+                                self.confirm_server_logout = true;
                             }
                         }
 
@@ -1156,6 +1149,15 @@ impl App {
                 }
                 Some(false) => self.confirm_leave = false,
                 None => {}
+            }
+        }
+        if self.confirm_server_logout
+            && let Some(confirmed) = crate::desktop_ui::confirm_server_logout(ctx)
+        {
+            self.confirm_server_logout = false;
+            if confirmed {
+                self.leave_room(ctx, false);
+                self.access.logout(&self.address);
             }
         }
         if self.creator.open {
@@ -1397,40 +1399,34 @@ impl App {
             }
         }
         if self.updates {
-            let modal = crate::desktop_ui::scrolling_dialog(
-                ctx,
-                crate::i18n::label("Atualização", "Update"),
-                "update_window",
-                320.0,
-                |ui| {
-                    ui.label(crate::i18n_format!(
-                        "Versão atual: {}",
-                        "Current version: {}",
-                        env!("CARGO_PKG_VERSION")
+            let modal = crate::desktop_ui::update_dialog(ctx, |ui| {
+                ui.label(crate::i18n_format!(
+                    "Versão atual: {}",
+                    "Current version: {}",
+                    env!("CARGO_PKG_VERSION")
+                ));
+                ui.label(
+                    RichText::new(crate::i18n::label(
+                        "Linux · AppImage portátil",
+                        "Linux · portable AppImage",
+                    ))
+                    .size(11.0)
+                    .color(MUTED),
+                );
+                ui.label(crate::i18n::label("Confira a versão disponível na página de downloads. Para atualizar, substitua o AppImage.","Check the downloads page for the latest version. Replace the AppImage to update."));
+                if crate::desktop_ui::action(
+                    ui,
+                    crate::i18n::label("Abrir página de downloads", "Open downloads page"),
+                    true,
+                    true,
+                )
+                .clicked()
+                {
+                    ctx.open_url(egui::OpenUrl::new_tab(
+                        "https://github.com/LucasCamy/HyperCast/releases",
                     ));
-                    ui.label(
-                        RichText::new(crate::i18n::label(
-                            "Linux · AppImage portátil",
-                            "Linux · portable AppImage",
-                        ))
-                        .size(11.0)
-                        .color(MUTED),
-                    );
-                    ui.label(crate::i18n::label("Confira a versão disponível na página de downloads. Para atualizar, substitua o AppImage.","Check the downloads page for the latest version. Replace the AppImage to update."));
-                    if crate::desktop_ui::action(
-                        ui,
-                        crate::i18n::label("Abrir página de downloads", "Open downloads page"),
-                        true,
-                        true,
-                    )
-                    .clicked()
-                    {
-                        ctx.open_url(egui::OpenUrl::new_tab(
-                            "https://github.com/LucasCamy/HyperCast/releases",
-                        ));
-                    }
-                },
-            );
+                }
+            });
             self.updates = !modal.should_close();
         }
         if let Ok(seconds) = std::env::var("HYPERCAST_SMOKE_SECONDS")

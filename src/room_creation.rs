@@ -647,7 +647,14 @@ pub struct ServerAccess {
     origin: String,
     loaded: bool,
     refresh: std::time::Instant,
-    receiver: Option<mpsc::Receiver<Result<(String, bool)>>>,
+    receiver: Option<mpsc::Receiver<Result<AccessGrant>>>,
+}
+
+struct AccessGrant {
+    token: String,
+    address: String,
+    code: String,
+    remember: bool,
 }
 impl Default for ServerAccess {
     fn default() -> Self {
@@ -676,6 +683,8 @@ impl ServerAccess {
         !self.token.is_empty() && self.refresh.elapsed() < std::time::Duration::from_secs(840)
     }
     pub fn logout(&mut self, address: &str) {
+        self.receiver = None;
+        self.busy = false;
         let _ = forget_code(address);
         self.code.clear();
         self.token.clear();
@@ -693,14 +702,11 @@ impl ServerAccess {
         let (tx, rx) = mpsc::channel();
         self.receiver = Some(rx);
         std::thread::spawn(move || {
-            let result = login(&address, &code, &device).map(|token| {
-                let failed = (if remember {
-                    save_code(&address, &code)
-                } else {
-                    forget_code(&address)
-                })
-                .is_err();
-                (token, failed)
+            let result = login(&address, &code, &device).map(|token| AccessGrant {
+                token,
+                address,
+                code,
+                remember,
             });
             let _ = tx.send(result);
             ctx.request_repaint();
@@ -727,8 +733,15 @@ impl ServerAccess {
                     self.receiver = None;
                     self.busy = false;
                     match result {
-                        Ok((token, failed)) => {
-                            self.token = token;
+                        Ok(grant) if grant.address == address => {
+                            // Only a grant accepted by the UI may change saved access.
+                            let failed = if grant.remember {
+                                save_code(&grant.address, &grant.code)
+                            } else {
+                                forget_code(&grant.address)
+                            }
+                            .is_err();
+                            self.token = grant.token;
                             self.refresh = std::time::Instant::now();
                             self.status = if failed {
                                 crate::i18n::label("Acesso liberado; não foi possível atualizar a chave salva neste dispositivo","Access granted; could not update the key saved on this device").into()
@@ -736,6 +749,7 @@ impl ServerAccess {
                                 String::new()
                             };
                         }
+                        Ok(_) => {}
                         Err(e) => {
                             self.token.clear();
                             self.status = e.to_string();
@@ -763,6 +777,33 @@ impl ServerAccess {
         }
     }
 }
+
+#[cfg(test)]
+#[test]
+fn server_logout_discards_a_pending_access_refresh() {
+    let address = format!("https://logout-test-{}.invalid", uuid::Uuid::new_v4());
+    let (tx, rx) = mpsc::channel();
+    let mut access = ServerAccess {
+        token: "test-session".into(),
+        origin: address.clone(),
+        loaded: true,
+        busy: true,
+        receiver: Some(rx),
+        ..Default::default()
+    };
+    tx.send(Ok(AccessGrant {
+        token: "refreshed-test-session".into(),
+        address: address.clone(),
+        code: String::new(),
+        remember: false,
+    }))
+    .unwrap();
+    access.logout(&address);
+    access.poll(&address, "test-device", egui::Context::default());
+    assert!(!access.authenticated());
+    assert!(!access.busy);
+}
+
 fn login(address: &str, code: &str, device: &str) -> Result<String> {
     ensure!(
         (32..=64).contains(&code.len())
