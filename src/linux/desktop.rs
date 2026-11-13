@@ -87,7 +87,7 @@ struct App {
     debug: bool,
     report_copied: Option<Instant>,
     updates: bool,
-    textures: HashMap<String, (u64, egui::TextureHandle)>,
+    textures: HashMap<String, (Instant, egui::TextureHandle)>,
     rgba: Vec<u8>,
     started: Instant,
 }
@@ -129,6 +129,7 @@ impl App {
             joining: None,
             status: String::new(),
             layout: Layout {
+                self_preview: prefs.self_preview,
                 mode: if prefs.grid {
                     ViewMode::Grid
                 } else {
@@ -184,7 +185,7 @@ impl App {
             volume: self.volume,
             muted: self.sound_muted,
             sidebar: self.sidebar_open,
-            self_preview: self.preferences.current().self_preview,
+            self_preview: self.layout.self_preview,
             grid: self.layout.mode == ViewMode::Grid,
         });
     }
@@ -284,18 +285,30 @@ impl App {
         if !canvas.is_positive() || !ui.is_rect_visible(card) {
             return;
         }
-        let frame = self.snapshot.frames.get(sid).cloned();
-        if let Some((sequence, frame, delivered_at)) = frame {
+        let frame = if sid == crate::camera_preview::LOCAL_CAMERA {
+            self.snapshot
+                .camera_preview
+                .as_ref()
+                .and_then(|preview| preview.latest())
+        } else {
+            self.snapshot
+                .frames
+                .get(sid)
+                .map(|(_, frame, at)| (frame.clone(), *at))
+        };
+        if let Some((frame, delivered_at)) = frame {
             if self
                 .textures
                 .get(sid)
-                .is_none_or(|entry| entry.0 != sequence)
+                .is_none_or(|entry| entry.0 != delivered_at)
             {
                 let render_started = Instant::now();
-                self.snapshot.quality.evidence.record(
-                    crate::evidence::Stage::ReaderToRender,
-                    render_started.saturating_duration_since(delivered_at),
-                );
+                if sid != crate::camera_preview::LOCAL_CAMERA {
+                    self.snapshot.quality.evidence.record(
+                        crate::evidence::Stage::ReaderToRender,
+                        render_started.saturating_duration_since(delivered_at),
+                    );
+                }
                 let (w, h) = (frame.buffer.width(), frame.buffer.height());
                 self.rgba.resize(w as usize * h as usize * 4, 0);
                 frame.buffer.to_argb(
@@ -309,21 +322,23 @@ impl App {
                     egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &self.rgba);
                 if let Some(entry) = self.textures.get_mut(sid) {
                     entry.1.set(image, egui::TextureOptions::LINEAR);
-                    entry.0 = sequence;
+                    entry.0 = delivered_at;
                 } else {
                     self.textures.insert(
                         sid.into(),
                         (
-                            sequence,
+                            delivered_at,
                             ui.ctx()
                                 .load_texture(sid, image, egui::TextureOptions::LINEAR),
                         ),
                     );
                 }
-                self.snapshot.quality.evidence.record(
-                    crate::evidence::Stage::RenderPrepare,
-                    render_started.elapsed(),
-                );
+                if sid != crate::camera_preview::LOCAL_CAMERA {
+                    self.snapshot.quality.evidence.record(
+                        crate::evidence::Stage::RenderPrepare,
+                        render_started.elapsed(),
+                    );
+                }
             }
         }
         let painter = ui.painter().with_clip_rect(card);
@@ -596,7 +611,18 @@ impl App {
             ..
         } = self.snapshot;
         let state_status = self.snapshot.status.clone();
-        let screens = self.snapshot.screens.clone();
+        let mut screens = self.snapshot.screens.clone();
+        let camera_visible = self.layout.self_preview && self.snapshot.camera_active;
+        if camera_visible {
+            screens.push(super::engine::Screen {
+                sid: crate::camera_preview::LOCAL_CAMERA.into(),
+                owner: String::new(),
+                name: crate::i18n::label("Minha câmera", "My camera").into(),
+            });
+        } else if self.layout.focus.as_deref() == Some(crate::camera_preview::LOCAL_CAMERA) {
+            self.layout.focus = None;
+            self.layout();
+        }
         self.textures
             .retain(|sid, _| screens.iter().any(|screen| &screen.sid == sid));
         if connected && !self.applied_layout {
@@ -622,8 +648,9 @@ impl App {
         if !self.fullscreen && (connected || reconnecting) {
             crate::desktop_ui::session_panel(ctx.content_rect().width()).show(root, |ui| {
                 use crate::desktop_ui::{
-                    active_share_actions, session_actions, session_button, session_leave,
-                    session_menu, session_playback_actions, session_room_actions, session_stop,
+                    active_share_actions, camera_actions, session_actions, session_button,
+                    session_leave, session_menu, session_playback_actions, session_room_actions,
+                    session_stop,
                 };
                 let ready = connected && can_publish && !selecting && self.pending_share.is_none();
                 let paused = self.layout.paused;
@@ -666,15 +693,21 @@ impl App {
                     } else {
                         crate::i18n::label("Ligar câmera", "Turn on camera")
                     };
-                    if session_button(
+                    let (camera, preview) = camera_actions(
                         ui,
+                        compact,
                         camera,
                         connected && can_publish && !self.snapshot.camera_starting,
-                        false,
-                    )
-                    .clicked()
-                    {
+                        self.snapshot
+                            .camera_active
+                            .then_some(self.layout.self_preview),
+                    );
+                    if camera.clicked() {
                         self.send(Command::ToggleCamera);
+                    }
+                    if preview.is_some_and(|button| button.clicked()) {
+                        self.layout.self_preview = !self.layout.self_preview;
+                        self.layout();
                     }
                     let (pause, reconnect) = playback_in_first_row.unwrap_or_else(|| {
                         ui.end_row();
@@ -1090,7 +1123,29 @@ impl App {
                         .and_then(|id| screens.iter().find(|s| s.sid == id || s.owner == id))
                         .unwrap_or(&screens[0]);
                     let area = ui.allocate_space(ui.available_size()).1;
-                    self.video(ui, &focus.sid, &focus.name, area);
+                    let preview = (!self.fullscreen
+                        && focus.sid != crate::camera_preview::LOCAL_CAMERA)
+                        .then(|| {
+                            screens
+                                .iter()
+                                .find(|screen| screen.sid == crate::camera_preview::LOCAL_CAMERA)
+                        })
+                        .flatten();
+                    let count = 1 + usize::from(preview.is_some());
+                    self.video(
+                        ui,
+                        &focus.sid,
+                        &focus.name,
+                        crate::desktop_ui::spotlight_card(area, 0, count),
+                    );
+                    if let Some(preview) = preview {
+                        self.video(
+                            ui,
+                            &preview.sid,
+                            &preview.name,
+                            crate::desktop_ui::spotlight_card(area, 1, count),
+                        );
+                    }
                 }
             });
         if self.confirm_leave {
@@ -1333,10 +1388,12 @@ impl App {
                 self.sidebar_open = p.sidebar;
                 self.volume = p.volume;
                 self.sound_muted = p.muted;
+                self.layout.self_preview = p.self_preview;
                 self.layout.mode = ViewMode::Grid;
                 self.layout.focus = None;
                 self.layout.paused = false;
                 self.codec = Codec::Hevc;
+                self.layout();
             }
         }
         if self.updates {
@@ -1460,6 +1517,45 @@ pub fn run() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+
+    #[test]
+    fn camera_preview_uses_a_local_card_and_disappears_when_hidden_or_stopped() {
+        use crate::camera_preview::{CameraPreview, LOCAL_CAMERA};
+        use livekit::webrtc::video_frame::I420Buffer;
+
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx);
+        app.address = "ws://127.0.0.1:9".into();
+        app.layout.self_preview = true;
+        let preview = CameraPreview::default();
+        preview.set_visible(true);
+        preview.capture(&mut I420Buffer::new(1280, 720), &ctx);
+        let shared = std::sync::Arc::new(crate::resilience::StateMutex::new(State {
+            connected: true,
+            can_publish: true,
+            camera_active: true,
+            camera_preview: Some(preview),
+            ..Default::default()
+        }));
+        app.engine = Some(Engine::fixture(shared.clone()));
+
+        draw(&mut app, &ctx, 0);
+        assert_eq!(app.textures[LOCAL_CAMERA].1.size(), [640, 360]);
+        app.layout.focus = Some(LOCAL_CAMERA.into());
+        app.layout.self_preview = false;
+        draw(&mut app, &ctx, 1);
+        assert!(!app.textures.contains_key(LOCAL_CAMERA));
+        assert!(app.layout.focus.is_none());
+        assert!(shared.lock().unwrap().camera_active);
+
+        app.layout.self_preview = true;
+        draw(&mut app, &ctx, 2);
+        assert!(app.textures.contains_key(LOCAL_CAMERA));
+        shared.lock().unwrap().camera_active = false;
+        draw(&mut app, &ctx, 3);
+        assert!(!app.textures.contains_key(LOCAL_CAMERA));
+    }
+
     fn draw(app: &mut App, ctx: &egui::Context, step: usize) {
         let output = ctx.run_ui(
             egui::RawInput {

@@ -1,4 +1,6 @@
+use crate::camera_preview::CameraPreview;
 use anyhow::{Context, Result, ensure};
+use eframe::egui;
 use gst::prelude::*;
 use gstreamer as gst;
 use livekit::{
@@ -20,11 +22,17 @@ pub(super) struct Camera {
     source: NativeVideoSource,
     sid: Option<TrackSid>,
     last_frame: Instant,
+    preview: CameraPreview,
+    ctx: egui::Context,
 }
 
 impl Camera {
-    pub(super) async fn open(room: &Room) -> Result<Self> {
-        let mut camera = Self::start_capture("v4l2src").await?;
+    pub(super) async fn open(
+        room: &Room,
+        preview: CameraPreview,
+        ctx: egui::Context,
+    ) -> Result<Self> {
+        let mut camera = Self::start_capture("v4l2src", preview, ctx).await?;
         let track = LocalVideoTrack::create_video_track(
             "camera",
             RtcVideoSource::Native(camera.source.clone()),
@@ -49,7 +57,11 @@ impl Camera {
         Ok(camera)
     }
 
-    async fn start_capture(input: &str) -> Result<Self> {
+    async fn start_capture(
+        input: &str,
+        preview: CameraPreview,
+        ctx: egui::Context,
+    ) -> Result<Self> {
         gst::init()?;
         let pipeline = gst::parse::launch(
             format!("{input} ! decodebin ! videoconvert ! videoscale ! videorate ! video/x-raw,format=I420,width={WIDTH},height={HEIGHT},framerate=30/1 ! appsink name=camera max-buffers=1 drop=true sync=false").as_str(),
@@ -73,6 +85,8 @@ impl Camera {
             source,
             sid: None,
             last_frame: Instant::now(),
+            preview,
+            ctx,
         };
         camera.pipeline.set_state(gst::State::Playing)?;
         let first_sample = tokio::time::timeout(Duration::from_secs(5), async {
@@ -131,6 +145,7 @@ impl Camera {
                 );
             }
         }
+        self.preview.capture(&mut frame, &self.ctx);
         self.source
             .capture_frame(&VideoFrame::new(VideoRotation::VideoRotation0, frame));
         self.last_frame = Instant::now();
@@ -154,10 +169,29 @@ impl Drop for Camera {
 #[cfg(test)]
 #[tokio::test]
 async fn simulated_webcam_delivers_frames_through_camera_capture() -> Result<()> {
-    let mut camera = Camera::start_capture("videotestsrc is-live=true pattern=ball").await?;
+    let preview = CameraPreview::default();
+    preview.set_visible(true);
+    let mut camera = Camera::start_capture(
+        "videotestsrc is-live=true pattern=ball",
+        preview.clone(),
+        egui::Context::default(),
+    )
+    .await?;
+    assert!(preview.latest().is_some());
+    preview.set_visible(false);
     let first_frame = camera.last_frame;
     tokio::time::timeout(Duration::from_secs(2), async {
         while camera.last_frame == first_frame {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            camera.tick()?;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await??;
+    assert!(preview.latest().is_none());
+    preview.set_visible(true);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while preview.latest().is_none() {
             tokio::time::sleep(Duration::from_millis(20)).await;
             camera.tick()?;
         }

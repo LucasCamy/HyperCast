@@ -1,6 +1,7 @@
 use super::media::{AudioCapture, Capture, Codec, Encoder, Playout, Source};
 use crate::resilience::StateMutex as Mutex;
 use crate::{
+    camera_preview::{CameraPreview, LOCAL_CAMERA},
     network::{self, EncodedPublisher},
     subscription::{Demand, ViewMode, delivery_demand},
 };
@@ -39,6 +40,7 @@ pub struct State {
     pub connected: bool,
     pub camera_active: bool,
     pub camera_starting: bool,
+    pub(crate) camera_preview: Option<CameraPreview>,
     pub quality: crate::video_metrics::QualitySnapshot,
     pub reception_resetting: bool,
     pub reception_restarts: u64,
@@ -58,6 +60,7 @@ pub struct State {
 }
 #[derive(Clone)]
 pub struct Layout {
+    pub self_preview: bool,
     pub mode: ViewMode,
     pub focus: Option<String>,
     pub paused: bool,
@@ -66,6 +69,7 @@ pub struct Layout {
 impl Default for Layout {
     fn default() -> Self {
         Self {
+            self_preview: true,
             mode: ViewMode::Spotlight,
             focus: None,
             paused: false,
@@ -339,12 +343,16 @@ fn refresh(
         )
     });
     screens.truncate(6);
-    let focus = layout
-        .focus
-        .as_deref()
-        .and_then(|id| screens.iter().find(|s| s.0.sid == id || s.0.owner == id))
-        .or_else(|| screens.first())
-        .map(|s| s.0.sid.as_str());
+    let focus = if layout.self_preview && layout.focus.as_deref() == Some(LOCAL_CAMERA) {
+        None
+    } else {
+        layout
+            .focus
+            .as_deref()
+            .and_then(|id| screens.iter().find(|s| s.0.sid == id || s.0.owner == id))
+            .or_else(|| screens.first())
+            .map(|s| s.0.sid.as_str())
+    };
     let mut active = HashMap::new();
     for (screen, publication) in &screens {
         let wanted = delivery_demand(
@@ -528,6 +536,7 @@ async fn session(
     let mut audio_sinks = HashMap::<String, Sink>::new();
     let mut camera: Option<super::camera::Camera> = None;
     let mut camera_start = None;
+    let mut camera_preview = CameraPreview::default();
     let mut capture: Option<Capture> = None;
     let mut publisher: Option<EncodedPublisher> = None;
     let mut audio: Option<AudioCast> = None;
@@ -577,14 +586,24 @@ async fn session(
                     Command::Disconnect=>break,
                     Command::ToggleCamera => {
                         if let Some(active) = camera.take() {
+                            camera_preview.set_visible(false);
+                            {
+                                let mut state = shared.lock().unwrap();
+                                state.camera_active = false;
+                                state.camera_preview = None;
+                            }
+                            ctx.request_repaint();
                             active.stop(&room).await;
-                            shared.lock().unwrap().camera_active = false;
                         } else if camera_start.is_none()
                             && room.local_participant().permission().is_some_and(|grant| grant.can_publish)
                         {
                             let room = room.clone();
+                            camera_preview = CameraPreview::default();
+                            camera_preview.set_visible(layout.self_preview && !layout.paused);
+                            let preview = camera_preview.clone();
+                            let preview_ctx = ctx.clone();
                             camera_start = Some(tokio::spawn(async move {
-                                super::camera::Camera::open(&room).await
+                                super::camera::Camera::open(&room, preview, preview_ctx).await
                             }));
                             shared.lock().unwrap().camera_starting = true;
                         }
@@ -601,7 +620,12 @@ async fn session(
                             let mut s=shared.lock().unwrap();s.reception_resetting=true;s.reception_restarts+=1;
                         }
                     },
-                    Command::Layout(value)=>{layout=value;volume.store(layout.volume,Ordering::Relaxed);last_refresh=Instant::now()-Duration::from_secs(1);},
+                    Command::Layout(value)=>{
+                        layout = value;
+                        camera_preview.set_visible(layout.self_preview && !layout.paused);
+                        volume.store(layout.volume, Ordering::Relaxed);
+                        last_refresh = Instant::now() - Duration::from_secs(1);
+                    },
                     Command::Share(source,codec,encoder,upload,options)=>{
                         if pending.is_none() && retiring.is_none() && room.local_participant().permission().is_some_and(|grant|grant.can_publish){
                             let capture_evidence=evidence.clone();
@@ -661,6 +685,7 @@ async fn session(
                                 Ok(Ok(active)) => {
                                     camera = Some(active);
                                     state.camera_active = true;
+                                    state.camera_preview = Some(camera_preview.clone());
                                 }
                                 Ok(Err(error)) => state.status = error.to_string(),
                                 Err(error) => state.status = error.to_string(),
@@ -668,12 +693,17 @@ async fn session(
                         }
                     }
                     if let Some(error) = camera.as_mut().and_then(|active| active.tick().err()) {
+                        camera_preview.set_visible(false);
+                        {
+                            let mut state = shared.lock().unwrap();
+                            state.camera_active = false;
+                            state.camera_preview = None;
+                            state.status = format!("{}: {error}", crate::i18n::label("Câmera", "Camera"));
+                        }
+                        ctx.request_repaint();
                         if let Some(active) = camera.take() {
                             active.stop(&room).await;
                         }
-                        let mut state = shared.lock().unwrap();
-                        state.camera_active = false;
-                        state.status = format!("{}: {error}", crate::i18n::label("Câmera", "Camera"));
                     }
                     if retiring.as_ref().is_some_and(|task|task.is_finished()) {
                         if retiring.take().unwrap().await.is_err(){shared.lock().unwrap().status=crate::i18n::label("A origem anterior falhou ao encerrar; você pode tentar novamente.","The previous source failed to stop; you can try again.").into();}
@@ -865,6 +895,7 @@ async fn session(
     if let Some(p) = publisher.take() {
         let _ = p.stop().await;
     }
+    camera_preview.set_visible(false);
     if let Some(task) = camera_start {
         task.abort();
         if let Ok(Ok(active)) = task.await {
@@ -874,8 +905,12 @@ async fn session(
     if let Some(active) = camera.take() {
         active.stop(&room).await;
     }
-    shared.lock().unwrap().camera_active = false;
-    shared.lock().unwrap().camera_starting = false;
+    {
+        let mut state = shared.lock().unwrap();
+        state.camera_active = false;
+        state.camera_starting = false;
+        state.camera_preview = None;
+    }
     video_sinks.clear();
     audio_sinks.clear();
     let _ = room.close().await;

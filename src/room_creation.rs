@@ -188,7 +188,7 @@ impl Catalog {
             ctx,
             crate::i18n::label("Escolher sala", "Choose room"),
             "saved_rooms_window",
-            640.0,
+            440.0,
             |ui| {
                 ui.allocate_ui_with_layout(
                     egui::vec2(ui.available_width(), 34.0),
@@ -221,13 +221,15 @@ impl Catalog {
                         });
                     },
                 );
-                // Reserve the dialog frame and margins after laying out the fixed controls.
-                let list_height = (ctx.content_rect().height() - ui.min_size().y - 38.0).max(0.0);
+                let list_height =
+                    (ctx.content_rect().height() - ui.min_size().y - 54.0).clamp(0.0, 520.0);
                 ui.spacing_mut().scroll.floating = false;
                 egui::ScrollArea::vertical()
                     .id_salt("saved_rooms_list")
                     .auto_shrink([false, true])
-                    .min_scrolled_height(0.0)
+                    // The modal retains its previous size while the room list loads.
+                    // Use the window budget here so the scroll area can grow on the next frame.
+                    .min_scrolled_height(list_height)
                     .max_height(list_height)
                     .show(ui, |ui| {
                         if !self.status.is_empty() {
@@ -1047,7 +1049,7 @@ fn compact_catalog_keeps_name_and_first_room_visible_and_clickable() {
     let area = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(230.0, 180.0));
     let mut name = "LayoutTester".to_owned();
     let mut selected = None;
-    let mut draw = |events| {
+    let mut draw = |catalog: &mut Catalog, area, events| {
         ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(area),
@@ -1063,11 +1065,7 @@ fn compact_catalog_keeps_name_and_first_room_visible_and_clickable() {
             },
         )
     };
-    for _ in 0..3 {
-        let _ = draw(Vec::new());
-    }
-    let output = draw(Vec::new());
-    let visible_text = |text: &str| {
+    let visible_text = |output: &egui::FullOutput, area: egui::Rect, text: &str| {
         output.shapes.iter().find_map(|shape| {
             if let egui::Shape::Text(label) = &shape.shape
                 && label.galley.text() == text
@@ -1079,22 +1077,53 @@ fn compact_catalog_keeps_name_and_first_room_visible_and_clickable() {
             None
         })
     };
+    let rooms = std::mem::take(&mut catalog.rooms);
+    let regular = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(989.0, 695.0));
+    for _ in 0..3 {
+        let _ = draw(&mut catalog, regular, Vec::new());
+    }
+    catalog.rooms = rooms;
+    // Loading changes the size of the centered modal. Let it settle before
+    // checking that the room cards have reclaimed the available space.
+    for _ in 0..3 {
+        let _ = draw(&mut catalog, regular, Vec::new());
+    }
+    let output = draw(&mut catalog, regular, Vec::new());
+    let join = crate::i18n::label("Entrar", "Join");
+    let visible_rows = output.shapes.iter().filter(|shape| {
+        matches!(&shape.shape, egui::Shape::Text(label)
+            if label.galley.text() == join && shape.clip_rect.contains_rect(label.visual_bounding_rect())
+                && regular.contains_rect(label.visual_bounding_rect()))
+    }).count();
     assert!(
-        visible_text("LayoutTester").is_some(),
+        visible_rows >= 4,
+        "Only {visible_rows} room rows fit after loading"
+    );
+
+    for _ in 0..3 {
+        let _ = draw(&mut catalog, area, Vec::new());
+    }
+    let output = draw(&mut catalog, area, Vec::new());
+    assert!(
+        visible_text(&output, area, "LayoutTester").is_some(),
         "Name field is clipped"
     );
-    let pos = visible_text(crate::i18n::label("Entrar", "Join"))
+    let pos = visible_text(&output, area, join)
         .expect("First room should be reachable without scrolling");
     for pressed in [true, false] {
-        let _ = draw(vec![
-            egui::Event::PointerMoved(pos),
-            egui::Event::PointerButton {
-                pos,
-                button: egui::PointerButton::Primary,
-                pressed,
-                modifiers: Default::default(),
-            },
-        ]);
+        let _ = draw(
+            &mut catalog,
+            area,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
     }
     assert_eq!(selected.as_deref(), Some("0"));
 }

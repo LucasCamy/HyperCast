@@ -1,4 +1,6 @@
 pub mod bandwidth;
+#[cfg(all(feature = "desktop", any(windows, target_os = "linux")))]
+mod camera_preview;
 #[cfg(all(windows, feature = "desktop"))]
 pub mod desktop;
 #[cfg(all(windows, feature = "desktop"))]

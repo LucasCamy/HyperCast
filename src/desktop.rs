@@ -289,13 +289,7 @@ struct App {
     started: Instant,
     smoke_seconds: Option<u64>,
     rendered: u64,
-    camera_textures: HashMap<
-        String,
-        (
-            std::sync::Weak<crate::desktop_engine::VideoFrame>,
-            egui::TextureHandle,
-        ),
-    >,
+    camera_textures: HashMap<String, (Option<Instant>, egui::TextureHandle)>,
     camera_rgba: Vec<u8>,
     last_presented: HashMap<String, (Arc<crate::desktop_engine::VideoFrame>, [i32; 4])>,
     smoke_reconnected: bool,
@@ -1007,31 +1001,22 @@ impl App {
                     )
                 });
         use crate::desktop_ui::{
-            active_share_actions, session_actions, session_button, session_leave, session_menu,
-            session_playback_actions, session_room_actions,
+            active_share_actions, camera_actions, session_actions, session_button, session_leave,
+            session_menu, session_playback_actions, session_room_actions,
         };
         let paused = self.paused;
         let playback =
             |ui: &mut egui::Ui| session_playback_actions(ui, paused, connected, resetting);
         let mut menu_rect = None;
         session_actions(ui, |ui, compact| {
+            let mut toggle_preview = false;
             let share = if publishing {
                 let (stop, gear, preview) =
                     active_share_actions(ui, compact, Some(self.self_preview));
                 if gear.clicked() {
                     self.choose_source(gear.id, active_target);
                 }
-                if preview.is_some_and(|button| button.clicked()) {
-                    self.self_preview = !self.self_preview;
-                    if !self.self_preview
-                        && self.engine.as_ref().is_some_and(|engine| {
-                            self.focus.as_ref() == Some(&engine.shared.lock().unwrap().identity)
-                        })
-                    {
-                        self.focus = None;
-                    }
-                    self.send_layout();
-                }
+                toggle_preview = preview.is_some_and(|button| button.clicked());
                 stop
             } else {
                 session_button(
@@ -1058,17 +1043,21 @@ impl App {
             } else {
                 crate::i18n::label("Ligar câmera", "Turn on camera")
             };
-            if session_button(
+            let (camera, preview) = camera_actions(
                 ui,
+                compact,
                 camera,
                 connected && can_publish && !camera_starting,
-                false,
-            )
-            .clicked()
-            {
+                (camera_active && !publishing).then_some(self.self_preview),
+            );
+            if camera.clicked() {
                 if let Some(engine) = &self.engine {
                     let _ = engine.commands.send(Command::ToggleCamera);
                 }
+            }
+            if toggle_preview || preview.is_some_and(|button| button.clicked()) {
+                self.self_preview = !self.self_preview;
+                self.send_layout();
             }
             let (pause, reconnect) = playback_in_first_row.unwrap_or_else(|| {
                 ui.end_row();
@@ -1500,10 +1489,27 @@ impl eframe::App for App {
                 .filter(|(_, frame)| self.self_preview || !frame.local())
                 .map(|(id, frame)| (id.clone(), Arc::clone(frame)))
                 .collect();
+            if self.self_preview
+                && let Some(preview) = state
+                    .camera_preview
+                    .as_ref()
+                    .and_then(|preview| preview.latest())
+            {
+                videos.push((
+                    crate::camera_preview::LOCAL_CAMERA.into(),
+                    Arc::new(crate::desktop_engine::VideoFrame::LocalCamera(preview)),
+                ));
+            }
             received = state.received;
             sent = state.sent;
         }
-        if !publishing && !identity.is_empty() && self.focus.as_ref() == Some(&identity) {
+        let focused_camera_hidden = self.focus.as_deref()
+            == Some(crate::camera_preview::LOCAL_CAMERA)
+            && (!camera_active || !self.self_preview);
+        let focused_screen_hidden = (!publishing || !self.self_preview)
+            && !identity.is_empty()
+            && self.focus.as_ref() == Some(&identity);
+        if focused_camera_hidden || focused_screen_hidden {
             self.focus = None;
             self.send_layout();
         }
@@ -2262,7 +2268,7 @@ impl eframe::App for App {
                     let mut selected: Vec<_> = videos
                         .iter()
                         .filter(|(id, _)| self.mode == ViewMode::Grid || Some(id) == focus)
-                        .take(6)
+                        .take(6 + usize::from(self.self_preview && camera_active))
                         .collect();
                     if selected.is_empty() {
                         // Keep showing the last available video until the newly
@@ -2315,14 +2321,17 @@ impl eframe::App for App {
                             continue;
                         }
                         let owner = crate::desktop_engine::video_owner(identity);
-                        let is_camera = owner != identity.as_str();
+                        let local_camera = identity == crate::camera_preview::LOCAL_CAMERA;
+                        let is_camera = local_camera || owner != identity.as_str();
                         let name = people
                             .iter()
                             .find(|(id, _)| id.as_str() == owner)
                             .map(|(_, name)| name.as_str())
                             .filter(|name| !name.is_empty())
                             .unwrap_or(owner);
-                        let label = if frame.local() {
+                        let label = if local_camera {
+                            crate::i18n::label("Minha câmera", "My camera").to_owned()
+                        } else if frame.local() {
                             crate::i18n::label("Minha tela", "My screen").to_owned()
                         } else {
                             let kind = if is_camera {
@@ -2351,11 +2360,7 @@ impl eframe::App for App {
                                 crate::i18n_format!(
                                     "Transmissão de {}",
                                     "Stream from {}",
-                                    if frame.local() {
-                                        crate::i18n::label("Minha tela", "My screen")
-                                    } else {
-                                        name
-                                    }
+                                    if frame.local() { &label } else { name }
                                 ),
                             )
                         });
@@ -2391,14 +2396,11 @@ impl eframe::App for App {
                                 canvas,
                             });
                         } else if is_camera {
-                            if let crate::desktop_engine::VideoFrame::Remote(remote, _) =
-                                frame.as_ref()
-                            {
-                                let frame_ref = Arc::downgrade(frame);
+                            if let Some((software, captured_at)) = frame.software_frame() {
                                 let entry = self.camera_textures.entry((*identity).clone());
                                 let texture = entry.or_insert_with(|| {
                                     (
-                                        std::sync::Weak::new(),
+                                        None,
                                         ctx.load_texture(
                                             identity.as_str(),
                                             egui::ColorImage::filled([1, 1], egui::Color32::BLACK),
@@ -2406,12 +2408,12 @@ impl eframe::App for App {
                                         ),
                                     )
                                 });
-                                if !texture.0.ptr_eq(&frame_ref) {
+                                if texture.0 != Some(captured_at) {
                                     self.camera_rgba.resize(
                                         frame_width as usize * frame_height as usize * 4,
                                         0,
                                     );
-                                    remote.buffer.to_argb(
+                                    software.buffer.to_argb(
                                         livekit::webrtc::video_frame::VideoFormatType::ABGR,
                                         &mut self.camera_rgba,
                                         frame_width * 4,
@@ -2425,7 +2427,7 @@ impl eframe::App for App {
                                         ),
                                         egui::TextureOptions::LINEAR,
                                     );
-                                    texture.0 = frame_ref;
+                                    texture.0 = Some(captured_at);
                                 }
                                 if canvas.is_positive() && frame_width != 0 && frame_height != 0 {
                                     let size = Vec2::new(frame_width as f32, frame_height as f32);
