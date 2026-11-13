@@ -90,7 +90,20 @@ Vídeos ocultos deixam de ser recebidos. Em **Câmeras**, o áudio das telas
 continua. Modo, filtro e encaixe da faixa ficam salvos nas preferências. Na
 atualização de versões anteriores à 0.9.7, o palco é o modo inicial.
 
-No Windows, `HYPERCAST_TRACE_STAGE=1` imprime, a cada 2 s, o modo, os vídeos do palco, os
+No Windows, ## Avisos (Windows)
+
+Estados da sala, progresso, confirmações e erros aparecem como avisos no canto
+superior direito, acima de vídeos, menus e diálogos: conexão e reconexão,
+"Nesta sala, você pode assistir.", acesso ao servidor, criação e lista de
+salas, atualização, preferências, falhas de captura, áudio ou câmera e cópias
+(nome da sala, relatório técnico). Progresso ("Conectando…") fica até mudar;
+avisos comuns somem em 4 s e erros em 8 s, e qualquer um pode ser fechado no
+**×**. O cabeçalho mostra só o nome da sala, e os cartões de participantes
+mostram o nome com um ícone do que a pessoa compartilha; o texto completo fica
+na dica. Dicas, menus e avisos sempre recortam o vídeo nativo para não ficarem
+escondidos atrás dele.
+
+`HYPERCAST_TRACE_STAGE=1` imprime, a cada 2 s, o modo, os vídeos do palco, os
 cartões, as assinaturas pedidas e os quadros apresentados por vídeo. Use só em
 validação local.
 

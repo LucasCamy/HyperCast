@@ -479,12 +479,15 @@ pub(crate) fn sidebar_update(ui: &mut egui::Ui) -> egui::Response {
     .inner
 }
 pub fn primary(ui: &mut egui::Ui, label: &str, enabled: bool, size: Vec2) -> egui::Response {
+    let width = size
+        .x
+        .max(crate::kit::natural_width(ui, label, crate::kit::HEIGHT));
     crate::kit::button_with(
         ui,
         label,
         crate::kit::Tone::Primary,
         enabled,
-        Some(size.x),
+        Some(width),
         crate::kit::HEIGHT,
     )
 }
@@ -781,7 +784,11 @@ pub fn preferences_controls(
     }
     ui.data_mut(|d| d.insert_temp(key, confirm));
     if let Some(notice) = store.notice() {
-        ui.add(egui::Label::new(RichText::new(notice).size(11.0).color(MUTED)).wrap());
+        if cfg!(windows) {
+            crate::kit::notify_on_change(ui.ctx(), "preferences", notice, None);
+        } else {
+            ui.add(egui::Label::new(RichText::new(notice).size(11.0).color(MUTED)).wrap());
+        }
     }
     if store.retry_available()
         && compact(
@@ -1543,9 +1550,15 @@ pub(crate) fn copy_room_name(ui: &mut egui::Ui, name: &str) {
         ui.ctx().copy_text(name.to_owned());
         let now = ui.input(|input| input.time);
         ui.ctx().data_mut(|data| data.insert_temp(response.id, now));
+        crate::kit::notify(
+            ui.ctx(),
+            "copied",
+            crate::i18n::label("Nome da sala copiado", "Room name copied"),
+            crate::kit::NoticeKind::Success,
+        );
     }
     let copied = ui.ctx().data(|data| data.get_temp::<f64>(response.id));
-    if copied.is_some_and(|at| ui.input(|input| input.time) - at < 2.0) {
+    if !cfg!(windows) && copied.is_some_and(|at| ui.input(|input| input.time) - at < 2.0) {
         ui.label(crate::i18n::label("Nome copiado", "Name copied"));
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_secs(2));

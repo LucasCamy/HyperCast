@@ -446,6 +446,7 @@ impl App {
                         watched.map(|video| video.camera),
                     ),
                     live: target.is_some(),
+                    camera: target.map(|video| video.camera),
                     focused: watched.is_some(),
                 }
             })

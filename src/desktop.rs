@@ -18,7 +18,6 @@ const TEXT: Color32 = Color32::from_rgb(234, 239, 234);
 const MUTED: Color32 = Color32::from_rgb(154, 167, 161);
 const ACCENT: Color32 = Color32::from_rgb(191, 239, 121);
 const SURFACE: Color32 = Color32::from_rgb(28, 35, 36);
-const DANGER: Color32 = Color32::from_rgb(235, 127, 119);
 
 fn compact_action(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
     crate::desktop_ui::compact(ui, label, enabled)
@@ -279,7 +278,6 @@ struct App {
     window_previews: HashMap<usize, crate::video_capture::WindowPreview>,
     fullscreen: bool,
     debug_open: bool,
-    report_copied: Option<Instant>,
     updater: crate::updater::Updater,
     creator: crate::room_creation::Creator,
     catalog: crate::room_creation::Catalog,
@@ -396,7 +394,6 @@ impl App {
             window_previews: HashMap::new(),
             fullscreen: false,
             debug_open: false,
-            report_copied: None,
             updater: crate::updater::Updater::default(),
             creator: crate::room_creation::Creator::default(),
             catalog: crate::room_creation::Catalog::default(),
@@ -1640,6 +1637,45 @@ impl eframe::App for App {
         let arrangement = self
             .room_videos
             .arrange(&sources, self.show, &mut self.focus);
+        {
+            use crate::kit::{NoticeKind, notify_on_change};
+            notify_on_change(&ctx, "server", &self.server_access.status, None);
+            notify_on_change(&ctx, "creator", &self.creator.status, None);
+            notify_on_change(&ctx, "catalog", self.catalog.status(), None);
+            notify_on_change(&ctx, "updater", &self.updater.status, None);
+            notify_on_change(&ctx, "source", &source_error, Some(NoticeKind::Error));
+            notify_on_change(&ctx, "app", &self.error, Some(NoticeKind::Error));
+            let audio_error = audio_status.starts_with(crate::i18n::label("Áudio:", "Audio:"));
+            notify_on_change(
+                &ctx,
+                "audio",
+                if audio_error { &audio_status } else { "" },
+                Some(NoticeKind::Error),
+            );
+            let connection = if reconnecting {
+                crate::i18n::label("Reconectando à sala…", "Reconnecting to the room…")
+            } else if reception_resetting {
+                crate::i18n::label(
+                    "Reconectando vídeo e áudio recebidos…",
+                    "Reconnecting received video and audio…",
+                )
+            } else {
+                ""
+            };
+            notify_on_change(&ctx, "connection", connection, Some(NoticeKind::Info));
+            let role = if connected && !can_publish {
+                crate::i18n::label(
+                    "Nesta sala, você pode assistir.",
+                    "You can watch in this room.",
+                )
+            } else {
+                ""
+            };
+            notify_on_change(&ctx, "role", role, Some(NoticeKind::Info));
+            if connected || self.engine.is_some() {
+                notify_on_change(&ctx, "room", &status, None);
+            }
+        }
         let watched = if self.paused || self.mode != ViewMode::Spotlight {
             &[][..]
         } else {
@@ -1855,6 +1891,7 @@ impl eframe::App for App {
                                     watched.map(|key| is_camera_key(key)),
                                 ),
                                 live: target.is_some(),
+                                camera: target.map(|key| key.ends_with("/camera")),
                                 focused: watched.is_some(),
                             },
                             target,
@@ -1922,18 +1959,6 @@ impl eframe::App for App {
                                             .color(MUTED),
                                         );
                                     });
-                            }
-                            if audio_status.starts_with(crate::i18n::label("Áudio:", "Audio:")) {
-                                ui.colored_label(DANGER, &audio_status);
-                            }
-                            if !source_error.is_empty() {
-                                ui.add(
-                                    egui::Label::new(RichText::new(&source_error).color(DANGER))
-                                        .wrap(),
-                                );
-                            }
-                            if !self.error.is_empty() {
-                                ui.colored_label(Color32::LIGHT_RED, &self.error);
                             }
                             chosen
                         })
@@ -2028,13 +2053,6 @@ impl eframe::App for App {
                             );
                             if self.server_access.busy {
                                 ui.spinner();
-                            }
-                            if !self.server_access.status.is_empty() {
-                                ui.label(
-                                    RichText::new(&self.server_access.status)
-                                        .size(12.0)
-                                        .color(MUTED),
-                                );
                             }
                         } else {
                             ui.label(crate::i18n::label("Seu nome", "Your name"));
@@ -2135,13 +2153,6 @@ impl eframe::App for App {
                                     }
                                 },
                             );
-                            if !self.server_access.status.is_empty() {
-                                ui.label(
-                                    RichText::new(&self.server_access.status)
-                                        .size(11.0)
-                                        .color(MUTED),
-                                );
-                            }
                             if crate::desktop_ui::server_logout_button(ui, !self.server_access.busy)
                                 .clicked()
                             {
@@ -2691,9 +2702,6 @@ impl eframe::App for App {
                         .size(11.0)
                         .color(MUTED),
                     );
-                    if !self.creator.status.is_empty() {
-                        ui.label(RichText::new(&self.creator.status).size(12.0).color(MUTED));
-                    }
                     if self.creator.busy {
                         ui.spinner();
                     }
@@ -2879,14 +2887,7 @@ impl eframe::App for App {
 
                     if update_action(
                         ui,
-                        if self
-                            .report_copied
-                            .is_some_and(|at| at.elapsed() < Duration::from_secs(2))
-                        {
-                            crate::i18n::label("Relatório copiado", "Report copied")
-                        } else {
-                            crate::i18n::label("Copiar relatório técnico", "Copy technical report")
-                        },
+                        crate::i18n::label("Copiar relatório técnico", "Copy technical report"),
                         false,
                     )
                     .clicked()
@@ -2909,8 +2910,15 @@ impl eframe::App for App {
                             self.stream_settings,
                             self.upload,
                         ));
-                        self.report_copied = Some(Instant::now());
-                        ctx.request_repaint_after(Duration::from_secs(2));
+                        crate::kit::notify(
+                            &ctx,
+                            "report",
+                            crate::i18n::label(
+                                "Relatório técnico copiado",
+                                "Technical report copied",
+                            ),
+                            crate::kit::NoticeKind::Success,
+                        );
                     }
                     if update_action(
                         ui,
@@ -2944,9 +2952,6 @@ impl eframe::App for App {
                         )
                         .on_hover_text(path.display().to_string());
                     }
-                    if !self.error.is_empty() {
-                        ui.colored_label(DANGER, &self.error);
-                    }
                 },
             );
             self.debug_open = !modal.should_close();
@@ -2973,7 +2978,6 @@ impl eframe::App for App {
                     .size(11.0)
                     .color(MUTED),
                 );
-                ui.label(&self.updater.status);
                 if let Some((progress, label)) = self.updater.progress() {
                     ui.add(egui::ProgressBar::new(progress).text(label));
                 }
@@ -3067,7 +3071,42 @@ impl eframe::App for App {
                 }
             }
         }
+        crate::kit::show_notices(&ctx);
         overlays.extend(crate::desktop_ui::take_video_popups(&ctx));
+        // Tooltips, menus and notices are egui layers under the native video:
+        // cut the video around every one that is visible.
+        let screen = ctx.content_rect();
+        let floating: Vec<Overlay> = ctx.memory(|memory| {
+            memory
+                .areas()
+                .visible_layer_ids()
+                .into_iter()
+                .filter(|layer| {
+                    matches!(
+                        layer.order,
+                        egui::Order::Foreground | egui::Order::Tooltip | egui::Order::Debug
+                    )
+                })
+                .filter_map(|layer| {
+                    let radius = if layer.order == egui::Order::Tooltip {
+                        6.0
+                    } else {
+                        8.0
+                    };
+                    memory.area_rect(layer.id).map(|rect| (rect, radius))
+                })
+                // A modal's backdrop covers the window; the dialog is enough.
+                .filter(|(rect, _)| rect.is_positive() && rect.area() < screen.area() * 0.9)
+                .collect()
+        });
+        for (rect, radius) in floating {
+            let known = overlays.iter().any(|(other, _)| {
+                other.min.distance(rect.min) < 2.0 && other.max.distance(rect.max) < 2.0
+            });
+            if !known {
+                overlays.push((rect, radius));
+            }
+        }
         overlays.extend(control_overlays);
         if hide_native_video {
             native_videos.clear();

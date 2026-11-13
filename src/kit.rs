@@ -182,6 +182,16 @@ pub fn labeled_button(
     }
 }
 
+/// Width a button needs to show `text` without eliding it.
+pub fn natural_width(ui: &egui::Ui, text: &str, height: f32) -> f32 {
+    let (size, padding) = if height < HEIGHT {
+        (13.0, 10.0)
+    } else {
+        (TEXT_SIZE, PADDING)
+    };
+    text_galley(ui, text, TEXT, size, f32::INFINITY).size().x + padding * 2.0
+}
+
 /// Small inline action, sized to its label.
 pub fn small(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
     button_with(ui, text, Tone::Secondary, enabled, None, SMALL)
@@ -580,6 +590,234 @@ mod tests {
             let mut fps = 60;
             let _ = choice(ui, &mut fps, 120, "120 FPS");
             assert_eq!(fps, 60, "nothing changes without a click");
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Notices: every status, success and error message, stacked in the top-right
+// corner above everything else.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoticeKind {
+    Info,
+    Success,
+    Error,
+}
+
+#[derive(Clone, Debug)]
+struct Notice {
+    key: String,
+    text: String,
+    kind: NoticeKind,
+    /// `None` keeps it until its source changes (progress such as "Conectando…").
+    until: Option<f64>,
+}
+
+#[derive(Clone, Default)]
+struct Notices {
+    shown: Vec<Notice>,
+    /// Last text seen per source, so unchanged statuses do not repeat.
+    seen: std::collections::HashMap<String, String>,
+}
+
+fn notices_id() -> egui::Id {
+    egui::Id::new("hypercast_notices")
+}
+
+/// Guesses the kind of a status line when its source does not say.
+pub fn kind_of(text: &str) -> NoticeKind {
+    let lower = text.to_lowercase();
+    let error = [
+        "não foi",
+        "nao foi",
+        "inválid",
+        "invalid",
+        "falh",
+        "fail",
+        "erro",
+        "error",
+        "could not",
+        "cannot",
+        "expirad",
+        "expired",
+        "recus",
+        "refus",
+        "revog",
+        "revok",
+        "indisponível",
+        "unavailable",
+        "sem conexão",
+        "denied",
+        "negad",
+    ];
+    let success = [
+        "copiad",
+        "copied",
+        "salv",
+        "saved",
+        "criada",
+        "created",
+        "atualizad",
+        "up to date",
+        "versão mais recente",
+        "latest version",
+        "conectado",
+        "connected",
+    ];
+    if error.iter().any(|word| lower.contains(word)) {
+        NoticeKind::Error
+    } else if success.iter().any(|word| lower.contains(word)) {
+        NoticeKind::Success
+    } else {
+        NoticeKind::Info
+    }
+}
+
+/// Shows `text` in the corner, replacing any notice with the same `key`.
+pub fn notify(ctx: &egui::Context, key: &str, text: impl Into<String>, kind: NoticeKind) {
+    let text = text.into();
+    let now = ctx.input(|i| i.time);
+    let until = if text.ends_with('…') || text.ends_with("...") {
+        None
+    } else {
+        Some(now + if kind == NoticeKind::Error { 8.0 } else { 4.0 })
+    };
+    ctx.data_mut(|data| {
+        let notices = data.get_temp_mut_or_default::<Notices>(notices_id());
+        notices.shown.retain(|notice| notice.key != key);
+        notices.shown.push(Notice {
+            key: key.to_owned(),
+            text,
+            kind,
+            until,
+        });
+    });
+    ctx.request_repaint();
+}
+
+/// Mirrors a status field: a new non-empty text becomes a notice, and an
+/// emptied field dismisses it. `kind` defaults to a guess from the text.
+pub fn notify_on_change(ctx: &egui::Context, key: &str, text: &str, kind: Option<NoticeKind>) {
+    let changed = ctx.data_mut(|data| {
+        let notices = data.get_temp_mut_or_default::<Notices>(notices_id());
+        let previous = notices.seen.insert(key.to_owned(), text.to_owned());
+        if text.is_empty() {
+            notices.shown.retain(|notice| notice.key != key);
+        }
+        previous.as_deref() != Some(text)
+    });
+    if changed && !text.trim().is_empty() {
+        notify(ctx, key, text, kind.unwrap_or_else(|| kind_of(text)));
+    }
+}
+
+/// Draws the notices in the top-right corner. Call once per frame, last.
+pub fn show_notices(ctx: &egui::Context) {
+    let now = ctx.input(|i| i.time);
+    let mut notices = ctx.data_mut(|data| {
+        let notices = data.get_temp_mut_or_default::<Notices>(notices_id());
+        notices
+            .shown
+            .retain(|notice| notice.until.is_none_or(|until| until > now));
+        notices.shown.clone()
+    });
+    if notices.is_empty() {
+        return;
+    }
+    if let Some(next) = notices
+        .iter()
+        .filter_map(|notice| notice.until)
+        .reduce(f64::min)
+    {
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64((next - now).max(0.05)));
+    }
+    // Newest on top, at most four.
+    notices.reverse();
+    notices.truncate(4);
+    let screen = ctx.content_rect();
+    let width = (screen.width() - 32.0).clamp(160.0, 360.0);
+    let mut closed = None;
+    egui::Area::new(egui::Id::new("hypercast_notices_area"))
+        .order(egui::Order::Tooltip)
+        .pivot(egui::Align2::RIGHT_TOP)
+        .fixed_pos(screen.right_top() + egui::vec2(-16.0, 16.0))
+        .show(ctx, |ui| {
+            ui.set_width(width);
+            ui.spacing_mut().item_spacing = egui::vec2(0.0, 8.0);
+            for notice in &notices {
+                let color = match notice.kind {
+                    NoticeKind::Info => crate::desktop_ui::MUTED,
+                    NoticeKind::Success => ACCENT,
+                    NoticeKind::Error => DANGER_TEXT,
+                };
+                egui::Frame::new()
+                    .fill(PANEL)
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        if notice.kind == NoticeKind::Error {
+                            DANGER_BORDER
+                        } else {
+                            OUTLINE
+                        },
+                    ))
+                    .corner_radius(PANEL_RADIUS)
+                    .inner_margin(egui::Margin {
+                        left: 12,
+                        right: 6,
+                        top: 6,
+                        bottom: 6,
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width(width - 18.0);
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 10.0;
+                            let (dot, _) =
+                                ui.allocate_exact_size(egui::vec2(8.0, 20.0), egui::Sense::hover());
+                            ui.painter().circle_filled(dot.center(), 4.0, color);
+                            let close_width = SMALL;
+                            let text_width = ui.available_width() - close_width - 10.0;
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(text_width, 20.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    ui.set_width(text_width);
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(&notice.text).size(13.0).color(TEXT),
+                                        )
+                                        .wrap(),
+                                    );
+                                },
+                            );
+                            let close = icon_button(
+                                ui,
+                                crate::i18n::label("Fechar aviso", "Dismiss notice"),
+                                true,
+                                false,
+                                close_width,
+                                |painter, center, stroke| {
+                                    for direction in [-1.0, 1.0] {
+                                        let offset = Vec2::new(4.0, 4.0 * direction);
+                                        painter.line_segment(
+                                            [center - offset, center + offset],
+                                            stroke,
+                                        );
+                                    }
+                                },
+                            );
+                            if close.clicked() {
+                                closed = Some(notice.key.clone());
+                            }
+                        });
+                    });
+            }
+        });
+    if let Some(key) = closed {
+        ctx.data_mut(|data| {
+            data.get_temp_mut_or_default::<Notices>(notices_id())
+                .shown
+                .retain(|notice| notice.key != key);
         });
     }
 }
