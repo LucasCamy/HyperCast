@@ -4,6 +4,7 @@ Run on the existing k3s node from /etc/hypercast, next to deploy_turn_on_node.py
 Edits only `congestion_control.allow_pause` in the ConfigMap and the TURN config
 Secret, writes a private rollback snapshot, restarts the SFU and restores the
 previous configuration if the rollout fails. No credentials are printed.
+`--disconnect-active` skips the drain check; the restart drops connected users.
 """
 import base64
 import json
@@ -11,6 +12,7 @@ import os
 from pathlib import Path
 import runpy
 import subprocess
+import sys
 
 ROOT = Path('/etc/hypercast')
 
@@ -29,10 +31,13 @@ def pause_config(text):
     return text.replace('    allow_pause: true\n', disabled)
 
 
-def main():
+def main(argv=()):
     if os.geteuid() != 0:
         raise RuntimeError('Run as root on the Kubernetes node')
-    runpy.run_path(str(ROOT / 'deploy_turn_on_node.py'))['assert_empty']()
+    if '--disconnect-active' in argv:
+        print('Skipping drain check: connected participants will be disconnected')
+    else:
+        runpy.run_path(str(ROOT / 'deploy_turn_on_node.py'))['assert_empty']()
     original_secret = json.loads(k('get', 'secret', 'hypercast-sfu-turn-config', '-o', 'json'))
     original_config = json.loads(k('get', 'configmap', 'hypercast-sfu', '-o', 'json'))
     secret_text = base64.b64decode(original_secret['data']['livekit.yaml']).decode()
@@ -69,4 +74,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    main(sys.argv[1:])

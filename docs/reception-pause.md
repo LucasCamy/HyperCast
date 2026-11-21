@@ -28,7 +28,10 @@ prévia, enquanto a outra tela seguia.
   para `/etc/hypercast` no nó e rode como root com as salas vazias. Ele altera
   só essa linha no ConfigMap e no Secret de configuração TURN, guarda um
   snapshot para rollback, reinicia o SFU e restaura a configuração anterior se
-  o rollout falhar. Reiniciar a única réplica encerra as salas.
+  o rollout falhar. Reiniciar a única réplica encerra as salas; `--disconnect-active`
+  pula a verificação de salas vazias. Aplicado em produção em 2026-11-21 com
+  essa flag (1 participante reconectou sozinho; snapshot em
+  `/etc/hypercast/allow-pause-rollback.json`).
 - **SDK:** `StreamStateUpdate` vira `RoomEvent::TrackStreamStateChanged`, emitido
   só em transições, e atualiza `stream_state()` da faixa.
 - **SDK:** após um reinício completo da sessão, as assinaturas desejadas são
@@ -57,5 +60,4 @@ Windows, SFU local, sala isolada, janela FFplay gerada, release:
   após o reinício (`receivers=0`).
 
 Não verificado: a pausa por congestionamento em si (exige congestionar a
-descida de verdade), a nova configuração no SFU de produção e o fluxo no
-Linux além da compilação.
+descida de verdade) e o fluxo no Linux além da compilação.
