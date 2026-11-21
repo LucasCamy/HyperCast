@@ -4,7 +4,7 @@ Fontes crates.io com copyrights/notices preservados:
 
 | Crate | Versão | Alteração |
 |---|---|---|
-| livekit | 0.9.4 | Propaga recusa AddTrack do SFU; verifica codec pré-codificado antes da admissão |
+| livekit | 0.9.4 | Propaga recusa AddTrack do SFU; verifica codec pré-codificado antes da admissão; expõe `StreamStateUpdate` como `TrackStreamStateChanged`; reenvia assinaturas após reinício completo |
 | libwebrtc | 0.3.52 | Expõe textura/slice D3D11 emprestados e contador de superfícies vivas |
 | webrtc-sys | 0.3.49 | Decoder D3D11VA AV1/HEVC, buffer GPU nativo, passthrough HEVC Windows |
 

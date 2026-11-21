@@ -1091,6 +1091,14 @@ impl Engine {
                                     .into_iter()
                                     .map(|(_, owner, exhausted)| (owner, exhausted))
                                     .collect();
+                                // Only a new RTC session resumes a video the SFU paused.
+                                for key in
+                                    crate::subscription::server_paused(&room, |p, publication| {
+                                        video_key(p.identity().as_str(), publication.source())
+                                    })
+                                {
+                                    s.recovering.insert(key, true);
+                                }
                             }
                             update_subscriptions(&room, &layout, &receive_monitor);
                             for participant in room.remote_participants().into_values() {
@@ -1262,22 +1270,55 @@ impl Engine {
                                     evidence
                                         .event(crate::evidence::EventKind::ManualReceptionReset);
                                     receive_monitor.reset();
-                                    for (_, sink) in sinks.drain() {
-                                        sink.abort();
-                                        let _ = runtime.block_on(sink.task);
+                                    let paused =
+                                        crate::subscription::server_paused(&room, |_, p| p.sid());
+                                    // Only a new RTC session resets the SFU's downlink estimate,
+                                    // as leaving and joining does. It also republishes our own
+                                    // tracks, so a publisher keeps the receive-only reset unless
+                                    // the SFU actually paused a video.
+                                    let full =
+                                        (cast.is_none() && camera.is_none()) || !paused.is_empty();
+                                    let restarted = full
+                                        && match runtime
+                                            .block_on(crate::subscription::restart_session(&room))
+                                        {
+                                            Ok(()) => true,
+                                            Err(error) => {
+                                                crate::diagnostics::write(
+                                                    "reception_error",
+                                                    &format!("Session restart: {error:#}"),
+                                                    &token,
+                                                );
+                                                false
+                                            }
+                                        };
+                                    if restarted {
+                                        crate::diagnostics::write(
+                                            "reception",
+                                            &format!(
+                                                "Manual session restart; fresh SFU bandwidth estimate paused={}",
+                                                paused.len()
+                                            ),
+                                            "",
+                                        );
+                                    } else {
+                                        for (_, sink) in sinks.drain() {
+                                            sink.abort();
+                                            let _ = runtime.block_on(sink.task);
+                                        }
+                                        audio_sinks.clear();
+                                        crate::subscription::reset_receivers(&room);
+                                        reception_restart =
+                                            Some(Instant::now() + Duration::from_millis(700));
+                                        crate::diagnostics::write(
+                                            "reception",
+                                            "Manual receive restart; local publication preserved",
+                                            "",
+                                        );
                                     }
-                                    audio_sinks.clear();
-                                    crate::subscription::reset_receivers(&room);
-                                    reception_restart =
-                                        Some(Instant::now() + Duration::from_millis(700));
                                     let mut shared = state.lock().unwrap();
                                     shared.reception_resetting = true;
                                     shared.reception_restarts += 1;
-                                    crate::diagnostics::write(
-                                        "reception",
-                                        "Manual receive restart; local publication preserved",
-                                        "",
-                                    );
                                 }
                                 Command::Layout(next) => {
                                     audio_volume
@@ -1758,6 +1799,21 @@ impl Engine {
                                         update_subscriptions(&room, &layout, &receive_monitor);
                                     }
                                 }
+                                RoomEvent::TrackStreamStateChanged {
+                                    publication,
+                                    stream_state,
+                                    ..
+                                } if publication.kind() == TrackKind::Video => {
+                                    crate::diagnostics::write(
+                                        "reception",
+                                        if stream_state == StreamState::Paused {
+                                            "SFU paused a subscribed video (downlink estimate)"
+                                        } else {
+                                            "SFU resumed a paused subscribed video"
+                                        },
+                                        "",
+                                    );
+                                }
                                 RoomEvent::TrackPublished { .. }
                                 | RoomEvent::ParticipantConnected(_) => {
                                     update_subscriptions(&room, &layout, &receive_monitor)
@@ -1792,7 +1848,13 @@ impl Engine {
                                     );
                                 }
                                 RoomEvent::Reconnected => {
-                                    state.lock().unwrap().reconnecting = false;
+                                    {
+                                        let mut shared = state.lock().unwrap();
+                                        shared.reconnecting = false;
+                                        if reception_restart.is_none() {
+                                            shared.reception_resetting = false;
+                                        }
+                                    }
                                     reconnect_attempt = 0;
                                     let mut encoder_error = None;
                                     if let Some(c) = &mut cast {

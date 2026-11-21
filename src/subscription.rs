@@ -138,3 +138,40 @@ pub fn reset_receivers(room: &livekit::Room) {
         }
     }
 }
+
+/// Replace the RTC session inside the same Room: new PeerConnections, so the
+/// SFU starts a fresh downlink bandwidth estimate, as leaving and joining
+/// would. The SDK republishes local tracks and resubscribes remote ones.
+#[cfg(feature = "livekit-network")]
+pub async fn restart_session(room: &livekit::Room) -> anyhow::Result<()> {
+    room.simulate_scenario(livekit::SimulateScenario::FullReconnect)
+        .await
+        .map_err(|error| anyhow::anyhow!("{error}"))
+}
+
+/// Room videos the SFU stopped forwarding (congestion), keyed by `key`.
+#[cfg(feature = "livekit-network")]
+pub fn server_paused<K>(
+    room: &livekit::Room,
+    key: impl Fn(&livekit::prelude::RemoteParticipant, &livekit::prelude::RemoteTrackPublication) -> K,
+) -> Vec<K> {
+    use livekit::prelude::{StreamState, TrackKind, TrackSource};
+    let mut paused = Vec::new();
+    for participant in room.remote_participants().into_values() {
+        for publication in participant.track_publications().into_values() {
+            if publication.kind() == TrackKind::Video
+                && matches!(
+                    publication.source(),
+                    TrackSource::Screenshare | TrackSource::Camera
+                )
+                && publication.is_subscribed()
+                && publication
+                    .track()
+                    .is_some_and(|track| track.stream_state() == StreamState::Paused)
+            {
+                paused.push(key(&participant, &publication));
+            }
+        }
+    }
+    paused
+}

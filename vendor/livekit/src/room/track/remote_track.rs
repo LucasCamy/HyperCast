@@ -44,6 +44,13 @@ impl RemoteTrack {
             Self::Video(track) => track.get_stats().await,
         }
     }
+
+    pub(crate) fn set_stream_state(&self, state: StreamState) {
+        match self {
+            Self::Audio(track) => track.set_stream_state(state),
+            Self::Video(track) => track.set_stream_state(state),
+        }
+    }
 }
 
 pub(super) async fn get_stats(inner: &Arc<TrackInner>) -> RoomResult<Vec<RtcStats>> {

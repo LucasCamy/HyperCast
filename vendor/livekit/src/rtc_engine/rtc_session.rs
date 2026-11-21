@@ -237,6 +237,10 @@ pub enum SessionEvent {
     SubscribedQualityUpdate {
         update: proto::SubscribedQualityUpdate,
     },
+    /// HyperCast: the SFU paused or resumed forwarding of subscribed tracks.
+    StreamStateUpdate {
+        states: Vec<proto::StreamStateInfo>,
+    },
     LocalDataTrackInput(dt::local::InputEvent),
     RemoteDataTrackInput(dt::remote::InputEvent),
 }
@@ -1578,6 +1582,11 @@ impl SessionInner {
                     update.subscribed_codecs
                 );
                 let _ = self.emitter.send(SessionEvent::SubscribedQualityUpdate { update });
+            }
+            proto::signal_response::Message::StreamStateUpdate(update) => {
+                let _ = self
+                    .emitter
+                    .send(SessionEvent::StreamStateUpdate { states: update.stream_states });
             }
             proto::signal_response::Message::GetDataBlobResponse(response) => {
                 if let Some(tx) =
