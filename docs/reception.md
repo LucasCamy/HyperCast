@@ -4,10 +4,15 @@ Use o ícone **↻ Reconectar recepção**, junto ao ícone **Pausar recepção*
 pressione **F5**. Com a lateral recolhida a ação aparece no cabeçalho; em tela
 cheia fica junto dos controles de volume e saída. No Linux aparece no cabeçalho.
 
-A ação pausa brevemente o recebimento e reinstala os leitores nativos de vídeo
-e áudio. O último quadro permanece disponível enquanto o fluxo retoma. Ela
-preserva a sala, a seleção, o volume, a pausa escolhida pelo usuário e a
-publicação local; não exige novo token nem interrompe seu compartilhamento.
+Quem só assiste tem a sessão RTC refeita dentro da mesma sala,
+com estimativa de banda nova no SFU, como sair e entrar. Quem publica mantém o
+reinício abaixo, salvo quando o SFU pausou um vídeo. Ver
+[vídeo pausado pelo SFU](reception-pause.md).
+
+O reinício só de recepção pausa brevemente o recebimento e reinstala os leitores
+nativos de vídeo e áudio. O último quadro permanece disponível enquanto o fluxo
+retoma. Ela preserva a sala, a seleção, o volume, a pausa escolhida pelo usuário
+e a publicação local; não exige novo token nem interrompe seu compartilhamento.
 O SFU retoma o envio das faixas selecionadas. O botão fica indisponível durante
 o breve período de reinício, evitando pedidos sobrepostos.
 

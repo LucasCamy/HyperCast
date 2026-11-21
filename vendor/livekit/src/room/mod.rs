@@ -201,6 +201,13 @@ pub enum RoomEvent {
         quality: ConnectionQuality,
         participant: Participant,
     },
+    /// HyperCast: the SFU paused (e.g. congestion) or resumed forwarding of a
+    /// subscribed track. Upstream Rust 0.9.4 discarded `StreamStateUpdate`.
+    TrackStreamStateChanged {
+        participant: RemoteParticipant,
+        publication: RemoteTrackPublication,
+        stream_state: StreamState,
+    },
     DataReceived {
         payload: Arc<Vec<u8>>,
         topic: Option<String>,
@@ -1180,6 +1187,7 @@ impl RoomSession {
             EngineEvent::SubscribedQualityUpdate { update } => {
                 self.handle_subscribed_quality_update(update);
             }
+            EngineEvent::StreamStateUpdate { states } => self.handle_stream_state_update(states),
             EngineEvent::LocalDataTrackInput(event) => {
                 _ = self.local_dt_input.send(event);
             }
@@ -1739,6 +1747,19 @@ impl RoomSession {
         // Ensure SFU continues delivering packets for existing data track subscriptions.
         _ = self.remote_dt_input.send(dt::remote::InputEvent::ResendSubscriptionUpdates);
 
+        // HyperCast: participants are recreated on SignalRestarted, before the new
+        // session is installed. Subscriptions requested then went to the closing
+        // session and were dropped; with auto_subscribe off nothing would resend
+        // them and the video never resumed. Re-send on the new session.
+        let participants: Vec<_> = self.remote_participants.read().values().cloned().collect();
+        for participant in participants {
+            for publication in participant.track_publications().into_values() {
+                if publication.is_desired() && !publication.is_subscribed() {
+                    publication.set_subscribed(true);
+                }
+            }
+        }
+
         // Unpublish and republish every track
         // At this time we know that the RtcSession is successfully restarted
         let published_tracks = self.local_participant.track_publications();
@@ -2052,6 +2073,40 @@ impl RoomSession {
     }
 
     #[allow(deprecated)]
+    fn handle_stream_state_update(&self, states: Vec<proto::StreamStateInfo>) {
+        for info in states {
+            let (Ok(participant_sid), Ok(track_sid)) = (
+                ParticipantSid::try_from(info.participant_sid.clone()),
+                TrackSid::try_from(info.track_sid.clone()),
+            ) else {
+                continue;
+            };
+            let Some(participant) = self.get_participant_by_sid(&participant_sid) else {
+                continue;
+            };
+            let Some(publication) = participant.get_track_publication(&track_sid) else {
+                continue;
+            };
+            let stream_state = if info.state == proto::StreamState::Paused as i32 {
+                StreamState::Paused
+            } else {
+                StreamState::Active
+            };
+            // Tracks start Active: report transitions only.
+            if let Some(track) = publication.track() {
+                if track.stream_state() == stream_state {
+                    continue;
+                }
+                track.set_stream_state(stream_state);
+            }
+            self.dispatcher.dispatch(&RoomEvent::TrackStreamStateChanged {
+                participant,
+                publication,
+                stream_state,
+            });
+        }
+    }
+
     fn handle_subscribed_quality_update(&self, update: proto::SubscribedQualityUpdate) {
         if !self.options.dynacast {
             return;

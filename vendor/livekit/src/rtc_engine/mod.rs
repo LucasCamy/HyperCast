@@ -245,6 +245,9 @@ pub enum EngineEvent {
     SubscribedQualityUpdate {
         update: proto::SubscribedQualityUpdate,
     },
+    StreamStateUpdate {
+        states: Vec<proto::StreamStateInfo>,
+    },
     LocalDataTrackInput(dt::local::InputEvent),
     RemoteDataTrackInput(dt::remote::InputEvent),
 }
@@ -785,6 +788,9 @@ impl EngineInner {
             }
             SessionEvent::SubscribedQualityUpdate { update } => {
                 let _ = self.engine_tx.send(EngineEvent::SubscribedQualityUpdate { update });
+            }
+            SessionEvent::StreamStateUpdate { states } => {
+                let _ = self.engine_tx.send(EngineEvent::StreamStateUpdate { states });
             }
             SessionEvent::LocalDataTrackInput(event) => {
                 let _ = self.engine_tx.send(EngineEvent::LocalDataTrackInput(event));

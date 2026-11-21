@@ -206,6 +206,11 @@ pub(super) fn new_inner(
     }
 }
 
+/// HyperCast: SFU forwarding state from `StreamStateUpdate`.
+pub(super) fn set_stream_state(inner: &Arc<TrackInner>, state: StreamState) {
+    inner.info.write().stream_state = state;
+}
+
 /// This is only called for local tracks
 pub(super) fn set_muted(inner: &Arc<TrackInner>, track: &Track, muted: bool) {
     let info = inner.info.read();

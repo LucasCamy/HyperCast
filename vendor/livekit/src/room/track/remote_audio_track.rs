@@ -119,4 +119,8 @@ impl RemoteAudioTrack {
     pub(crate) fn update_info(&self, info: proto::TrackInfo) {
         remote_track::update_info(&self.inner, &Track::RemoteAudio(self.clone()), info);
     }
+
+    pub(crate) fn set_stream_state(&self, state: StreamState) {
+        super::set_stream_state(&self.inner, state);
+    }
 }

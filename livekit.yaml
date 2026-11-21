@@ -11,7 +11,9 @@ rtc:
   packet_buffer_size_audio: 200
   congestion_control:
     enabled: true
-    allow_pause: true
+    # Screens are single-layer: pausing is the allocator's only downgrade, and a
+    # long-lived subscriber estimate may never resume it. Keep forwarding.
+    allow_pause: false
 room:
   auto_create: true
   max_participants: 12

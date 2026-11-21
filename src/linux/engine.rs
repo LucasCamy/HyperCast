@@ -611,10 +611,21 @@ async fn session(
                     Command::RestartReception=>{
                         if reception_restart.is_none() && room.connection_state()==ConnectionState::Connected {
                             evidence.event(crate::evidence::EventKind::ManualReceptionReset);recovery.reset();
-                            for (_,mut sink) in video_sinks.drain(){sink.0.abort();let _=(&mut sink.0).await;}
-                            for (_,mut sink) in audio_sinks.drain(){sink.0.abort();let _=(&mut sink.0).await;}
-                            crate::subscription::reset_receivers(&room);
-                            reception_restart=Some(Instant::now()+Duration::from_millis(700));
+                            // Only a new RTC session resets the SFU's downlink estimate, as leaving and
+                            // joining does. It also republishes our tracks: publishers keep the
+                            // receive-only reset unless the SFU actually paused a video.
+                            let paused=crate::subscription::server_paused(&room,|_,p|p.sid()).len();
+                            let full=(capture.is_none()&&publisher.is_none()&&camera.is_none())||paused>0;
+                            let restarted=full&&match crate::subscription::restart_session(&room).await{
+                                Ok(())=>true,
+                                Err(error)=>{eprintln!("Linux reception: stage=session_restart_failed error={error:#}");false},
+                            };
+                            if restarted{eprintln!("Linux reception: stage=session_restart paused={paused}");}else{
+                                for (_,mut sink) in video_sinks.drain(){sink.0.abort();let _=(&mut sink.0).await;}
+                                for (_,mut sink) in audio_sinks.drain(){sink.0.abort();let _=(&mut sink.0).await;}
+                                crate::subscription::reset_receivers(&room);
+                                reception_restart=Some(Instant::now()+Duration::from_millis(700));
+                            }
                             let mut s=shared.lock().unwrap();s.reception_resetting=true;s.reception_restarts+=1;
                         }
                     },
@@ -650,7 +661,8 @@ async fn session(
                     None=>break,
                     Some(RoomEvent::Disconnected{..})=>{let mut s=shared.lock().unwrap();s.connected=false;s.reconnecting=false;s.status=crate::i18n::label("Conexão encerrada após as tentativas de reconexão","Connection ended after the reconnection attempts").into();break;},
                     Some(RoomEvent::Reconnecting)=>{recovery.suspend();let mut s=shared.lock().unwrap();s.reconnecting=true;s.status=crate::i18n::label("Reconectando… mantendo o último quadro","Reconnecting… keeping the last frame").into();},
-                    Some(RoomEvent::Reconnected)=>{if let Some(p)=&mut publisher{p.restart_keyframe();}if let Some(c)=&capture{c.request_keyframe();}let mut s=shared.lock().unwrap();s.reconnecting=false;s.status=crate::i18n::label("Conectado","Connected").into();},
+                    Some(RoomEvent::Reconnected)=>{if let Some(p)=&mut publisher{p.restart_keyframe();}if let Some(c)=&capture{c.request_keyframe();}let mut s=shared.lock().unwrap();s.reconnecting=false;if reception_restart.is_none(){s.reception_resetting=false;}s.status=crate::i18n::label("Conectado","Connected").into();},
+                    Some(RoomEvent::TrackStreamStateChanged{publication,stream_state,..}) if publication.kind()==TrackKind::Video=>{eprintln!("Linux reception: stage=sfu_stream_state paused={}",stream_state==StreamState::Paused);},
                     Some(RoomEvent::TrackSubscribed{track:RemoteTrack::Video(_),publication,..})=>{
                         if reception_restart.is_some() || !publication.is_desired() || recovery.held(&publication.sid().to_string()){continue;}
                         let Some(RemoteTrack::Video(track))=publication.track() else{continue;};
@@ -771,7 +783,7 @@ async fn session(
                             if let Some(mut old)=video_sinks.remove(&repair.sid){old.0.abort();let _=(&mut old.0).await;}
                             eprintln!("Linux reception: stage=recovery action={:?} reason={:?} total={}",repair.action,repair.reason,recovery.summary.actions);
                         }
-                        {let mut s=shared.lock().unwrap();s.quality.network=recovery.network;s.quality.automatic_recovery=recovery.summary;s.recovering=recovery.recovering().into_iter().map(|(sid,_,exhausted)|(sid,exhausted)).collect();}
+                        {let mut s=shared.lock().unwrap();s.quality.network=recovery.network;s.quality.automatic_recovery=recovery.summary;s.recovering=recovery.recovering().into_iter().map(|(sid,_,exhausted)|(sid,exhausted)).collect();for sid in crate::subscription::server_paused(&room,|_,publication|publication.sid().to_string()){s.recovering.insert(sid,true);}}
                         refresh(&room,&layout,&shared,audio.is_some(),&recovery);
                         for participant in room.remote_participants().into_values(){
                             for p in participant.track_publications().into_values(){
