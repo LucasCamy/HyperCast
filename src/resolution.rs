@@ -75,7 +75,8 @@ impl Default for StreamSettings {
     fn default() -> Self {
         Self {
             size: OutputSize::Native,
-            fps: 120,
+            // 60 FPS halves the encoder work of 120 (docs/stream-efficiency.md).
+            fps: 60,
         }
     }
 }

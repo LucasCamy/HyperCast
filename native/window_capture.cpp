@@ -27,9 +27,19 @@ using namespace winrt::Windows::Graphics::DirectX::Direct3D11;
 static void report(char* out, size_t size, const char* text) noexcept {
     if (out && size) { auto n=std::min(size-1,strlen(text)); memcpy(out,text,n); out[n]=0; }
 }
-struct Apartment { Apartment(){init_apartment(apartment_type::multi_threaded);} ~Apartment(){uninit_apartment();} };
+// Join the MTA once per thread and stay there. Leaving it after each capture
+// (uninit_apartment) made the next capture without a started session crash on
+// C++/WinRT's cached activation factories. Threads leave COM on exit.
+static void join_apartment() {
+    thread_local const bool joined = [] {
+        try { init_apartment(apartment_type::multi_threaded); } catch (hresult_error const&) {
+            // Already in an apartment (possibly STA): WinRT capture works there too.
+        }
+        return true;
+    }();
+    (void)joined;
+}
 struct WindowCapture {
-    Apartment apartment;
     HWND window; DWORD pid;
     com_ptr<ID3D11Device> device;
     com_ptr<ID3D11DeviceContext> context;
@@ -44,6 +54,7 @@ struct WindowCapture {
     std::shared_ptr<std::atomic_bool> closed=std::make_shared<std::atomic_bool>(false);
     std::optional<event_token> closed_token;
     WindowCapture(HWND hwnd, DWORD process, UINT adapter_index):window(hwnd),pid(process) {
+        join_apartment();
         validate();
         if (!GraphicsCaptureSession::IsSupported()) throw std::runtime_error("Windows Graphics Capture unavailable");
         com_ptr<IDXGIFactory1> factory; check_hresult(CreateDXGIFactory1(__uuidof(IDXGIFactory1),factory.put_void()));

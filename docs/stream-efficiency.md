@@ -18,9 +18,9 @@ Quem assiste (B), a 120 FPS: decode 9,9%, 3D 5,2%, CPU 3,1%.
 - O "GPU %" do Gerenciador de Tarefas é o motor mais ocupado. Ao transmitir é o
   **VideoEncode**, um bloco dedicado: não disputa com o 3D do jogo. O custo em 3D
   do HyperCast fica entre 2% e 6%.
-- O NVENC escala com quadros × pixels: 120 FPS custa o dobro de 60 FPS. O padrão
-  é 120 FPS; quem não precisa (espectadores em 60 Hz) pode escolher 60 em
-  **Formato de vídeo**.
+- O NVENC escala com quadros × pixels: 120 FPS custa o dobro de 60 FPS. Desde
+  então o padrão é **Nativa, 60 FPS, Econômico (12 Mb/s)**; 120 FPS e 25/40 Mb/s
+  continuam disponíveis em **Formato de vídeo**.
 - A porcentagem também depende do clock: com a GPU em P3 (clock de vídeo menor,
   outros apps abertos) a mesma configuração mediu 24–25%. Compare sempre no mesmo
   estado de energia.
@@ -65,16 +65,43 @@ A banda concedida pelo WebRTC começa em ~6 Mb/s e chega ao teto em ~20 s.
 ## Memória
 
 - **Captura de monitor:** 16 ciclos de iniciar/parar, VRAM estável (161 MB).
-- **Captura de janela: vazamento de ~15 MB de VRAM por início/parada** (uma
-  superfície 1440p BGRA): 256 → 916 MB em 47 ciclos. A memória privada fica
-  estável. Quem assiste não vaza.
-  - Descartado: prévia, textura de cópia por quadro, frames na fila do pool, o
-    embrulho WinRT do dispositivo e a borda amarela. O dispositivo D3D da captura
-    chega a 0 referências ao parar.
-  - Hipótese: o compositor (DWM) mantém uma superfície por sessão do Windows
-    Graphics Capture. Próximo passo: reproduzir num programa mínimo fora do app.
-  - Impacto: só em reinícios da transmissão por janela (parar/iniciar, trocar de
-    janela, reconstruções). Fechar o app libera tudo.
+- **Captura de janela: ~15 MB de VRAM presos por início/parada** (uma
+  superfície do tamanho da janela): 256 → 916 MB em 47 ciclos no app. A memória
+  privada fica estável. Quem assiste não vaza.
+
+### Investigação
+
+O teste `video_capture::leak_tests` (ignorado; precisa de `HYPERCAST_LEAK_PID`)
+abre e fecha só a captura de janela, sem encoder nem WebRTC, e lê a VRAM do
+próprio processo. Reproduz o mesmo valor: 15 MB/ciclo em 1440p, 3,75 MB em 720p.
+
+| Variante | VRAM presa por ciclo |
+|---|---:|
+| Abrir a captura, sem sessão | 0 |
+| Criar pool, sem sessão | 0 |
+| Criar sessão sem `StartCapture` | 0 |
+| `StartCapture` sem ler quadros | 15 MB |
+| Sem a borda amarela / sem cursor | 15 MB |
+| Encolher o pool antes de fechar / fechar pool antes da sessão | 15 MB |
+| Um único dispositivo D3D para todas as sessões | 13,5 MB |
+| Janela do Bloco de Notas (GDI) em vez de swapchain DirectX | 13,75 MB |
+
+A sequência mínima da API (`CreateFreeThreaded` → `CreateCaptureSession` →
+`StartCapture` → `Close`) prende uma superfície do tamanho da janela, mesmo com
+o dispositivo D3D chegando a 0 referências. Não depende do nosso encoder, da
+cópia, do tipo de janela nem do dispositivo: aponta para o Windows Graphics
+Capture/driver (Windows 11 26300, driver NVIDIA 621.24). Ainda não foi testado
+em outra GPU ou versão do Windows.
+
+Contornos possíveis, nenhum aplicado: manter a sessão viva ao reiniciar a
+mesma janela, ou capturar janelas num processo auxiliar que termina ao parar (o
+Windows libera tudo na saída do processo). Enquanto isso, o custo aparece só ao
+reiniciar a transmissão de janela; fechar o app libera tudo.
+
+Também corrigido durante a investigação: a captura entrava e saía do
+apartamento COM/WinRT a cada sessão. Uma captura aberta e fechada sem iniciar
+(por exemplo, quando o encoder falha depois de `prepare`) derrubava o processo
+na tentativa seguinte. Agora a thread entra uma vez e permanece.
 
 ### Também corrigido
 
