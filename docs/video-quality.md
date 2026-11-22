@@ -6,14 +6,14 @@ Em **Formato de vídeo → Limite de upload · vídeo**, antes de compartilhar:
 
 | Perfil | Teto de vídeo |
 | --- | ---: |
-| Econômico | 12 Mbps |
-| Balanceado, padrão | 25 Mbps |
+| Econômico, padrão | 12 Mbps |
+| Balanceado | 25 Mbps |
 | Máxima qualidade | 40 Mbps |
 
 A opção funciona em NVIDIA/AMD no Windows e nos encoders GPU do Linux. Ela não
 altera a resolução nativa nem o alvo de até 120 FPS. No Linux, o modo Compatível
 continua em HEVC 30 FPS e tem teto próprio de 12 Mbps, mesmo selecionando 25/40.
-A escolha fica na sessão do aplicativo; ao reabrir, o padrão é 25 Mbps.
+A escolha fica na sessão do aplicativo; ao reabrir, o padrão é 12 Mbps.
 
 O orçamento é usado na inicialização do encoder e no `max_bitrate` da publicação
 WebRTC. Reduções solicitadas pela rede continuam valendo abaixo desse teto.
@@ -123,7 +123,8 @@ avaliação separada; não foi ativado nesta versão.
 ## Resolução e FPS de envio
 
 Na seção de formato, escolha Nativa, Full HD (até 1920×1080) ou Quad HD
-(até 2560×1440) e 30/60/120 FPS antes de iniciar o envio. São limites da
+(até 2560×1440) e 30/60/120 FPS antes de iniciar o envio. O padrão é Nativa a
+60 FPS; 120 FPS dobra o trabalho do encoder ([medições](stream-efficiency.md)). São limites da
 transmissão, independentes da configuração do monitor. Mantém-se a proporção,
 sem ampliar imagens menores; ultrawide pode resultar em 1920×804 em Full HD.
 Pare o envio para alterar os limites; trocar monitor/janela preserva a escolha.

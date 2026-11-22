@@ -375,7 +375,10 @@ impl App {
             saved_room: None,
             name: crate::preferences::load_name(),
             sidebar_open: prefs.sidebar,
-            self_preview: prefs.self_preview,
+            // Smoke runs can measure the cost of the local preview.
+            self_preview: prefs.self_preview
+                && !(std::env::var_os("HYPERCAST_SMOKE_SECONDS").is_some()
+                    && std::env::var("HYPERCAST_SMOKE_PREVIEW").as_deref() == Ok("0")),
             nerd_open: prefs.nerd_stats
                 || std::env::var("HYPERCAST_SMOKE_NERD").as_deref() == Ok("1"),
             nerd_history: Default::default(),
@@ -414,7 +417,16 @@ impl App {
             catalog: crate::room_creation::Catalog::default(),
             departure: None,
             pending_join: false,
-            stream_settings: prefs.stream,
+            stream_settings: std::env::var("HYPERCAST_SMOKE_FPS")
+                .ok()
+                .filter(|_| std::env::var_os("HYPERCAST_SMOKE_SECONDS").is_some())
+                .and_then(|fps| fps.parse().ok())
+                .map(|fps| crate::resolution::StreamSettings {
+                    fps,
+                    ..prefs.stream
+                })
+                .filter(|settings| settings.valid())
+                .unwrap_or(prefs.stream),
             server_access: crate::room_creation::ServerAccess::default(),
             server_status: crate::server_status::ServerStatus::default(),
             show: prefs.show,
@@ -1757,7 +1769,7 @@ impl eframe::App for App {
                     .ok()
                     .and_then(|raw| raw.parse::<u32>().ok())
                     .unwrap_or(2)
-                    .clamp(2, 6)
+                    .clamp(2, 48)
             };
             let stage = u32::from(self.smoke_share_stage);
             if stage < cycles * 2 - 1

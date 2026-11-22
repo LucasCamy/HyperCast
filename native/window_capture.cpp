@@ -27,9 +27,19 @@ using namespace winrt::Windows::Graphics::DirectX::Direct3D11;
 static void report(char* out, size_t size, const char* text) noexcept {
     if (out && size) { auto n=std::min(size-1,strlen(text)); memcpy(out,text,n); out[n]=0; }
 }
-struct Apartment { Apartment(){init_apartment(apartment_type::multi_threaded);} ~Apartment(){uninit_apartment();} };
+// Join the MTA once per thread and stay there. Leaving it after each capture
+// (uninit_apartment) made the next capture without a started session crash on
+// C++/WinRT's cached activation factories. Threads leave COM on exit.
+static void join_apartment() {
+    thread_local const bool joined = [] {
+        try { init_apartment(apartment_type::multi_threaded); } catch (hresult_error const&) {
+            // Already in an apartment (possibly STA): WinRT capture works there too.
+        }
+        return true;
+    }();
+    (void)joined;
+}
 struct WindowCapture {
-    Apartment apartment;
     HWND window; DWORD pid;
     com_ptr<ID3D11Device> device;
     com_ptr<ID3D11DeviceContext> context;
@@ -38,9 +48,13 @@ struct WindowCapture {
     Direct3D11CaptureFramePool pool{nullptr};
     GraphicsCaptureSession session{nullptr};
     SizeInt32 size{};
+    // Reused copy target and fence: one allocation per size, not per frame.
+    com_ptr<ID3D11Texture2D> snapshot;
+    com_ptr<ID3D11Query> fence;
     std::shared_ptr<std::atomic_bool> closed=std::make_shared<std::atomic_bool>(false);
     std::optional<event_token> closed_token;
     WindowCapture(HWND hwnd, DWORD process, UINT adapter_index):window(hwnd),pid(process) {
+        join_apartment();
         validate();
         if (!GraphicsCaptureSession::IsSupported()) throw std::runtime_error("Windows Graphics Capture unavailable");
         com_ptr<IDXGIFactory1> factory; check_hresult(CreateDXGIFactory1(__uuidof(IDXGIFactory1),factory.put_void()));
@@ -106,6 +120,8 @@ struct WindowCapture {
             cleanup([&] { item.Closed(*token); });
         }
         item = nullptr;
+        snapshot = nullptr;
+        fence = nullptr;
         return status;
     }
     ~WindowCapture() noexcept { close(); }
@@ -127,10 +143,14 @@ struct WindowCapture {
         if(!width||!height) return nullptr;
         desc.Width=width;desc.Height=height;desc.MipLevels=1;desc.ArraySize=1;desc.Usage=D3D11_USAGE_DEFAULT;
         desc.BindFlags=D3D11_BIND_SHADER_RESOURCE;desc.CPUAccessFlags=0;desc.MiscFlags=0;
-        com_ptr<ID3D11Texture2D> snapshot;check_hresult(device->CreateTexture2D(&desc,nullptr,snapshot.put()));
+        // The consumer copies this texture into its encoder input (and waits for
+        // that copy) before asking for the next frame, so one target is enough.
+        D3D11_TEXTURE2D_DESC current{};if(snapshot)snapshot->GetDesc(&current);
+        if(!snapshot||current.Width!=desc.Width||current.Height!=desc.Height||current.Format!=desc.Format){
+            snapshot=nullptr;check_hresult(device->CreateTexture2D(&desc,nullptr,snapshot.put()));}
         D3D11_BOX box{0,0,0,width,height,1};context->CopySubresourceRegion(snapshot.get(),0,0,0,0,source.get(),0,&box);
-        D3D11_QUERY_DESC query_desc{D3D11_QUERY_EVENT,0};com_ptr<ID3D11Query> fence;
-        check_hresult(device->CreateQuery(&query_desc,fence.put()));context->End(fence.get());context->Flush();
+        if(!fence){D3D11_QUERY_DESC query_desc{D3D11_QUERY_EVENT,0};check_hresult(device->CreateQuery(&query_desc,fence.put()));}
+        context->End(fence.get());context->Flush();
         ULONGLONG deadline=GetTickCount64()+100;
         for(;;){auto hr=context->GetData(fence.get(),nullptr,0,0);check_hresult(hr);if(hr==S_OK)break;
             if(GetTickCount64()>deadline)throw std::runtime_error("Window GPU copy timed out; rebuild GPU pipeline");SwitchToThread();}

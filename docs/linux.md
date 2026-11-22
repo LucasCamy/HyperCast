@@ -36,7 +36,7 @@ Wayland no Bazzite ainda depende do PC do colega.
 ## Tela, janela, vídeo e áudio
 
 Em **Formato de vídeo**, escolha o limite **12, 25 ou 40 Mbps** antes de iniciar;
-o padrão é 25 Mbps. O modo Compatível permanece limitado a 12 Mbps/30 FPS.
+o padrão é 12 Mbps (Econômico). O modo Compatível permanece limitado a 12 Mbps/30 FPS.
 Resolução e alvo de FPS do modo GPU são preservados. Veja [limites e overhead](video-quality.md#limite-de-upload).
 
 **Compartilhar tela/janela** abre o seletor do desktop via XDG Desktop Portal.

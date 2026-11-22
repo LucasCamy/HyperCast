@@ -317,3 +317,70 @@ impl VideoCapture {
         }
     }
 }
+
+#[cfg(all(test, windows))]
+mod leak_tests {
+    use super::*;
+    /// This process's dedicated GPU memory (Windows performance counter), in MB.
+    fn vram_mb() -> f64 {
+        let script = format!(
+            r"((Get-Counter '\GPU Process Memory(pid_{}_*)\Dedicated Usage').CounterSamples | Measure-Object CookedValue -Sum).Sum",
+            std::process::id()
+        );
+        let out = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", &script])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .replace(',', ".")
+            .parse::<f64>()
+            .unwrap_or(0.0)
+            / 1_048_576.0
+    }
+
+    /// Opens and closes window capture in a loop, without encoder or WebRTC.
+    /// HYPERCAST_LEAK_PID: a visible window. HYPERCAST_LEAK_MODE: `open` (no
+    /// session; crashed before the apartment fix), `start` (session, no frames)
+    /// or `frames` (default). On Windows 11 26300 + RTX 4080 driver 621.24 every
+    /// started session keeps one window-sized surface: see stream-efficiency.md.
+    #[test]
+    #[ignore = "Needs HYPERCAST_LEAK_PID of a visible window on adapter 0"]
+    fn window_capture_returns_gpu_memory_after_each_session() {
+        let pid: u32 = std::env::var("HYPERCAST_LEAK_PID")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let mode = std::env::var("HYPERCAST_LEAK_MODE").unwrap_or_else(|_| "frames".into());
+        let window = windows()
+            .into_iter()
+            .find(|w| w.pid == pid)
+            .expect("window");
+        let start = vram_mb();
+        let mut samples = Vec::new();
+        for cycle in 0..12 {
+            let mut capture = WindowCapture::new(0, window.hwnd, window.pid).unwrap();
+            if mode != "open" {
+                capture.start().unwrap();
+                let mut frames = 0;
+                for _ in 0..60 {
+                    if mode == "frames" && capture.acquire().unwrap().is_some() {
+                        frames += 1;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(16));
+                }
+                if mode == "frames" {
+                    assert!(frames > 0, "no frames captured");
+                }
+            }
+            drop(capture);
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let now = vram_mb();
+            println!("LEAK mode={mode} cycle={cycle} vram_mb={now:.1}");
+            samples.push(now);
+        }
+        let growth = samples[samples.len() - 1] - samples[1];
+        println!("LEAK mode={mode} start={start:.1} growth_after_first={growth:.1}MB");
+        assert!(growth < 20.0, "window capture kept {growth:.1} MB of VRAM");
+    }
+}

@@ -21,6 +21,12 @@ static std::atomic<unsigned> live_encoders{0};
 #include "encode_caps.h"
 
 using Microsoft::WRL::ComPtr;
+// Periodic IDR every 5 s instead of every second: WebRTC PLI/FIR already forces
+// one on loss or a new viewer, and each IDR costs several P-frames of budget.
+constexpr uint32_t GOP_SECONDS = 5;
+// Two frames of VBV, as AMF uses: one frame overshot CBR by 15-23% on hard
+// content at 4-8 Mbps, exceeding the WebRTC grant exactly when it is tight.
+constexpr uint32_t VBV_FRAMES = 2;
 
 static void report(char* error, size_t capacity, const char* message) noexcept {
     if (error && capacity) {
@@ -46,6 +52,8 @@ struct Encoder {
     NV_ENC_CONFIG config{};
     NV_ENC_INITIALIZE_PARAMS init{};
     uint32_t width = 0, height = 0, fps = 0, source_width = 0, source_height = 0;
+    // Preview snapshots, reused once the UI has dropped its reference.
+    ComPtr<ID3D11Texture2D> previews[3];
     bool input_ready = false;
     CaptureColor capture_color;
     HcEncodeCaps capabilities;
@@ -147,29 +155,31 @@ struct Encoder {
         caps.capsToQuery=NV_ENC_CAPS_HEIGHT_MAX;check(api.nvEncGetEncodeCaps(session,codec,&caps,&max_h),"Query NVENC maximum height");
         if(max_w<2 || max_h<2)throw std::runtime_error("Invalid NVENC resolution capabilities");
         hc_fit_size(w,h,std::min(uint32_t(max_w),limit_w),std::min(uint32_t(max_h),limit_h));width=w;height=h;
+        // P1 keeps the encoder engine and per-frame latency lowest; P4 bought
+        // about 1 VMAF for ~33% more encode time (docs/stream-efficiency.md).
         NV_ENC_PRESET_CONFIG preset{};
         preset.version = NV_ENC_PRESET_CONFIG_VER;
         preset.presetCfg.version = NV_ENC_CONFIG_VER;
         check(api.nvEncGetEncodePresetConfigEx(session, codec, NV_ENC_PRESET_P1_GUID,
             NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY, &preset), "Query low latency preset");
         config = preset.presetCfg;
-        config.gopLength = fps;
+        config.gopLength = fps * GOP_SECONDS;
         config.frameIntervalP = 1; // IPPP, bf=0
         config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
         config.rcParams.averageBitRate = bitrate;
         config.rcParams.maxBitRate = bitrate;
-        config.rcParams.vbvBufferSize = bitrate / fps;
+        config.rcParams.vbvBufferSize = bitrate / fps * VBV_FRAMES;
         config.rcParams.vbvInitialDelay = config.rcParams.vbvBufferSize;
         config.rcParams.enableLookahead = 0;
         config.rcParams.enableAQ = 0;
         config.rcParams.enableTemporalAQ = 0;
         config.rcParams.multiPass = NV_ENC_MULTI_PASS_DISABLED;
         if (av1) {
-            config.encodeCodecConfig.av1Config.idrPeriod = fps;
+            config.encodeCodecConfig.av1Config.idrPeriod = fps * GOP_SECONDS;
             config.encodeCodecConfig.av1Config.repeatSeqHdr = 1;
         } else {
             config.profileGUID = NV_ENC_HEVC_PROFILE_MAIN_GUID;
-            config.encodeCodecConfig.hevcConfig.idrPeriod = fps;
+            config.encodeCodecConfig.hevcConfig.idrPeriod = fps * GOP_SECONDS;
             config.encodeCodecConfig.hevcConfig.repeatSPSPPS = 1;
         }
         init.version = NV_ENC_INITIALIZE_PARAMS_VER;
@@ -210,7 +220,7 @@ struct Encoder {
         if(config.rcParams.averageBitRate==bitrate && init.frameRateNum==frame_rate)return;
         config.rcParams.averageBitRate = bitrate;
         config.rcParams.maxBitRate = bitrate;
-        config.rcParams.vbvBufferSize = bitrate / frame_rate;
+        config.rcParams.vbvBufferSize = bitrate / frame_rate * VBV_FRAMES;
         config.rcParams.vbvInitialDelay = config.rcParams.vbvBufferSize;
         init.frameRateNum = frame_rate;
         NV_ENC_RECONFIGURE_PARAMS params{};
@@ -333,8 +343,17 @@ void* hc_nvenc_preview(void* handle) noexcept {
         protect->SetMultithreadProtected(TRUE);
         D3D11_TEXTURE2D_DESC desc{}; encoder->input->GetDesc(&desc);
         desc.BindFlags = D3D11_BIND_RENDER_TARGET;
-        ComPtr<ID3D11Texture2D> snapshot;
-        Encoder::hr(encoder->device->CreateTexture2D(&desc, nullptr, &snapshot), "Preview GPU snapshot");
+        // A slot is free when this encoder holds its only reference: the UI and
+        // presenter have released the frame, so overwriting it is never visible.
+        ComPtr<ID3D11Texture2D>* slot = nullptr;
+        for (auto& candidate : encoder->previews) {
+            if (!candidate) { if (!slot) slot = &candidate; continue; }
+            candidate->AddRef();
+            if (candidate->Release() == 1) { slot = &candidate; break; }
+        }
+        if (!slot) return nullptr; // All snapshots still on screen; skip this preview.
+        if (!*slot) Encoder::hr(encoder->device->CreateTexture2D(&desc, nullptr, slot->GetAddressOf()), "Preview GPU snapshot");
+        ComPtr<ID3D11Texture2D> snapshot = *slot;
         encoder->context->CopyResource(snapshot.Get(), encoder->input.Get());
         encoder->context->End(encoder->copy_done.Get()); encoder->context->Flush();
         auto start = GetTickCount64();

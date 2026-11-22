@@ -1,8 +1,9 @@
 //! Video budgets shared by encoder and publication; audio/transport overhead is separate.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum UploadProfile {
-    Economic,
+    /// Default: lowest load on the encoder and on the sender's uplink.
     #[default]
+    Economic,
     Balanced,
     Maximum,
 }
@@ -28,7 +29,7 @@ impl UploadProfile {
         }
     }
     pub fn initial() -> Self {
-        // Bounded smoke-test override; ordinary sessions always start at 25 Mbps.
+        // Bounded smoke-test override; ordinary sessions start at the default profile.
         if std::env::var("HYPERCAST_SMOKE_SECONDS")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
@@ -36,6 +37,7 @@ impl UploadProfile {
         {
             match std::env::var("HYPERCAST_SMOKE_UPLOAD_MBPS").as_deref() {
                 Ok("12") => return Self::Economic,
+                Ok("25") => return Self::Balanced,
                 Ok("40") => return Self::Maximum,
                 _ => {}
             }
@@ -52,7 +54,7 @@ mod tests {
     use super::*;
     #[test]
     fn profiles_cap_network_feedback_and_do_not_raise_supported_lower_budgets() {
-        assert_eq!(UploadProfile::default().bps(), 25_000_000);
+        assert_eq!(UploadProfile::default().bps(), 12_000_000);
         assert_eq!(UploadProfile::from_mbps(25), Some(UploadProfile::Balanced));
         assert_eq!(UploadProfile::from_mbps(100), None);
         for profile in UploadProfile::ALL {
