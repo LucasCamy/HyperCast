@@ -1012,6 +1012,8 @@ pub(crate) struct Me<'a> {
     pub can_switch_room: bool,
     /// Windows window-capture border; `None` where the platform owns it.
     pub capture_border: Option<bool>,
+    /// Live stats panel; `None` where the platform has no panel yet.
+    pub nerd_stats: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1022,6 +1024,7 @@ pub(crate) enum RoomChoice {
     Update,
     Diagnostics,
     CaptureBorder,
+    NerdStats,
 }
 
 #[derive(Default)]
@@ -1166,6 +1169,21 @@ fn room_menu(ui: &egui::Ui, anchor: &egui::Response, me: &Me<'_>) -> Option<Room
                 .clicked()
         {
             choice = Some(RoomChoice::CaptureBorder);
+        }
+        if let Some(open) = me.nerd_stats
+            && menu_row(
+                ui,
+                label("Estatísticas (I)", "Stats for nerds (I)"),
+                true,
+                Some(open),
+            )
+            .on_hover_text(label(
+                "Resolução, FPS, bitrate, perda e rede de cada vídeo, sobre o palco",
+                "Resolution, FPS, bitrate, loss and network of each video, over the stage",
+            ))
+            .clicked()
+        {
+            choice = Some(RoomChoice::NerdStats);
         }
         crate::desktop_ui::display_scale(ui);
         if menu_row(ui, label("Atualizar", "Update"), true, None).clicked() {
@@ -1608,6 +1626,7 @@ fn the_you_panel_fits_the_sidebar_and_the_rail() {
                             resetting: false,
                             can_switch_room: true,
                             capture_border: Some(true),
+                            nerd_stats: Some(false),
                         };
                         let _ = me_panel(ui, &me);
                     });

@@ -104,6 +104,10 @@ pub struct Shared {
     pub audio_status: String,
     pub active_target: Option<CaptureTarget>,
     pub source_error: String,
+    /// Set by the interface while the nerd panel is open.
+    pub nerd_open: bool,
+    /// Latest 1 Hz panel sample; `None` while closed.
+    pub nerd: Option<(Instant, crate::nerd_stats::Snapshot)>,
 }
 #[derive(Clone, Copy, PartialEq)]
 pub struct ShareQuality {
@@ -1041,6 +1045,7 @@ impl Engine {
                         if reception_restart.is_none()
                             && reception_tick.elapsed() >= Duration::from_millis(250)
                         {
+                            receive_monitor.fast = state.lock().unwrap().nerd_open;
                             let repairs = runtime.block_on(receive_monitor.tick(
                                 &room,
                                 !layout.paused,
@@ -1085,6 +1090,7 @@ impl Engine {
                                     s.audio_received = audio_received.load(Ordering::Relaxed);
                                 }
                                 s.quality.network = receive_monitor.network;
+                                s.nerd = receive_monitor.details.clone();
                                 s.quality.automatic_recovery = receive_monitor.summary;
                                 s.recovering = receive_monitor
                                     .recovering()
