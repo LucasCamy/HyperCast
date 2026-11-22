@@ -130,6 +130,33 @@ python -m tools.room_invite --env-file .tools/homelab.env --revoke-access ID_DO_
 Entregue somente `access_key` aos amigos. Guarde `access_id` para revogação.
 Arquivos privados ficam ignorados pelo Git e fora dos instaladores.
 
+### Renovar a mesma chave no Cloudlane
+
+No Windows, abra a pasta do HyperCast no Explorador e dê dois cliques em
+**Renovar chave HyperCast.cmd**. O atalho lê o destino SSH e o ID da chave
+compartilhada de `.tools/renew-access.env` (ignorado pelo Git):
+
+```
+HYPERCAST_RENEW_SSH=usuario@ip-da-vm
+HYPERCAST_RENEW_ACCESS_ID=ID_DO_ACESSO
+```
+
+Ele mostra a validade no horário de Cuiabá. Se o SSH pedir senha, digite a senha
+da VM e pressione Enter. O atalho requer acesso SSH à VM do k3s.
+
+No PowerShell, na pasta do HyperCast, execute o comando abaixo com acesso SSH à
+VM do k3s. Substitua `ID_DO_ACESSO` pelo `access_id` salvo na emissão.
+
+```powershell
+Get-Content -Raw .\tools\renew-access.py | ssh -T usuario@ip-da-vm 'sudo -n k3s kubectl -n hypercast exec -i deploy/hypercast-access -c auth -- python3 - ID_DO_ACESSO --days 30'
+```
+
+Se o SSH pedir senha, use a senha de acesso à VM. O comando mostra a validade
+em UTC. Ele garante 30 dias a partir da execução, preserva um prazo que já seja
+maior e recusa acessos revogados. A mesma chave e suas salas continuam válidas
+após a renovação. Se a janela já estiver aberta com erro de chave, clique em
+**Continuar com a chave** para testar.
+
 `POST /api/login` recebe a chave bearer e somente `device_id` no corpo; retorna
 JWT HS256 com audience hypercast-access, scope server:access e expiração de 900s.
 `POST /api/rooms` recebe esse JWT e `room_name`, `request_id` e `persistent` (booleano).
