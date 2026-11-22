@@ -204,6 +204,7 @@ impl App {
             show: self.show,
             anchor: self.anchor,
             capture_border: self.preferences.current().capture_border,
+            nerd_stats: self.preferences.current().nerd_stats,
         });
     }
     fn send(&self, command: Command) {
@@ -522,6 +523,7 @@ impl App {
                 resetting: reception_resetting,
                 can_switch_room: self.access.authenticated(),
                 capture_border: None,
+                nerd_stats: None,
             },
         );
         if outcome.share.is_some() {
@@ -563,7 +565,7 @@ impl App {
             Some(stage_ui::RoomChoice::Reconnect) => self.restart_reception(),
             Some(stage_ui::RoomChoice::Update) => self.updates = true,
             Some(stage_ui::RoomChoice::Diagnostics) => self.debug = true,
-            Some(stage_ui::RoomChoice::CaptureBorder) => {}
+            Some(stage_ui::RoomChoice::CaptureBorder | stage_ui::RoomChoice::NerdStats) => {}
             None => {}
         }
         if outcome.leave {

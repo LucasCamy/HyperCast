@@ -129,6 +129,8 @@ pub struct Settings {
     pub anchor: crate::stage::Anchor,
     /// Windows draws its yellow border around a shared application window.
     pub capture_border: bool,
+    /// The live stats panel over the stage (`I`).
+    pub nerd_stats: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -146,6 +148,7 @@ impl Default for Settings {
             show: Default::default(),
             anchor: Default::default(),
             capture_border: true,
+            nerd_stats: false,
         }
     }
 }
@@ -213,6 +216,10 @@ impl Settings {
             None => true,
             Some(v) => v.as_bool()?,
         };
+        let nerd_stats = match v.get("nerd_stats") {
+            None => false,
+            Some(v) => v.as_bool()?,
+        };
         Some(Self {
             codec,
             amd_profile,
@@ -228,10 +235,11 @@ impl Settings {
             show,
             anchor,
             capture_border,
+            nerd_stats,
         })
     }
     fn encode(self) -> String {
-        serde_json::json!({"schema":1,"codec":match self.codec{VideoCodec::Hevc=>"hevc",VideoCodec::Av1=>"av1"},"amd_profile":match self.amd_profile{AmdPreset::Fast=>"fast",AmdPreset::Text=>"text",AmdPreset::Compatibility=>"compatibility"},"resolution":match self.stream.size{crate::resolution::OutputSize::Native=>"native",crate::resolution::OutputSize::FullHd=>"1080p",crate::resolution::OutputSize::QuadHd=>"1440p"},"fps":self.stream.fps,"upload_mbps":self.upload.bps()/1_000_000,"rate_mode":match self.rate_mode{crate::adaptive_upload::Mode::Manual=>"manual",crate::adaptive_upload::Mode::Automatic=>"automatic"},"volume":self.volume,"muted":self.muted,"sidebar":self.sidebar,"self_preview":self.self_preview,"grid":self.grid,"show":self.show.key(),"strip":self.anchor.key(),"capture_border":self.capture_border}).to_string()
+        serde_json::json!({"schema":1,"codec":match self.codec{VideoCodec::Hevc=>"hevc",VideoCodec::Av1=>"av1"},"amd_profile":match self.amd_profile{AmdPreset::Fast=>"fast",AmdPreset::Text=>"text",AmdPreset::Compatibility=>"compatibility"},"resolution":match self.stream.size{crate::resolution::OutputSize::Native=>"native",crate::resolution::OutputSize::FullHd=>"1080p",crate::resolution::OutputSize::QuadHd=>"1440p"},"fps":self.stream.fps,"upload_mbps":self.upload.bps()/1_000_000,"rate_mode":match self.rate_mode{crate::adaptive_upload::Mode::Manual=>"manual",crate::adaptive_upload::Mode::Automatic=>"automatic"},"volume":self.volume,"muted":self.muted,"sidebar":self.sidebar,"self_preview":self.self_preview,"grid":self.grid,"show":self.show.key(),"strip":self.anchor.key(),"capture_border":self.capture_border,"nerd_stats":self.nerd_stats}).to_string()
     }
     fn file() -> Option<PathBuf> {
         path().map(|p| p.with_file_name("preferences.json"))
@@ -519,6 +527,7 @@ mod settings_tests {
             show: crate::stage::Show::Cameras,
             anchor: crate::stage::Anchor::Top,
             capture_border: false,
+            nerd_stats: true,
             ..Default::default()
         };
         assert_eq!(Settings::decode(value.encode().as_bytes()), Some(value));
@@ -528,7 +537,12 @@ mod settings_tests {
         legacy.as_object_mut().unwrap().remove("codec");
         legacy.as_object_mut().unwrap().remove("amd_profile");
         legacy.as_object_mut().unwrap().remove("capture_border");
+        legacy.as_object_mut().unwrap().remove("nerd_stats");
         let old = Settings::decode(legacy.to_string().as_bytes()).unwrap();
+        assert!(
+            !old.nerd_stats,
+            "Profiles without the choice keep the panel closed"
+        );
         assert!(
             old.capture_border,
             "Profiles without the choice keep the border"

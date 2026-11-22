@@ -260,6 +260,10 @@ pub mod runtime {
         targets: Vec<(String, String)>,
         rows: HashMap<String, Counters>,
         network: Option<crate::video_metrics::VideoNetwork>,
+        /// Recovery keeps its 5 s evidence cadence when the panel samples faster.
+        watch: bool,
+        /// Raw stats and RTC→stage ids, only while the nerd panel is open.
+        details: Option<(Vec<RtcStats>, Vec<RtcStats>, Vec<(String, String)>)>,
     }
     pub struct Repair {
         pub sid: String,
@@ -272,6 +276,11 @@ pub mod runtime {
         owners: HashMap<String, String>,
         task: Option<tokio::task::JoinHandle<Option<Sample>>>,
         last_poll: Option<Instant>,
+        last_watch: Option<Instant>,
+        sampler: crate::nerd_stats::Sampler,
+        /// Sample at 1 Hz and fill `details` (the nerd panel is open).
+        pub fast: bool,
+        pub details: Option<(Instant, crate::nerd_stats::Snapshot)>,
         pub network: Option<crate::video_metrics::VideoNetwork>,
         pub summary: Summary,
     }
@@ -283,6 +292,10 @@ pub mod runtime {
                 owners: HashMap::new(),
                 task: None,
                 last_poll: None,
+                last_watch: None,
+                sampler: Default::default(),
+                fast: false,
+                details: None,
                 network: None,
                 summary: Summary::default(),
             }
@@ -324,7 +337,10 @@ pub mod runtime {
             }
             self.holds.clear();
             self.last_poll = None;
+            self.last_watch = None;
             self.network = None;
+            self.details = None;
+            self.sampler.reset();
             self.summary.recovering = 0;
             self.summary.exhausted = 0;
             self.summary.mapped = 0;
@@ -337,7 +353,10 @@ pub mod runtime {
             self.holds.clear();
             self.owners.clear();
             self.last_poll = None;
+            self.last_watch = None;
             self.network = None;
+            self.details = None;
+            self.sampler.reset();
             self.summary.observed = 0;
             self.summary.mapped = 0;
             self.summary.recovering = 0;
@@ -352,8 +371,23 @@ pub mod runtime {
             let now = Instant::now();
             self.holds.retain(|_, until| now < *until);
             let mut targets = vec![];
+            let mut videos = vec![];
             for p in room.remote_participants().into_values() {
                 for publication in p.track_publications().into_values() {
+                    if self.fast
+                        && let Some(RemoteTrack::Video(track)) = publication.track()
+                    {
+                        let owner = p.identity().to_string();
+                        match publication.source() {
+                            TrackSource::Screenshare => {
+                                videos.push((track.rtc_track().id(), owner))
+                            }
+                            TrackSource::Camera => {
+                                videos.push((track.rtc_track().id(), format!("{owner}/camera")))
+                            }
+                            _ => {}
+                        }
+                    }
                     if publication.source() == TrackSource::Screenshare && publication.is_desired()
                     {
                         if let Some(RemoteTrack::Video(track)) = publication.track() {
@@ -384,8 +418,22 @@ pub mod runtime {
                     self.network = None;
                 }
             }
-            if let Some(sample) = sample {
+            if !self.fast {
+                self.details = None;
+                self.sampler.reset();
+            }
+            if let Some(sample) = sample.as_mut() {
                 self.network = sample.network;
+                if let Some((publisher, subscriber, videos)) = sample.details.take()
+                    && self.fast
+                {
+                    let snapshot = self
+                        .sampler
+                        .sample(sample.at, &publisher, &subscriber, &videos);
+                    self.details = Some((sample.at, snapshot));
+                }
+            }
+            if let Some(sample) = sample.filter(|sample| sample.watch) {
                 self.summary.mapped = 0;
                 for t in &targets {
                     self.owners.insert(t.sid.clone(), t.owner.clone());
@@ -457,11 +505,16 @@ pub mod runtime {
                     }
                 }
             }
+            let cadence = if self.fast {
+                crate::nerd_stats::INTERVAL
+            } else {
+                Duration::from_secs(5)
+            };
             if self.task.is_none()
                 && room.connection_state() == ConnectionState::Connected
                 && self
                     .last_poll
-                    .is_none_or(|at| now.saturating_duration_since(at) >= Duration::from_secs(5))
+                    .is_none_or(|at| now.saturating_duration_since(at) >= cadence)
             {
                 let snapshot: Vec<_> = targets
                     .iter()
@@ -469,13 +522,21 @@ pub mod runtime {
                     .collect();
                 let observed = room.clone();
                 self.last_poll = Some(now);
+                // Small slack: a 1 s poll lands just under each 5 s mark.
+                let watch = self.last_watch.is_none_or(|at| {
+                    now.saturating_duration_since(at) >= Duration::from_millis(4900)
+                });
+                if watch {
+                    self.last_watch = Some(now);
+                }
+                let fast = self.fast;
                 self.task = Some(tokio::spawn(async move {
                     let stats = tokio::time::timeout(Duration::from_secs(3), observed.get_stats())
                         .await
                         .ok()?
                         .ok()?;
                     #[cfg(windows)]
-                    {
+                    if watch {
                         for line in crate::network::video_stats_lines(
                             &stats.publisher_stats,
                             &stats.subscriber_stats,
@@ -501,11 +562,18 @@ pub mod runtime {
                             }
                         }
                     }
+                    let network = crate::network::video_network_sample(&stats.subscriber_stats);
                     Some(Sample {
                         at: Instant::now(),
                         targets: snapshot,
                         rows,
-                        network: crate::network::video_network_sample(&stats.subscriber_stats),
+                        network,
+                        watch,
+                        details: fast.then_some((
+                            stats.publisher_stats,
+                            stats.subscriber_stats,
+                            videos,
+                        )),
                     })
                 }));
             }

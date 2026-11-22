@@ -65,3 +65,6 @@ pub mod encode_caps;
 
 #[cfg(feature = "desktop")]
 pub mod evidence;
+
+#[cfg(feature = "desktop")]
+pub mod nerd_stats;
