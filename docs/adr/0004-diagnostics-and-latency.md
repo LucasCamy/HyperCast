@@ -29,3 +29,7 @@ Histogramas de tamanho fixo por etapa observável e histórico limitado de trans
 Microbenchmark local mede custo médio da instrumentação, sem extrapolar para máquinas não testadas. Rotas de mídia, codecs e renderização mantêm seu comportamento; novos probes GStreamer apenas observam buffers e não reconfiguram caps. Testes verificam limites de memória, ausência de campos privados e recusa de correlação ambígua.
 
 A implementação não obtém tempos internos de kernels GPU, instante físico de apresentação ou captura anterior ao PipeWire. A [validação visual](../latency-validation.md) usa referência local, câmera e comparação do mesmo conteúdo nos dois monitores, sem depender de relógios dos PCs sincronizados. A referência e o método acompanham os pacotes para coleta posterior. Comprovação sub-100 ms e matriz física AMD/Bazzite continuam pendentes. Ver [campos e interpretação](../technical-report.md).
+
+## Incremento — estatísticas na tela
+
+[Painel local](../nerd-stats.md) alternado com `I`, por vídeo: resolução, FPS, Mb/s, perda, jitter, jitter buffer, decode, travadas e caminho ICE sem endereços. Usa a mesma consulta `get_stats` do observador de recepção, que passa a 1 Hz só com o painel aberto; a avaliação de recuperação e o log de RTP mantêm a cadência de 5 s. Valores são deltas entre amostras; contador regressivo reinicia a linha. Nada é exportado e a latência fim a fim continua sem estimativa.

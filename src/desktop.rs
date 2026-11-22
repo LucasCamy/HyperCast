@@ -254,6 +254,11 @@ struct App {
     name: String,
     sidebar_open: bool,
     self_preview: bool,
+    /// Live stats panel over the stage, toggled with `I`.
+    nerd_open: bool,
+    nerd_history: crate::nerd_stats::History,
+    /// Smoke runs print the panel text, since the machine may be locked.
+    nerd_trace: Option<Instant>,
     client_id: String,
     token_mode: bool,
     mode: ViewMode,
@@ -374,6 +379,11 @@ impl App {
             self_preview: prefs.self_preview
                 && !(std::env::var_os("HYPERCAST_SMOKE_SECONDS").is_some()
                     && std::env::var("HYPERCAST_SMOKE_PREVIEW").as_deref() == Ok("0")),
+            nerd_open: prefs.nerd_stats
+                || std::env::var("HYPERCAST_SMOKE_NERD").as_deref() == Ok("1"),
+            nerd_history: Default::default(),
+            nerd_trace: (std::env::var("HYPERCAST_SMOKE_NERD").as_deref() == Ok("1"))
+                .then(Instant::now),
             client_id: crate::invitation::client_id(),
             token_mode: std::env::var("HYPERCAST_ROOM_TOKEN").is_ok(),
             mode: if std::env::var("HYPERCAST_VIEW_MODE").map_or(prefs.grid, |v| v == "grid") {
@@ -497,6 +507,7 @@ impl App {
             show: self.show,
             anchor: self.anchor,
             capture_border: crate::video_capture::capture_border(),
+            nerd_stats: self.nerd_open,
         });
     }
     fn restore_preferences(&mut self) {
@@ -516,6 +527,7 @@ impl App {
         self.show = p.show;
         self.anchor = p.anchor;
         crate::video_capture::set_capture_border(p.capture_border);
+        self.nerd_open = p.nerd_stats;
         self.codec = crate::encoder::Codec::H265;
         self.amd_profile = crate::encoder::AmdProfile::Fast;
     }
@@ -1046,6 +1058,7 @@ impl App {
                 resetting,
                 can_switch_room: self.server_access.authenticated(),
                 capture_border: Some(crate::video_capture::capture_border()),
+                nerd_stats: Some(self.nerd_open),
             },
         );
         if let Some(opener) = out.share {
@@ -1099,6 +1112,7 @@ impl App {
             Some(crate::stage_ui::RoomChoice::CaptureBorder) => {
                 crate::video_capture::set_capture_border(!crate::video_capture::capture_border());
             }
+            Some(crate::stage_ui::RoomChoice::NerdStats) => self.nerd_open = !self.nerd_open,
             None => {}
         }
         if out.leave {
@@ -1515,6 +1529,11 @@ impl eframe::App for App {
             crate::desktop_ui::toggle_mute(&mut self.volume, &mut self.sound_muted);
             self.send_layout();
         }
+        if !ctx.egui_wants_keyboard_input()
+            && ctx.input(|i| i.key_pressed(egui::Key::I) && i.modifiers.is_none())
+        {
+            self.nerd_open = !self.nerd_open;
+        }
         if self.smoke_seconds.is_some()
             && std::env::var("HYPERCAST_SMOKE_SOUND").as_deref() == Ok("1")
         {
@@ -1616,8 +1635,11 @@ impl eframe::App for App {
         let mut recovering = std::collections::HashMap::new();
         let mut received = 0;
         let mut sent = 0;
+        let mut nerd = None;
         if let Some(engine) = &self.engine {
-            let state = engine.shared.lock().unwrap();
+            let mut state = engine.shared.lock().unwrap();
+            state.nerd_open = self.nerd_open;
+            nerd = state.nerd.clone().filter(|_| self.nerd_open);
             connected = state.connected;
             reception_resetting = state.reception_resetting;
             quality = state.quality.clone();
@@ -2574,6 +2596,78 @@ impl eframe::App for App {
                 } else {
                     self.stage_overlay.set_controls(None);
                 }
+                if self.nerd_open && !hide_native_video && self.source_draft.is_none() {
+                    if let Some((at, snapshot)) = &nerd {
+                        self.nerd_history.push(
+                            *at,
+                            snapshot,
+                            quality.send.filter(|_| publishing).map(|s| s.mbps),
+                        );
+                    }
+                    let snapshot = nerd.as_ref().map(|(_, s)| s);
+                    let sending = publishing.then(|| crate::nerd_stats::Sending {
+                        quality: &quality,
+                        outbound: snapshot.and_then(|s| s.outbound.as_ref()),
+                    });
+                    let lines =
+                        crate::nerd_stats::lines(snapshot, sending, &self.nerd_history, |key| {
+                            let owner = crate::desktop_engine::video_owner(key);
+                            let name = people
+                                .iter()
+                                .find(|(person, _)| person == owner)
+                                .map(|(_, name)| name.as_str())
+                                .filter(|name| !name.is_empty())
+                                .unwrap_or(owner);
+                            if is_camera_key(key) {
+                                format!("{name} cam")
+                            } else {
+                                name.to_owned()
+                            }
+                        });
+                    let network = crate::nerd_stats::network(
+                        snapshot,
+                        quality.network.and_then(|n| n.rtt_ms),
+                        publishing,
+                    );
+                    // The strip may sit in the top-right corner; take the other one.
+                    let corner = if self.mode == ViewMode::Spotlight
+                        && !arrangement.strip.is_empty()
+                        && self.anchor == crate::stage::Anchor::TopRight
+                    {
+                        crate::nerd_stats::Corner::TopLeft
+                    } else {
+                        crate::nerd_stats::Corner::TopRight
+                    };
+                    let shown = crate::nerd_stats::panel(&ctx, rect, corner, &lines, &network);
+                    // This frame's size: the remembered layer rect lags when it shrinks.
+                    control_overlays.push((shown, f32::from(crate::kit::RADIUS)));
+                    if let Some(since) = &mut self.nerd_trace
+                        && since.elapsed() >= Duration::from_secs(2)
+                    {
+                        *since = Instant::now();
+                        println!(
+                            "GUI nerd: fullscreen={} corner={corner:?} rect={:.0}x{:.0}",
+                            self.fullscreen,
+                            shown.width(),
+                            shown.height()
+                        );
+                        for line in &lines {
+                            println!(
+                                "GUI nerd: {} {} | {} | {} | {} | spark={}",
+                                if line.up { "up" } else { "down" },
+                                line.name,
+                                line.main,
+                                line.rate,
+                                line.detail,
+                                line.spark.len()
+                            );
+                        }
+                        println!("GUI nerd: net {network}");
+                    }
+                    ctx.request_repaint_after(crate::nerd_stats::INTERVAL);
+                } else if !self.nerd_open {
+                    self.nerd_history.clear();
+                }
                 if let Some(identity) = selection {
                     self.focus = Some(identity);
                     self.mode = ViewMode::Spotlight;
@@ -3134,7 +3228,7 @@ impl eframe::App for App {
                     matches!(
                         layer.order,
                         egui::Order::Foreground | egui::Order::Tooltip | egui::Order::Debug
-                    )
+                    ) && layer.id != crate::nerd_stats::panel_id()
                 })
                 .filter_map(|layer| {
                     let radius = if layer.order == egui::Order::Tooltip {
